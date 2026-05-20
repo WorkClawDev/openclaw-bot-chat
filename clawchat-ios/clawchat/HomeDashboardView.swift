@@ -30,6 +30,7 @@ final class HomeDashboardViewModel: ObservableObject {
 
     private let refreshInterval: TimeInterval = 45
     private var cancellables = Set<AnyCancellable>()
+    private var hasHydratedCache = false
     private var hasLoaded = false
     private var lastRefreshAt: Date?
 
@@ -53,6 +54,10 @@ final class HomeDashboardViewModel: ObservableObject {
             return
         }
 
+        if !force {
+            hydrateCachedSnapshotIfNeeded()
+        }
+
         if !force, hasLoaded, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < refreshInterval {
             return
         }
@@ -72,14 +77,36 @@ final class HomeDashboardViewModel: ObservableObject {
                     self?.errorMessage = error.localizedDescription
                 }
             } receiveValue: { [weak self] bots, groups, conversations in
+                LocalMessageStore.shared.upsert(bots: bots)
+                LocalMessageStore.shared.upsert(groups: groups)
                 LocalMessageStore.shared.upsert(conversations: conversations)
                 self?.bots = bots
                 self?.groups = groups
                 self?.conversations = conversations
+                self?.hasHydratedCache = true
                 self?.hasLoaded = true
                 self?.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
+    }
+
+    private func hydrateCachedSnapshotIfNeeded() {
+        guard !hasHydratedCache else { return }
+
+        let cachedBots = LocalMessageStore.shared.cachedBots()
+        let cachedGroups = LocalMessageStore.shared.cachedGroups()
+        let cachedConversations = LocalMessageStore.shared.cachedConversations()
+
+        if !cachedBots.isEmpty {
+            bots = cachedBots
+        }
+        if !cachedGroups.isEmpty {
+            groups = cachedGroups
+        }
+        if !cachedConversations.isEmpty {
+            conversations = cachedConversations
+        }
+        hasHydratedCache = true
     }
 }
 
@@ -172,12 +199,12 @@ struct HomeDashboardView: View {
                             ChatRoomView(context: chatContext(for: conversation))
                         } label: {
                             DashboardConversationRow(
-                                title: conversation.name,
+                                title: conversationTitle(for: conversation),
                                 subtitle: conversation.lastMessage?.content ?? "No messages yet",
                                 timestamp: timestamp(for: conversation),
                                 unreadCount: conversation.unreadCount,
-                                avatarURL: conversation.avatar,
-                                systemImage: conversation.type == "group" ? "person.3.fill" : "bubble.left.fill"
+                                avatarURL: conversationAvatarURL(for: conversation),
+                                systemImage: conversationSystemImage(for: conversation)
                             )
                         }
                         .buttonStyle(.plain)
@@ -211,7 +238,7 @@ struct HomeDashboardView: View {
             let groupId = conversationTargetID(for: conversation)
             return ChatContext(
                 id: conversation.id,
-                title: conversation.name,
+                title: conversationTitle(for: conversation),
                 subtitle: "group chat",
                 isGroup: true,
                 groupId: groupId,
@@ -233,13 +260,47 @@ struct HomeDashboardView: View {
 
             return ChatContext(
                 id: conversation.id,
-                title: conversation.name,
+                title: conversationTitle(for: conversation),
                 subtitle: conversation.type.lowercased() == "bot" ? "bot chat" : "chat",
                 isGroup: false,
                 groupId: nil,
                 avatarURLString: conversation.avatar
             )
         }
+    }
+
+    private func conversationTitle(for conversation: Conversation) -> String {
+        switch conversation.type.lowercased() {
+        case "group":
+            if let group = matchingGroup(for: conversation) {
+                return group.name
+            }
+        default:
+            if let bot = matchingBot(for: conversation) {
+                return bot.name
+            }
+        }
+
+        return conversation.name
+    }
+
+    private func conversationAvatarURL(for conversation: Conversation) -> String? {
+        switch conversation.type.lowercased() {
+        case "group":
+            if let group = matchingGroup(for: conversation) {
+                return group.avatarUrl ?? group.avatar ?? conversation.avatar
+            }
+        default:
+            if let bot = matchingBot(for: conversation) {
+                return bot.avatarUrl ?? bot.avatar ?? conversation.avatar
+            }
+        }
+
+        return conversation.avatar
+    }
+
+    private func conversationSystemImage(for conversation: Conversation) -> String {
+        conversation.type.lowercased() == "group" ? "person.3.fill" : "bubble.left.fill"
     }
 
     private func matchingGroup(for conversation: Conversation) -> ChatGroup? {

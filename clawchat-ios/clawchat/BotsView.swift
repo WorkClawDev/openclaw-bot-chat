@@ -8,12 +8,17 @@ class BotsViewModel: ObservableObject {
 
     private let refreshInterval: TimeInterval = 45
     private var cancellables = Set<AnyCancellable>()
+    private var hasHydratedCache = false
     private var hasLoaded = false
     private var lastRefreshAt: Date?
 
     func refreshIfNeeded(force: Bool = false) {
         if isLoading {
             return
+        }
+
+        if !force {
+            hydrateCachedBotsIfNeeded()
         }
 
         if !force, hasLoaded, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < refreshInterval {
@@ -34,11 +39,23 @@ class BotsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (bots: [Bot]) in
+                LocalMessageStore.shared.upsert(bots: bots)
                 self.bots = bots
+                self.hasHydratedCache = true
                 self.hasLoaded = true
                 self.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
+    }
+
+    private func hydrateCachedBotsIfNeeded() {
+        guard !hasHydratedCache else { return }
+
+        let cachedBots = LocalMessageStore.shared.cachedBots()
+        if !cachedBots.isEmpty {
+            bots = cachedBots
+        }
+        hasHydratedCache = true
     }
 
     func createBot(name: String, description: String?, onDone: @escaping () -> Void) {

@@ -114,6 +114,42 @@ final class LocalMessageStore {
         }
     }
 
+    func cachedBots(limit: Int = 200) -> [Bot] {
+        queue.sync {
+            loadBots(
+                sql: """
+                SELECT payload_json
+                FROM cached_bots
+                ORDER BY name COLLATE NOCASE ASC,
+                         updated_at DESC,
+                         id DESC
+                LIMIT ?
+                """,
+                bind: { statement in
+                    sqlite3_bind_int(statement, 1, Int32(normalizedLimit(limit)))
+                }
+            )
+        }
+    }
+
+    func cachedGroups(limit: Int = 200) -> [ChatGroup] {
+        queue.sync {
+            loadGroups(
+                sql: """
+                SELECT payload_json
+                FROM cached_groups
+                ORDER BY name COLLATE NOCASE ASC,
+                         updated_at DESC,
+                         id DESC
+                LIMIT ?
+                """,
+                bind: { statement in
+                    sqlite3_bind_int(statement, 1, Int32(normalizedLimit(limit)))
+                }
+            )
+        }
+    }
+
     func upsert(messages: [Message]) {
         guard !messages.isEmpty else { return }
 
@@ -128,6 +164,18 @@ final class LocalMessageStore {
         queue.async {
             self.upsertConversationsLocked(conversations)
             self.notifyConversationChanges()
+        }
+    }
+
+    func upsert(bots: [Bot]) {
+        queue.async {
+            self.upsertBotsLocked(bots)
+        }
+    }
+
+    func upsert(groups: [ChatGroup]) {
+        queue.async {
+            self.upsertGroupsLocked(groups)
         }
     }
 
@@ -198,6 +246,25 @@ final class LocalMessageStore {
         );
         CREATE INDEX IF NOT EXISTS idx_cached_conversations_last_message
             ON cached_conversations (last_message_timestamp DESC, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS cached_bots (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT,
+            payload_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cached_bots_name
+            ON cached_bots (name COLLATE NOCASE ASC, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS cached_groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cached_groups_name
+            ON cached_groups (name COLLATE NOCASE ASC, updated_at DESC);
         """
 
         if sqlite3_exec(database, schema, nil, nil, nil) != SQLITE_OK {
@@ -284,6 +351,133 @@ final class LocalMessageStore {
         for conversation in conversations {
             let merged = mergeConversation(existing: cachedConversationLocked(id: conversation.id), remote: conversation)
             writeConversationLocked(merged, lastMessageSeq: nil)
+        }
+    }
+
+    private func upsertBotsLocked(_ bots: [Bot]) {
+        guard let database else { return }
+        guard let statement = prepareStatement(
+            sql: """
+            INSERT INTO cached_bots (
+                id,
+                name,
+                status,
+                payload_json,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                status = excluded.status,
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """
+        ) else {
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_exec(database, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil)
+        let now = Date().timeIntervalSince1970
+
+        if bots.isEmpty {
+            sqlite3_exec(database, "DELETE FROM cached_bots", nil, nil, nil)
+            sqlite3_exec(database, "COMMIT", nil, nil, nil)
+            return
+        }
+
+        for bot in bots {
+            guard let payload = encode(bot: bot) else { continue }
+
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+
+            bind(text: bot.id.uuidString.lowercased(), to: 1, in: statement)
+            bind(text: bot.name, to: 2, in: statement)
+            bind(optionalText: bot.status, to: 3, in: statement)
+            bind(text: payload, to: 4, in: statement)
+            sqlite3_bind_double(statement, 5, now)
+
+            if sqlite3_step(statement) != SQLITE_DONE {
+                print("Failed to cache bot \(bot.id): \(String(cString: sqlite3_errmsg(database)))")
+            }
+        }
+
+        deleteRowsMissingFromSnapshotLocked(
+            tableName: "cached_bots",
+            ids: bots.map { $0.id.uuidString.lowercased() }
+        )
+        sqlite3_exec(database, "COMMIT", nil, nil, nil)
+    }
+
+    private func upsertGroupsLocked(_ groups: [ChatGroup]) {
+        guard let database else { return }
+        guard let statement = prepareStatement(
+            sql: """
+            INSERT INTO cached_groups (
+                id,
+                name,
+                payload_json,
+                updated_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """
+        ) else {
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_exec(database, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil)
+        let now = Date().timeIntervalSince1970
+
+        if groups.isEmpty {
+            sqlite3_exec(database, "DELETE FROM cached_groups", nil, nil, nil)
+            sqlite3_exec(database, "COMMIT", nil, nil, nil)
+            return
+        }
+
+        for group in groups {
+            guard let payload = encode(group: group) else { continue }
+
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+
+            bind(text: group.id.uuidString.lowercased(), to: 1, in: statement)
+            bind(text: group.name, to: 2, in: statement)
+            bind(text: payload, to: 3, in: statement)
+            sqlite3_bind_double(statement, 4, now)
+
+            if sqlite3_step(statement) != SQLITE_DONE {
+                print("Failed to cache group \(group.id): \(String(cString: sqlite3_errmsg(database)))")
+            }
+        }
+
+        deleteRowsMissingFromSnapshotLocked(
+            tableName: "cached_groups",
+            ids: groups.map { $0.id.uuidString.lowercased() }
+        )
+        sqlite3_exec(database, "COMMIT", nil, nil, nil)
+    }
+
+    private func deleteRowsMissingFromSnapshotLocked(tableName: String, ids: [String]) {
+        guard !ids.isEmpty else { return }
+
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        guard let statement = prepareStatement(
+            sql: "DELETE FROM \(tableName) WHERE id NOT IN (\(placeholders))"
+        ) else {
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, id) in ids.enumerated() {
+            bind(text: id, to: Int32(index + 1), in: statement)
+        }
+
+        if sqlite3_step(statement) != SQLITE_DONE, let database {
+            print("Failed to prune \(tableName): \(String(cString: sqlite3_errmsg(database)))")
         }
     }
 
@@ -554,6 +748,58 @@ final class LocalMessageStore {
         return items
     }
 
+    private func loadBots(
+        sql: String,
+        bind: (OpaquePointer) -> Void
+    ) -> [Bot] {
+        guard let statement = prepareStatement(sql: sql) else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        bind(statement)
+
+        var items: [Bot] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let rawValue = sqlite3_column_text(statement, 0) else {
+                continue
+            }
+
+            let payload = String(cString: rawValue)
+            guard let bot = decode(botPayload: payload) else {
+                continue
+            }
+            items.append(bot)
+        }
+        return items
+    }
+
+    private func loadGroups(
+        sql: String,
+        bind: (OpaquePointer) -> Void
+    ) -> [ChatGroup] {
+        guard let statement = prepareStatement(sql: sql) else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        bind(statement)
+
+        var items: [ChatGroup] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let rawValue = sqlite3_column_text(statement, 0) else {
+                continue
+            }
+
+            let payload = String(cString: rawValue)
+            guard let group = decode(groupPayload: payload) else {
+                continue
+            }
+            items.append(group)
+        }
+        return items
+    }
+
     private func prepareStatement(sql: String) -> OpaquePointer? {
         guard let database else { return nil }
 
@@ -594,6 +840,22 @@ final class LocalMessageStore {
         return String(data: data, encoding: .utf8)
     }
 
+    private func encode(bot: Bot) -> String? {
+        guard let data = try? encoder.encode(bot) else {
+            print("Failed to encode local bot \(bot.id)")
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func encode(group: ChatGroup) -> String? {
+        guard let data = try? encoder.encode(group) else {
+            print("Failed to encode local group \(group.id)")
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
     private func decode(messagePayload: String) -> Message? {
         guard let data = messagePayload.data(using: .utf8) else {
             return nil
@@ -606,6 +868,20 @@ final class LocalMessageStore {
             return nil
         }
         return try? decoder.decode(Conversation.self, from: data)
+    }
+
+    private func decode(botPayload: String) -> Bot? {
+        guard let data = botPayload.data(using: .utf8) else {
+            return nil
+        }
+        return try? decoder.decode(Bot.self, from: data)
+    }
+
+    private func decode(groupPayload: String) -> ChatGroup? {
+        guard let data = groupPayload.data(using: .utf8) else {
+            return nil
+        }
+        return try? decoder.decode(ChatGroup.self, from: data)
     }
 
     private func notifyConversationChanges() {

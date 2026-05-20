@@ -45,6 +45,7 @@ class ChatRoomViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isUploadingImage = false
     @Published var connectionState: RealtimeConnectionState = .idle
+    @Published private(set) var visibleWindowReplacementVersion = 0
 
     let conversationId: String
 
@@ -165,14 +166,17 @@ class ChatRoomViewModel: ObservableObject {
                 remoteMessages.append(contentsOf: catchupMessages)
             }
 
-            if messages.isEmpty || messages.count < pageSize {
-                let latestMessages = try await fetchRemoteMessages(limit: pageSize)
-                remoteMessages.append(contentsOf: latestMessages)
-            }
+            let latestMessages = try await fetchRemoteMessages(limit: pageSize)
+            remoteMessages.append(contentsOf: latestMessages)
 
             if !remoteMessages.isEmpty {
                 LocalMessageStore.shared.upsert(messages: remoteMessages)
-                messages = mergeMessages(messages, with: remoteMessages)
+                if shouldReplaceVisibleWindow(withLatestPage: latestMessages) {
+                    messages = sortMessages(latestMessages)
+                    visibleWindowReplacementVersion += 1
+                } else {
+                    messages = mergeMessages(messages, with: remoteMessages)
+                }
             }
 
             updateHistoryAvailability()
@@ -224,6 +228,27 @@ class ChatRoomViewModel: ObservableObject {
             result[message.id] = message
         }
         return sortMessages(Array(merged.values))
+    }
+
+    private func shouldReplaceVisibleWindow(withLatestPage latestMessages: [Message]) -> Bool {
+        let latestPage = sortMessages(latestMessages)
+        guard !latestPage.isEmpty else { return false }
+        guard !messages.isEmpty else { return true }
+        guard
+            let currentLastSeq = messages.last?.seq,
+            let latestFirstSeq = latestPage.first?.seq,
+            let latestLastSeq = latestPage.last?.seq
+        else {
+            return false
+        }
+
+        let currentMessageIDs = Set(messages.map(\.id))
+        let latestMessageIDs = Set(latestPage.map(\.id))
+        if currentLastSeq >= latestLastSeq, !latestMessageIDs.isSubset(of: currentMessageIDs) {
+            return true
+        }
+
+        return currentLastSeq + 1 < latestFirstSeq
     }
 
     private func sortMessages(_ items: [Message]) -> [Message] {
@@ -628,11 +653,14 @@ struct ChatRoomView: View {
     @State private var pendingImageSelection: PendingImageSelection?
     @State private var scrollViewportHeight: CGFloat = 0
     @State private var isNearBottom = true
+    @State private var hasPositionedInitialMessages = false
+    @State private var isUserInteractingWithMessages = false
     private let loadsMessagesOnAppear: Bool
     private let currentUserIDOverride: String?
     private let bottomAnchorID = "chat-room-bottom-anchor"
     private let scrollCoordinateSpaceName = "chat-room-scroll-space"
     private let bottomAutoScrollThreshold: CGFloat = 96
+    private let bottomMessageClearance: CGFloat = 24
     @FocusState private var isInputFocused: Bool
 
     init(context: ChatContext) {
@@ -673,7 +701,7 @@ struct ChatRoomView: View {
 
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 10) {
+                        VStack(spacing: 10) {
                             ForEach(viewModel.messages) { message in
                                 ChatBubbleRow(
                                     message: message,
@@ -685,7 +713,7 @@ struct ChatRoomView: View {
                             }
 
                             Color.clear
-                                .frame(height: 1)
+                                .frame(height: bottomMessageClearance)
                                 .id(bottomAnchorID)
                                 .background(
                                     ChatScrollBottomReader(coordinateSpaceName: scrollCoordinateSpaceName)
@@ -695,6 +723,7 @@ struct ChatRoomView: View {
                         .padding(.top, 8)
                         .padding(.bottom, 16)
                     }
+                    .defaultScrollAnchor(.bottom)
                     .coordinateSpace(name: scrollCoordinateSpaceName)
                     .background(
                         GeometryReader { geometry in
@@ -706,10 +735,19 @@ struct ChatRoomView: View {
                         }
                     )
                     .onPreferenceChange(ChatScrollViewportHeightPreferenceKey.self) { height in
+                        guard shouldTrackScrollMetrics else { return }
+                        guard abs(scrollViewportHeight - height) > 0.5 else { return }
                         scrollViewportHeight = height
                     }
                     .onPreferenceChange(ChatScrollBottomPreferenceKey.self) { bottomMaxY in
+                        guard shouldTrackScrollMetrics else { return }
                         updateBottomDistance(bottomMaxY)
+                    }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        inputBar
+                    }
+                    .onScrollPhaseChange { _, newPhase in
+                        isUserInteractingWithMessages = newPhase.isScrolling
                     }
                     .scrollDismissesKeyboard(.interactively)
                     .onTapGesture {
@@ -721,26 +759,29 @@ struct ChatRoomView: View {
                         await restoreVisiblePosition(anchorID, with: proxy)
                     }
                     .onAppear {
-                        scrollToBottom(with: proxy, animated: false)
+                        scheduleInitialMessagePositionIfNeeded(with: proxy)
+                    }
+                    .onChange(of: viewModel.visibleWindowReplacementVersion) { _, _ in
+                        scheduleBottomPosition(with: proxy, revealMessages: true)
                     }
                     .onChange(of: viewModel.messages.last?.id) { oldID, newID in
                         guard shouldAutoScrollToBottom(oldLastID: oldID, newLastID: newID) else { return }
+                        guard hasPositionedInitialMessages else {
+                            scheduleInitialMessagePositionIfNeeded(with: proxy)
+                            return
+                        }
+                        guard !isUserInteractingWithMessages || latestMessageWasSentByCurrentUser else {
+                            return
+                        }
                         guard isNearBottom || latestMessageWasSentByCurrentUser else {
                             return
                         }
-                        scrollToBottom(with: proxy)
+                        scrollToBottom(with: proxy, animated: false)
                     }
-                    .onChange(of: isInputFocused) { _, isFocused in
-                        if isFocused {
-                            // Delay slightly to let the keyboard animation start and frame adjust
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                                scrollToBottom(with: proxy)
-                            }
-                        }
+                    .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+                        scrollWithKeyboardTransition(notification, with: proxy)
                     }
                 }
-
-                inputBar
             }
         }
         .navigationBarBackButtonHidden(true)
@@ -925,6 +966,73 @@ struct ChatRoomView: View {
         scrollToMessage(bottomAnchorID, with: proxy, anchor: .bottom, animated: animated)
     }
 
+    private func scheduleInitialMessagePositionIfNeeded(with proxy: ScrollViewProxy) {
+        guard !hasPositionedInitialMessages else { return }
+        guard !viewModel.messages.isEmpty else { return }
+
+        scheduleBottomPosition(with: proxy, revealMessages: true)
+    }
+
+    private func scheduleBottomPosition(with proxy: ScrollViewProxy, revealMessages: Bool = false) {
+        guard !viewModel.messages.isEmpty else {
+            if revealMessages {
+                hasPositionedInitialMessages = true
+            }
+            return
+        }
+
+        Task { @MainActor in
+            await Task.yield()
+            scrollToBottom(with: proxy, animated: false)
+            await Task.yield()
+            scrollToBottom(with: proxy, animated: false)
+            if revealMessages {
+                hasPositionedInitialMessages = true
+            }
+        }
+    }
+
+    private func scrollWithKeyboardTransition(_ notification: Notification, with proxy: ScrollViewProxy) {
+        guard isInputFocused else { return }
+        guard !viewModel.messages.isEmpty else { return }
+        guard keyboardOverlapsScreen(notification) else { return }
+
+        withAnimation(keyboardAnimation(from: notification)) {
+            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+        }
+        hasPositionedInitialMessages = true
+        isNearBottom = true
+    }
+
+    private func keyboardOverlapsScreen(_ notification: Notification) -> Bool {
+        guard
+            let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        else {
+            return false
+        }
+
+        return endFrame.minY < UIScreen.main.bounds.maxY
+    }
+
+    private func keyboardAnimation(from notification: Notification) -> Animation {
+        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
+        let curveValue = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int
+        let curve = curveValue.flatMap(UIView.AnimationCurve.init(rawValue:))
+
+        switch curve {
+        case .easeInOut:
+            return .easeInOut(duration: duration)
+        case .easeIn:
+            return .easeIn(duration: duration)
+        case .easeOut:
+            return .easeOut(duration: duration)
+        case .linear:
+            return .linear(duration: duration)
+        default:
+            return .easeOut(duration: duration)
+        }
+    }
+
     private func shouldAutoScrollToBottom(oldLastID: String?, newLastID: String?) -> Bool {
         guard let newLastID else { return false }
         return oldLastID == nil || oldLastID != newLastID
@@ -932,6 +1040,10 @@ struct ChatRoomView: View {
 
     private var latestMessageWasSentByCurrentUser: Bool {
         normalizeIdentifier(viewModel.messages.last?.senderId) == normalizeIdentifier(effectiveCurrentUserID)
+    }
+
+    private var shouldTrackScrollMetrics: Bool {
+        !isInputFocused || isUserInteractingWithMessages
     }
 
     private func normalizeIdentifier(_ value: String?) -> String {
@@ -951,12 +1063,14 @@ struct ChatRoomView: View {
         anchor: UnitPoint,
         animated: Bool
     ) {
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo(messageID, anchor: anchor)
-                }
-            } else {
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(messageID, anchor: anchor)
+            }
+        } else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
                 proxy.scrollTo(messageID, anchor: anchor)
             }
         }
