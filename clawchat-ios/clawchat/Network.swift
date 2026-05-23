@@ -82,7 +82,48 @@ class APIClient {
                             method: String = "GET",
                             body: Data? = nil,
                             requiresAuth: Bool = true) -> AnyPublisher<T, Error> {
+        request(endpoint, method: method, body: body, requiresAuth: requiresAuth, allowRefresh: true)
+    }
 
+    private func request<T: Codable>(_ endpoint: String,
+                                     method: String = "GET",
+                                     body: Data? = nil,
+                                     requiresAuth: Bool = true,
+                                     allowRefresh: Bool) -> AnyPublisher<T, Error> {
+        requestOnce(endpoint, method: method, body: body, requiresAuth: requiresAuth)
+            .catch { [weak self] error -> AnyPublisher<T, Error> in
+                guard let self,
+                      requiresAuth,
+                      allowRefresh,
+                      Self.isUnauthorized(error) else {
+                    return Fail(error: error).eraseToAnyPublisher()
+                }
+
+                return AuthManager.shared.refreshSessionPublisher()
+                    .flatMap { _ in
+                        self.request(
+                            endpoint,
+                            method: method,
+                            body: body,
+                            requiresAuth: requiresAuth,
+                            allowRefresh: false
+                        )
+                    }
+                    .handleEvents(receiveCompletion: { completion in
+                        if case .failure(let retryError) = completion,
+                           Self.isUnauthorized(retryError) {
+                            AuthManager.shared.logout()
+                        }
+                    })
+                    .eraseToAnyPublisher()
+            }
+            .eraseToAnyPublisher()
+    }
+
+    private func requestOnce<T: Codable>(_ endpoint: String,
+                                         method: String = "GET",
+                                         body: Data? = nil,
+                                         requiresAuth: Bool = true) -> AnyPublisher<T, Error> {
         guard let url = URL(string: endpoint, relativeTo: baseURL) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
@@ -105,7 +146,6 @@ class APIClient {
                 }
 
                 if httpResponse.statusCode == 401 {
-                    AuthManager.shared.logout()
                     throw APIError.unauthorized
                 }
 
@@ -143,7 +183,31 @@ class APIClient {
                                   method: String = "GET",
                                   body: Data? = nil,
                                   requiresAuth: Bool = true) async throws -> T {
+        do {
+            return try await requestValueOnce(endpoint, method: method, body: body, requiresAuth: requiresAuth)
+        } catch {
+            guard requiresAuth, Self.isUnauthorized(error) else {
+                throw error
+            }
 
+            try await AuthManager.shared.refreshSession()
+            do {
+                return try await requestValueOnce(endpoint, method: method, body: body, requiresAuth: requiresAuth)
+            } catch {
+                if Self.isUnauthorized(error) {
+                    await MainActor.run {
+                        AuthManager.shared.logout()
+                    }
+                }
+                throw error
+            }
+        }
+    }
+
+    private func requestValueOnce<T: Codable>(_ endpoint: String,
+                                             method: String = "GET",
+                                             body: Data? = nil,
+                                             requiresAuth: Bool = true) async throws -> T {
         guard let url = URL(string: endpoint, relativeTo: baseURL) else {
             throw APIError.invalidURL
         }
@@ -165,7 +229,6 @@ class APIClient {
             }
 
             if httpResponse.statusCode == 401 {
-                AuthManager.shared.logout()
                 throw APIError.unauthorized
             }
 
@@ -197,6 +260,13 @@ class APIClient {
         } catch {
             throw APIError.networkError(error)
         }
+    }
+
+    private static func isUnauthorized(_ error: Error) -> Bool {
+        if case APIError.unauthorized = error {
+            return true
+        }
+        return false
     }
 
     func prepareImageUpload(fileName: String,
@@ -270,6 +340,10 @@ class AuthManager: ObservableObject {
         userDefaults.string(forKey: accessTokenKey)
     }
 
+    private var refreshToken: String? {
+        userDefaults.string(forKey: refreshTokenKey)
+    }
+
     init() {
         self.isAuthenticated = accessToken != nil
     }
@@ -296,10 +370,73 @@ class AuthManager: ObservableObject {
     }
 
     func login(payload: AuthPayload) {
-        userDefaults.set(payload.tokens.accessToken, forKey: accessTokenKey)
-        userDefaults.set(payload.tokens.refreshToken, forKey: refreshTokenKey)
+        store(tokens: payload.tokens)
         self.currentUser = payload.user
-        self.isAuthenticated = true
+    }
+
+    func refreshSessionPublisher() -> AnyPublisher<Void, Error> {
+        guard let refreshToken else {
+            logout()
+            return Fail(error: APIClient.APIError.unauthorized).eraseToAnyPublisher()
+        }
+
+        let body: Data
+        do {
+            body = try JSONEncoder().encode(RefreshTokenRequest(refreshToken: refreshToken))
+        } catch {
+            return Fail(error: error).eraseToAnyPublisher()
+        }
+
+        let publisher: AnyPublisher<AuthTokens, Error> = APIClient.shared.request(
+            "/api/v1/auth/refresh",
+            method: "POST",
+            body: body,
+            requiresAuth: false
+        )
+
+        return publisher
+            .receive(on: DispatchQueue.main)
+            .handleEvents(
+                receiveOutput: { [weak self] tokens in
+                    self?.store(tokens: tokens)
+                },
+                receiveCompletion: { [weak self] completion in
+                    if case .failure = completion {
+                        self?.logout()
+                    }
+                }
+            )
+            .map { _ in () }
+            .eraseToAnyPublisher()
+    }
+
+    func refreshSession() async throws {
+        guard let refreshToken else {
+            await MainActor.run {
+                logout()
+            }
+            throw APIClient.APIError.unauthorized
+        }
+
+        let body = try JSONEncoder().encode(RefreshTokenRequest(refreshToken: refreshToken))
+
+        do {
+            let tokens: AuthTokens = try await APIClient.shared.requestValue(
+                "/api/v1/auth/refresh",
+                method: "POST",
+                body: body,
+                requiresAuth: false
+            )
+
+            await MainActor.run {
+                store(tokens: tokens)
+            }
+        } catch {
+            await MainActor.run {
+                logout()
+            }
+            throw error
+        }
     }
 
     func logout() {
@@ -308,5 +445,19 @@ class AuthManager: ObservableObject {
         self.currentUser = nil
         self.isAuthenticated = false
         RealtimeService.shared.stop()
+    }
+
+    private func store(tokens: AuthTokens) {
+        userDefaults.set(tokens.accessToken, forKey: accessTokenKey)
+        userDefaults.set(tokens.refreshToken, forKey: refreshTokenKey)
+        self.isAuthenticated = true
+    }
+}
+
+private struct RefreshTokenRequest: Codable {
+    let refreshToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case refreshToken = "refresh_token"
     }
 }
