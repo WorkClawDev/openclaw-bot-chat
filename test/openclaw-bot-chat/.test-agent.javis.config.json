@@ -1,0 +1,18 @@
+{
+  "botChatBaseUrl": "http://127.0.0.1:8080",
+  "mqttTcpUrl": "mqtt://127.0.0.1:1883",
+  "openClawAgentHandler": "/data/project/openclaw-bot-chat/plugins/openclaw-bot-chat/examples/echo-handler.cjs",
+  "defaultBot": "javis",
+  "httpTimeoutMs": 15000,
+  "reconnectBaseDelayMs": 1000,
+  "reconnectMaxDelayMs": 30000,
+  "stateDir": "/data/project/openclaw-bot-chat/plugins/openclaw-bot-chat/data/test-agent/javis",
+  "bots": {
+    "javis": {
+      "accessKey": "ocbk_sWTeWgY7JQ5xPd7_llPgUDmUgCyfneF5_64f72a63",
+      "enabled": true,
+      "id": "32fc5060-6624-4c5d-8929-ae75710cca9b"
+    }
+  },
+  "defaultChannelPolicy": "open"
+}
