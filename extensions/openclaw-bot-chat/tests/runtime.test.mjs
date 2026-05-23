@@ -587,6 +587,101 @@ test('gateway publishes plugin slash commands when native registry is unavailabl
   ]);
 });
 
+test('gateway handles slash autocomplete requests without dispatching a chat reply', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  const sent = [];
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `autocomplete-${sent.length}` };
+    },
+  });
+  setBotChatSlashCommandResolversForTest({
+    listNativeCommandSpecsForConfig() {
+      return [
+        {
+          name: 'models',
+          args: [
+            {
+              name: 'model',
+              choices: [
+                { label: 'GPT-4o', value: 'gpt-4o', description: 'fast multimodal' },
+                { label: 'Claude', value: 'claude' },
+              ],
+            },
+          ],
+        },
+      ];
+    },
+    resolveNativeCommandAutocomplete(params) {
+      assert.equal(params.provider, 'bot-chat');
+      assert.equal(params.commandName, 'models');
+      assert.equal(params.argName, 'model');
+      assert.equal(params.argIndex, 0);
+      assert.equal(params.partial, 'g');
+      return [
+        { label: 'GPT-4.1', value: 'gpt-4.1', description: 'larger model' },
+        { label: 'GPT-4o', value: 'gpt-4o', description: 'duplicate from dynamic' },
+      ];
+    },
+  });
+
+  const dispatchCalls = [];
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      channelRuntime: {
+        reply: {
+          async dispatchReplyWithBufferedBlockDispatcher(params) {
+            dispatchCalls.push(params);
+          },
+        },
+      },
+    });
+    sent.length = 0;
+    await capturedHooks.emitMessage({
+      channelId: 'control/bot-chat/slash-autocomplete/request',
+      userId: 'alice',
+      text: 'slash_autocomplete_request',
+      metadata: {
+        topic: 'control/bot-chat/slash-autocomplete/request',
+        senderType: 'user',
+        content_type: 'slash_autocomplete_request',
+        request_id: 'req-1',
+        response_topic: 'control/bot-chat/slash-autocomplete/response/user/alice',
+        command_name: 'models',
+        arg_name: 'model',
+        arg_index: 0,
+        partial: 'g',
+      },
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+    setBotChatSlashCommandResolversForTest(undefined);
+  }
+
+  assert.equal(dispatchCalls.length, 0);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].channelId, 'control/bot-chat/slash-autocomplete/response/user/alice');
+  assert.equal(sent[0].metadata.content_type, 'slash_autocomplete_response');
+  assert.equal(sent[0].metadata.request_id, 'req-1');
+  assert.deepEqual(sent[0].metadata.choices, [
+    { label: 'GPT-4.1', value: 'gpt-4.1', description: 'larger model' },
+    { label: 'GPT-4o', value: 'gpt-4o', description: 'duplicate from dynamic' },
+  ]);
+});
+
 test('account inspector reports botKey source without leaking describe snapshots', () => {
   const fromConfig = inspectBotChatAccount({
     cfg: { backendUrl: 'http://backend', botKey: 'secret-key', name: 'Configured BotChat' },

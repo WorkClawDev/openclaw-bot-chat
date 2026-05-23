@@ -1,5 +1,6 @@
 import {
   BOT_CHAT_CHANNEL_ID,
+  BOT_CHAT_SLASH_AUTOCOMPLETE_REQUEST_TOPIC,
   BOT_CHAT_SLASH_COMMAND_TOPIC,
   type ChannelPlugin,
   type ChannelOutboundAdapter,
@@ -39,6 +40,21 @@ type BotChatSlashCommand = {
   args?: Array<Record<string, unknown>>;
 };
 
+type BotChatSlashCommandChoice = {
+  label: string;
+  value: string;
+  description?: string;
+};
+
+type BotChatSlashAutocompleteRequest = {
+  requestId: string;
+  responseTopic: string;
+  commandName: string;
+  argName?: string;
+  argIndex: number;
+  partial: string;
+};
+
 type BotChatSlashCommandResolvers = {
   listSkillCommandsForAgents?: (params: { cfg: Record<string, unknown> }) => Array<Record<string, unknown>>;
   listNativeCommandSpecsForConfig?: (
@@ -49,6 +65,16 @@ type BotChatSlashCommandResolvers = {
     provider?: string,
     options?: { config?: Record<string, unknown> },
   ) => Array<Record<string, unknown>>;
+  resolveNativeCommandAutocomplete?: (
+    params: {
+      cfg: Record<string, unknown>;
+      provider: string;
+      commandName: string;
+      argName?: string;
+      argIndex: number;
+      partial: string;
+    },
+  ) => unknown[] | Promise<unknown[]>;
 };
 
 type BotChatNativeCommandRegistryModule = {
@@ -61,6 +87,11 @@ type BotChatSkillCommandRuntimeModule = {
 
 type BotChatPluginRuntimeModule = {
   getPluginCommandSpecs?: BotChatSlashCommandResolvers["getPluginCommandSpecs"];
+};
+
+type BotChatCommandAutocompleteModule = {
+  resolveNativeCommandAutocomplete?: BotChatSlashCommandResolvers["resolveNativeCommandAutocomplete"];
+  listNativeCommandAutocompleteChoices?: BotChatSlashCommandResolvers["resolveNativeCommandAutocomplete"];
 };
 
 let botChatSlashCommandResolversForTest: BotChatSlashCommandResolvers | undefined;
@@ -171,6 +202,14 @@ export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
       await getBotChatRuntime().start(ctx.account.config as Record<string, unknown>, logger, {
         emitMessage: async (message) => {
           if (message.metadata?.senderType === "bot") {
+            return;
+          }
+          if (await handleBotChatSlashAutocompleteRequest({
+            cfg: ctx.cfg,
+            account: ctx.account,
+            log: ctx.log,
+            message,
+          })) {
             return;
           }
           await dispatchBotChatReply({
@@ -591,6 +630,201 @@ async function publishBotChatSlashCommands(params: {
   }
 }
 
+async function handleBotChatSlashAutocompleteRequest(params: {
+  cfg: Record<string, unknown>;
+  account: ResolvedBotChatAccount;
+  message: {
+    channelId: string;
+    userId: string;
+    text: string;
+    metadata?: Record<string, unknown>;
+  };
+  log?: {
+    warn?(message: string, fields?: Record<string, unknown>): void;
+    debug?(message: string, fields?: Record<string, unknown>): void;
+  };
+}): Promise<boolean> {
+  const request = parseBotChatSlashAutocompleteRequest(params.message);
+  if (!request) {
+    return false;
+  }
+
+  const choices = await resolveBotChatSlashAutocompleteChoices({
+    cfg: params.cfg,
+    request,
+    log: params.log,
+  });
+  try {
+    await getBotChatRuntime().sendToChannel({
+      channelId: request.responseTopic,
+      userId: params.message.userId,
+      text: "slash_autocomplete_response",
+      metadata: {
+        topic: request.responseTopic,
+        botId: params.account.botId,
+        toType: "user",
+        content_type: "slash_autocomplete_response",
+        request_id: request.requestId,
+        command_name: request.commandName,
+        ...(request.argName ? { arg_name: request.argName } : {}),
+        arg_index: request.argIndex,
+        partial: request.partial,
+        choices,
+      },
+    });
+  } catch (error) {
+    params.log?.warn?.("botchat.slash_autocomplete.publish_error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return true;
+}
+
+function parseBotChatSlashAutocompleteRequest(message: {
+  channelId: string;
+  metadata?: Record<string, unknown>;
+}): BotChatSlashAutocompleteRequest | null {
+  const metadata = message.metadata ?? {};
+  const contentType = readString(metadata.content_type);
+  const topic = readString(metadata.topic) ?? message.channelId;
+  if (contentType !== "slash_autocomplete_request" && topic !== BOT_CHAT_SLASH_AUTOCOMPLETE_REQUEST_TOPIC) {
+    return null;
+  }
+
+  const requestId = readString(metadata.request_id ?? metadata.requestId);
+  const responseTopic = readString(metadata.response_topic ?? metadata.responseTopic);
+  const commandName = readString(metadata.command_name ?? metadata.commandName)?.replace(/^\/+/, "");
+  if (!requestId || !responseTopic || !commandName) {
+    return null;
+  }
+
+  return {
+    requestId,
+    responseTopic,
+    commandName,
+    argName: readString(metadata.arg_name ?? metadata.argName),
+    argIndex: readNumber(metadata.arg_index ?? metadata.argIndex) ?? 0,
+    partial: readString(metadata.partial) ?? "",
+  };
+}
+
+async function resolveBotChatSlashAutocompleteChoices(params: {
+  cfg: Record<string, unknown>;
+  request: BotChatSlashAutocompleteRequest;
+  log?: { debug?(message: string, fields?: Record<string, unknown>): void };
+}): Promise<BotChatSlashCommandChoice[]> {
+  const resolvers = botChatSlashCommandResolversForTest ?? (await loadBotChatSlashCommandResolvers(params.log));
+  const dynamicChoices = await callBotChatAutocompleteResolver({
+    cfg: params.cfg,
+    resolvers,
+    request: params.request,
+    log: params.log,
+  });
+  const fallbackChoices = await resolveBotChatSlashAutocompleteFromCatalog({
+    cfg: params.cfg,
+    request: params.request,
+    log: params.log,
+  });
+  return uniqueBotChatSlashCommandChoices(
+    [...dynamicChoices, ...fallbackChoices],
+    params.request.partial,
+  ).slice(0, 12);
+}
+
+async function callBotChatAutocompleteResolver(params: {
+  cfg: Record<string, unknown>;
+  resolvers: BotChatSlashCommandResolvers | null;
+  request: BotChatSlashAutocompleteRequest;
+  log?: { debug?(message: string, fields?: Record<string, unknown>): void };
+}): Promise<BotChatSlashCommandChoice[]> {
+  const resolver = params.resolvers?.resolveNativeCommandAutocomplete;
+  if (!resolver) {
+    return [];
+  }
+
+  try {
+    const result = await resolver({
+      cfg: params.cfg,
+      provider: "bot-chat",
+      commandName: params.request.commandName,
+      argName: params.request.argName,
+      argIndex: params.request.argIndex,
+      partial: params.request.partial,
+    });
+    return normalizeBotChatSlashCommandChoices(result);
+  } catch (error) {
+    params.log?.debug?.("botchat.slash_autocomplete.resolver_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+async function resolveBotChatSlashAutocompleteFromCatalog(params: {
+  cfg: Record<string, unknown>;
+  request: BotChatSlashAutocompleteRequest;
+  log?: { debug?(message: string, fields?: Record<string, unknown>): void };
+}): Promise<BotChatSlashCommandChoice[]> {
+  const commands = await resolveOpenClawNativeCommands(params.cfg, params.log);
+  const command = commands?.find(
+    (item) => item.name.toLowerCase() === params.request.commandName.toLowerCase(),
+  );
+  const arg = command?.args?.[params.request.argIndex];
+  if (!arg) {
+    return [];
+  }
+  return normalizeBotChatSlashCommandChoices((arg as Record<string, unknown>).choices);
+}
+
+function normalizeBotChatSlashCommandChoices(raw: unknown): BotChatSlashCommandChoice[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.flatMap((item): BotChatSlashCommandChoice[] => {
+    if (isRecord(item)) {
+      const value = readString(item.value ?? item.id ?? item.name ?? item.label);
+      const label = readString(item.label ?? item.name ?? item.title) ?? value;
+      if (!value) {
+        return [];
+      }
+      return [{
+        label: label ?? value,
+        value,
+        ...(readString(item.description ?? item.summary) ? { description: readString(item.description ?? item.summary) } : {}),
+      }];
+    }
+
+    const value = readString(item);
+    return value ? [{ label: value, value }] : [];
+  });
+}
+
+function uniqueBotChatSlashCommandChoices(
+  choices: BotChatSlashCommandChoice[],
+  partial: string,
+): BotChatSlashCommandChoice[] {
+  const normalizedPartial = partial.trim().toLowerCase();
+  const seen = new Set<string>();
+  const filtered: BotChatSlashCommandChoice[] = [];
+  for (const choice of choices) {
+    if (
+      normalizedPartial &&
+      !choice.label.toLowerCase().includes(normalizedPartial) &&
+      !choice.value.toLowerCase().includes(normalizedPartial)
+    ) {
+      continue;
+    }
+    const key = choice.value.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    filtered.push(choice);
+  }
+  return filtered;
+}
+
 async function resolveOpenClawNativeCommands(
   cfg: Record<string, unknown>,
   log?: { debug?(message: string, fields?: Record<string, unknown>): void },
@@ -684,6 +918,18 @@ async function loadBotChatSlashCommandResolvers(
     resolvers.listNativeCommandSpecsForConfig ??= commandAuth.listNativeCommandSpecsForConfig;
   } catch (error) {
     log?.debug?.("botchat.slash_commands.command_auth_unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    const autocomplete = await importOpenClawSdkModule<BotChatCommandAutocompleteModule>(
+      "openclaw/plugin-sdk/command-autocomplete-native",
+    );
+    resolvers.resolveNativeCommandAutocomplete =
+      autocomplete.resolveNativeCommandAutocomplete ?? autocomplete.listNativeCommandAutocompleteChoices;
+  } catch (error) {
+    log?.debug?.("botchat.slash_commands.command_autocomplete_unavailable", {
       error: error instanceof Error ? error.message : String(error),
     });
   }

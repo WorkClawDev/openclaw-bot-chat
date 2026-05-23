@@ -253,6 +253,15 @@ class ChatRoomViewModel: ObservableObject {
 
     private func sortMessages(_ items: [Message]) -> [Message] {
         items.sorted { lhs, rhs in
+            let leftReplyTarget = replyTargetID(for: lhs)
+            let rightReplyTarget = replyTargetID(for: rhs)
+            if leftReplyTarget == rhs.id {
+                return false
+            }
+            if rightReplyTarget == lhs.id {
+                return true
+            }
+
             let leftCreatedAt = lhs.createdAt?.timeIntervalSince1970 ?? 0
             let rightCreatedAt = rhs.createdAt?.timeIntervalSince1970 ?? 0
             if leftCreatedAt != rightCreatedAt {
@@ -274,6 +283,18 @@ class ChatRoomViewModel: ObservableObject {
 
             return lhs.id < rhs.id
         }
+    }
+
+    private func replyTargetID(for message: Message) -> String? {
+        let candidates = [
+            message.content.meta?["replyToId"]?.stringValue,
+            message.content.meta?["reply_to_id"]?.stringValue,
+            message.content.meta?["replyToMessageId"]?.stringValue,
+            message.content.meta?["reply_to_message_id"]?.stringValue,
+        ]
+        return candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
     }
 
     private static func matchesConversation(message: Message, conversationId: String) -> Bool {
@@ -301,17 +322,53 @@ class ChatRoomViewModel: ObservableObject {
         }
     }
 
-    func sendMessage() {
+    func sendMessage(slashCommands: [SlashCommand] = []) {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
-        let didSend = RealtimeService.shared.sendMessage(conversationId: conversationId, text: text, topic: conversationId)
+        let outgoingContent = RealtimeContentPayload(
+            type: "text",
+            body: text,
+            meta: slashCommandMeta(for: text, commands: slashCommands)
+        )
+        let didSend = RealtimeService.shared.sendMessage(
+            conversationId: conversationId,
+            content: outgoingContent,
+            topic: conversationId
+        )
         guard didSend else {
             errorMessage = "消息发送失败，请检查连接状态后重试。"
             return
         }
 
         inputText = ""
+    }
+
+    private func slashCommandMeta(for text: String, commands: [SlashCommand]) -> [String: AnyCodable]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else {
+            return nil
+        }
+
+        let commandName = trimmed
+            .dropFirst()
+            .split(whereSeparator: { $0.isWhitespace })
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let commandName, !commandName.isEmpty else {
+            return nil
+        }
+
+        guard let matched = commands.first(where: { $0.name.caseInsensitiveCompare(commandName) == .orderedSame }) else {
+            return nil
+        }
+
+        return [
+            "command_source": AnyCodable("native"),
+            "native_command": AnyCodable(true),
+            "native_command_name": AnyCodable(matched.name),
+        ]
     }
 
     @MainActor
@@ -533,6 +590,20 @@ private struct PendingImageSelection: Identifiable {
     let item: PhotosPickerItem
 }
 
+private struct SlashArgumentContext {
+    let command: SlashCommand
+    let arg: SlashCommandArg
+    let argIndex: Int
+    let partial: String
+    let valueRange: Range<String.Index>
+}
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
 private enum ChatImageError: LocalizedError {
     case unreadableImage
     case unsupportedImage
@@ -646,6 +717,7 @@ struct ChatRoomView: View {
     @StateObject private var viewModel: ChatRoomViewModel
     @StateObject private var groupVM = GroupMaintenanceViewModel()
     @ObservedObject private var authManager = AuthManager.shared
+    @ObservedObject private var realtimeService = RealtimeService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showGroupSheet = false
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -655,6 +727,8 @@ struct ChatRoomView: View {
     @State private var isNearBottom = true
     @State private var hasPositionedInitialMessages = false
     @State private var isUserInteractingWithMessages = false
+    @State private var selectedSlashCommandIndex = 0
+    @State private var slashAutocompleteTask: Task<Void, Never>?
     private let loadsMessagesOnAppear: Bool
     private let currentUserIDOverride: String?
     private let bottomAnchorID = "chat-room-bottom-anchor"
@@ -794,6 +868,7 @@ struct ChatRoomView: View {
         }
         .onDisappear {
             guard loadsMessagesOnAppear else { return }
+            slashAutocompleteTask?.cancel()
             RealtimeService.shared.setActiveConversation(nil)
         }
         .sheet(isPresented: $showGroupSheet) {
@@ -886,48 +961,59 @@ struct ChatRoomView: View {
     }
 
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                ChatComposerIconButton(systemName: "plus", isUploading: false)
-            }
-            .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
-
-            PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                ChatComposerIconButton(systemName: "photo", isUploading: viewModel.isUploadingImage)
-            }
-            .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+        VStack(spacing: 6) {
+            slashCommandSuggestions
 
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(composerPlaceholder, text: $viewModel.inputText, axis: .vertical)
-                    .focused($isInputFocused)
-                    .lineLimit(1...5)
-                    .textInputAutocapitalization(.sentences)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 10)
-                    .foregroundStyle(Color.rcmsTextPrimary)
-                    .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
-            }
-            .background(Color.white.opacity(0.92))
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
-            )
-
-            Button(action: viewModel.sendMessage) {
-                ZStack {
-                    Circle()
-                        .fill(Color.rcmsAccent)
-                        .frame(width: 44, height: 44)
-
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .offset(x: -1, y: 1)
+                PhotosPicker(selection: photoPickerSelection, matching: .images) {
+                    ChatComposerIconButton(systemName: "plus", isUploading: false)
                 }
+                .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+
+                PhotosPicker(selection: photoPickerSelection, matching: .images) {
+                    ChatComposerIconButton(systemName: "photo", isUploading: viewModel.isUploadingImage)
+                }
+                .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField(composerPlaceholder, text: $viewModel.inputText, axis: .vertical)
+                        .focused($isInputFocused)
+                        .lineLimit(1...5)
+                        .textInputAutocapitalization(activeSlashQuery == nil ? .sentences : .never)
+                        .autocorrectionDisabled(activeSlashQuery != nil)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(Color.rcmsTextPrimary)
+                        .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+                        .onChange(of: slashSuggestionIdentity) { _, _ in
+                            selectedSlashCommandIndex = 0
+                            scheduleSlashAutocompleteIfNeeded()
+                        }
+                }
+                .background(Color.white.opacity(0.92))
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                )
+
+                Button(action: {
+                    viewModel.sendMessage(slashCommands: realtimeService.slashCommands)
+                }) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.rcmsAccent)
+                            .frame(width: 44, height: 44)
+
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .offset(x: -1, y: 1)
+                    }
+                }
+                .disabled(isSendDisabled)
+                .opacity(isSendDisabled ? 0.45 : 1)
             }
-            .disabled(isSendDisabled)
-            .opacity(isSendDisabled ? 0.45 : 1)
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -936,8 +1022,281 @@ struct ChatRoomView: View {
         .background(.ultraThinMaterial)
     }
 
+    @ViewBuilder
+    private var slashCommandSuggestions: some View {
+        if let argContext = activeSlashArgumentContext, shouldShowSlashChoices {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 22, height: 22)
+
+                            Text("Loading options")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.rcmsTextSecondary)
+
+                            Spacer(minLength: 8)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 10)
+                    }
+
+                    ForEach(Array(filteredSlashChoices.enumerated()), id: \.element.id) { index, choice in
+                        Button {
+                            insertSlashChoice(choice, context: argContext)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "checkmark.circle")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.rcmsAccent)
+                                    .frame(width: 22, height: 22)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(choice.label)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(Color.rcmsTextPrimary)
+                                        .lineLimit(1)
+                                    Text(choiceDetailText(choice, arg: argContext.arg))
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Color.rcmsTextSecondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 8)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(index == selectedSlashCommandIndex ? Color.rcmsAccent.opacity(0.08) : Color.clear)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < filteredSlashChoices.count - 1 {
+                            Divider()
+                                .padding(.leading, 42)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: slashSuggestionPanelHeight(
+                itemCount: filteredSlashChoices.count,
+                isLoading: filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending
+            ))
+            .background(Color.white.opacity(0.96))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
+        } else if shouldShowSlashCommands {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(filteredSlashCommands.enumerated()), id: \.element.id) { index, command in
+                        Button {
+                            insertSlashCommand(command)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "command")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.rcmsAccent)
+                                    .frame(width: 22, height: 22)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("/\(command.name)")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(Color.rcmsTextPrimary)
+                                        .lineLimit(1)
+                                    if let description = command.description, !description.isEmpty {
+                                        Text(description)
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(Color.rcmsTextSecondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+
+                                Spacer(minLength: 8)
+
+                                if command.acceptsArgs {
+                                    Image(systemName: "ellipsis.curlybraces")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Color.rcmsTextSecondary)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(index == selectedSlashCommandIndex ? Color.rcmsAccent.opacity(0.08) : Color.clear)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < filteredSlashCommands.count - 1 {
+                            Divider()
+                                .padding(.leading, 42)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: slashSuggestionPanelHeight(itemCount: filteredSlashCommands.count))
+            .background(Color.white.opacity(0.96))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
+        }
+    }
+
+    private func slashSuggestionPanelHeight(itemCount: Int, isLoading: Bool = false) -> CGFloat {
+        let visibleRows = max(itemCount, isLoading ? 1 : 0)
+        return min(CGFloat(max(visibleRows, 1)) * 50, 300)
+    }
+
     private var composerPlaceholder: String {
         context.isGroup ? "Message group" : "Message \(context.title)"
+    }
+
+    private var activeSlashQuery: String? {
+        guard let range = activeSlashTokenRange(in: viewModel.inputText) else {
+            return nil
+        }
+        return String(viewModel.inputText[range].dropFirst())
+    }
+
+    private var filteredSlashCommands: [SlashCommand] {
+        guard let query = activeSlashQuery else {
+            return []
+        }
+
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return realtimeService.slashCommands
+            .filter { command in
+                normalizedQuery.isEmpty || command.name.lowercased().contains(normalizedQuery)
+            }
+    }
+
+    private var activeSlashArgumentContext: SlashArgumentContext? {
+        guard let lineRange = activeSlashLineRange(in: viewModel.inputText) else {
+            return nil
+        }
+
+        let text = viewModel.inputText
+        let afterSlash = text.index(after: lineRange.lowerBound)
+        let commandNameEnd = text[afterSlash..<lineRange.upperBound]
+            .firstIndex(where: { $0.isWhitespace })
+            ?? lineRange.upperBound
+        guard commandNameEnd < lineRange.upperBound else {
+            return nil
+        }
+
+        let commandName = String(text[afterSlash..<commandNameEnd])
+        guard let command = realtimeService.slashCommands.first(where: {
+            $0.name.caseInsensitiveCompare(commandName) == .orderedSame
+        }) else {
+            return nil
+        }
+
+        let argsStart = text.index(after: commandNameEnd)
+        let argsText = text[argsStart..<lineRange.upperBound]
+        let endsWithWhitespace = text.index(before: lineRange.upperBound) >= argsStart
+            ? text[text.index(before: lineRange.upperBound)].isWhitespace
+            : true
+
+        let valueRange: Range<String.Index>
+        let partial: String
+        let argIndex: Int
+        if argsText.isEmpty || endsWithWhitespace {
+            valueRange = lineRange.upperBound..<lineRange.upperBound
+            partial = ""
+            argIndex = argsText.split(whereSeparator: { $0.isWhitespace }).count
+        } else {
+            let valueStart = text[argsStart..<lineRange.upperBound]
+                .lastIndex(where: { $0.isWhitespace })
+                .map { text.index(after: $0) }
+                ?? argsStart
+            valueRange = valueStart..<lineRange.upperBound
+            partial = String(text[valueRange])
+            argIndex = text[argsStart..<valueStart]
+                .split(whereSeparator: { $0.isWhitespace })
+                .count
+        }
+
+        guard let arg = command.args?[safe: argIndex] else {
+            return nil
+        }
+
+        return SlashArgumentContext(
+            command: command,
+            arg: arg,
+            argIndex: argIndex,
+            partial: partial,
+            valueRange: valueRange
+        )
+    }
+
+    private var filteredSlashChoices: [SlashCommandChoice] {
+        guard let context = activeSlashArgumentContext else {
+            return []
+        }
+
+        let normalizedQuery = context.partial.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let staticChoices = context.arg.choices ?? []
+        let dynamicChoices = activeSlashAutocompleteKey
+            .flatMap { realtimeService.slashAutocompleteChoicesByKey[$0] }
+            ?? []
+        var seen = Set<String>()
+        return (dynamicChoices + staticChoices)
+            .filter { choice in
+                guard !seen.contains(choice.value.lowercased()) else { return false }
+                seen.insert(choice.value.lowercased())
+                return normalizedQuery.isEmpty
+                    || choice.label.lowercased().contains(normalizedQuery)
+                    || choice.value.lowercased().contains(normalizedQuery)
+            }
+    }
+
+    private var activeSlashAutocompleteKey: String? {
+        guard let context = activeSlashArgumentContext else {
+            return nil
+        }
+        return realtimeService.slashAutocompleteKey(
+            commandName: context.command.name,
+            argIndex: context.argIndex,
+            partial: context.partial
+        )
+    }
+
+    private var shouldShowSlashCommands: Bool {
+        isInputFocused
+            && activeSlashQuery != nil
+            && !filteredSlashCommands.isEmpty
+            && viewModel.connectionState == .connected
+            && !viewModel.isUploadingImage
+    }
+
+    private var shouldShowSlashChoices: Bool {
+        isInputFocused
+            && activeSlashArgumentContext != nil
+            && (!filteredSlashChoices.isEmpty || isActiveSlashAutocompletePending)
+            && viewModel.connectionState == .connected
+            && !viewModel.isUploadingImage
+    }
+
+    private var isActiveSlashAutocompletePending: Bool {
+        activeSlashAutocompleteKey
+            .map { realtimeService.slashAutocompletePendingKeys.contains($0) }
+            ?? false
+    }
+
+    private var slashSuggestionIdentity: String {
+        if let query = activeSlashQuery {
+            return "command:\(query)"
+        }
+        if let context = activeSlashArgumentContext {
+            return "choice:\(context.command.name):\(context.argIndex):\(context.partial)"
+        }
+        return "none"
     }
 
     private var isSendDisabled: Bool {
@@ -960,6 +1319,92 @@ struct ChatRoomView: View {
                 selectedPhotoItem = nil
             }
         )
+    }
+
+    private func scheduleSlashAutocompleteIfNeeded() {
+        slashAutocompleteTask?.cancel()
+        guard let context = activeSlashArgumentContext,
+              viewModel.connectionState == .connected,
+              !viewModel.isUploadingImage
+        else {
+            return
+        }
+
+        let key = realtimeService.slashAutocompleteKey(
+            commandName: context.command.name,
+            argIndex: context.argIndex,
+            partial: context.partial
+        )
+        guard realtimeService.slashAutocompleteChoicesByKey[key] == nil,
+              !realtimeService.slashAutocompletePendingKeys.contains(key)
+        else {
+            return
+        }
+
+        slashAutocompleteTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            _ = realtimeService.requestSlashAutocomplete(
+                commandName: context.command.name,
+                argName: context.arg.name,
+                argIndex: context.argIndex,
+                partial: context.partial
+            )
+        }
+    }
+
+    private func insertSlashCommand(_ command: SlashCommand) {
+        guard let range = activeSlashTokenRange(in: viewModel.inputText) else {
+            return
+        }
+
+        viewModel.inputText.replaceSubrange(range, with: "/\(command.name) ")
+        selectedSlashCommandIndex = 0
+        isInputFocused = true
+    }
+
+    private func insertSlashChoice(_ choice: SlashCommandChoice, context: SlashArgumentContext) {
+        viewModel.inputText.replaceSubrange(context.valueRange, with: "\(choice.value) ")
+        selectedSlashCommandIndex = 0
+        isInputFocused = true
+    }
+
+    private func choiceDetailText(_ choice: SlashCommandChoice, arg: SlashCommandArg) -> String {
+        if let description = choice.description, !description.isEmpty {
+            return description
+        }
+        if choice.value != choice.label {
+            return choice.value
+        }
+        return arg.required ? "\(arg.name) required" : arg.name
+    }
+
+    private func activeSlashTokenRange(in text: String) -> Range<String.Index>? {
+        guard let lineRange = activeSlashLineRange(in: text) else {
+            return nil
+        }
+
+        let token = text[lineRange]
+        guard token.first == "/" else {
+            return nil
+        }
+        guard !token.dropFirst().contains(where: { $0 == " " || $0 == "\t" }) else {
+            return nil
+        }
+        return lineRange
+    }
+
+    private func activeSlashLineRange(in text: String) -> Range<String.Index>? {
+        guard !text.isEmpty else {
+            return nil
+        }
+
+        let lineStart = text.lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+        let lineRange = lineStart..<text.endIndex
+        guard text[lineRange].first == "/" else {
+            return nil
+        }
+        return lineRange
     }
 
     private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool = true) {

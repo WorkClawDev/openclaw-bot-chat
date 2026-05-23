@@ -371,6 +371,9 @@ struct RealtimeBootstrapResponse: Codable {
     let principalId: String
     let subscriptions: [RealtimeSubscription]
     let publishTopics: [String]
+    let slashCommandTopic: String?
+    let slashAutocompleteRequestTopic: String?
+    let slashAutocompleteResponseTopic: String?
     let history: RealtimeHistoryInfo
 
     enum CodingKeys: String, CodingKey {
@@ -379,6 +382,127 @@ struct RealtimeBootstrapResponse: Codable {
         case principalType = "principal_type"
         case principalId = "principal_id"
         case publishTopics = "publish_topics"
+        case slashCommandTopic = "slash_command_topic"
+        case slashAutocompleteRequestTopic = "slash_autocomplete_request_topic"
+        case slashAutocompleteResponseTopic = "slash_autocomplete_response_topic"
+    }
+}
+
+struct SlashCommandChoice: Identifiable {
+    var id: String { value }
+    let label: String
+    let value: String
+    let description: String?
+}
+
+struct SlashCommandArg: Identifiable {
+    var id: String { name }
+    let name: String
+    let description: String?
+    let type: String?
+    let required: Bool
+    let choices: [SlashCommandChoice]?
+}
+
+struct SlashCommand: Identifiable {
+    var id: String { name.lowercased() }
+    let name: String
+    let description: String?
+    let acceptsArgs: Bool
+    let args: [SlashCommandArg]?
+
+    nonisolated static func catalog(from meta: [String: AnyCodable]?) -> [SlashCommand] {
+        guard let rawItems = meta?["slash_commands"]?.arrayValue else {
+            return []
+        }
+
+        return rawItems.compactMap { item in
+            guard let dictionary = item.dictionaryValue else { return nil }
+            return SlashCommand(meta: dictionary)
+        }
+    }
+
+    nonisolated private init?(meta: [String: AnyCodable]) {
+        let cleanedName = meta["name"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
+        let rawName = String(cleanedName.drop(while: { $0 == "/" }))
+        guard !rawName.isEmpty else {
+            return nil
+        }
+
+        let parsedArgs = SlashCommandArg.catalog(from: meta["args"]?.arrayValue)
+        self.name = rawName
+        self.description = meta["description"]?.stringValue
+        self.acceptsArgs = meta["acceptsArgs"]?.boolValue
+            ?? meta["accepts_args"]?.boolValue
+            ?? !(parsedArgs?.isEmpty ?? true)
+        self.args = parsedArgs
+    }
+}
+
+extension SlashCommandArg {
+    nonisolated static func catalog(from rawItems: [AnyCodable]?) -> [SlashCommandArg]? {
+        guard let rawItems else { return nil }
+        let args = rawItems.compactMap { item -> SlashCommandArg? in
+            guard let dictionary = item.dictionaryValue else { return nil }
+            let rawName = dictionary["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let rawName, !rawName.isEmpty else { return nil }
+            return SlashCommandArg(
+                name: rawName,
+                description: dictionary["description"]?.stringValue,
+                type: dictionary["type"]?.stringValue,
+                required: dictionary["required"]?.boolValue == true,
+                choices: SlashCommandChoice.catalog(from: dictionary["choices"]?.arrayValue)
+            )
+        }
+        return args.isEmpty ? nil : args
+    }
+}
+
+extension SlashCommandChoice {
+    nonisolated static func catalog(from rawItems: [AnyCodable]?) -> [SlashCommandChoice]? {
+        guard let rawItems else { return nil }
+        let choices = rawItems.compactMap(SlashCommandChoice.init(value:))
+        return choices.isEmpty ? nil : choices
+    }
+
+    nonisolated private init?(value: AnyCodable) {
+        if let dictionary = value.dictionaryValue {
+            let rawValue = Self.stringValue(
+                dictionary["value"] ?? dictionary["id"] ?? dictionary["name"] ?? dictionary["label"]
+            )
+            let rawLabel = Self.stringValue(dictionary["name"] ?? dictionary["label"] ?? dictionary["title"])
+            guard let rawValue, !rawValue.isEmpty else { return nil }
+            self.value = rawValue
+            self.label = rawLabel?.isEmpty == false ? rawLabel! : rawValue
+            self.description = dictionary["description"]?.stringValue ?? dictionary["summary"]?.stringValue
+            return
+        }
+
+        guard let rawValue = Self.stringValue(value), !rawValue.isEmpty else {
+            return nil
+        }
+        self.value = rawValue
+        self.label = rawValue
+        self.description = nil
+    }
+
+    nonisolated private static func stringValue(_ value: AnyCodable?) -> String? {
+        guard let value else { return nil }
+        if let string = value.stringValue {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let bool = value.boolValue {
+            return String(bool)
+        }
+        if let int = value.value as? Int {
+            return String(int)
+        }
+        if let double = value.value as? Double {
+            return String(double)
+        }
+        return nil
     }
 }
 
@@ -502,8 +626,25 @@ extension AnyCodable {
         value as? Bool
     }
 
+    var intValue: Int? {
+        if let int = value as? Int {
+            return int
+        }
+        if let double = value as? Double {
+            return Int(double)
+        }
+        if let string = value as? String {
+            return Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
     var dictionaryValue: [String: AnyCodable]? {
         value as? [String: AnyCodable]
+    }
+
+    var arrayValue: [AnyCodable]? {
+        value as? [AnyCodable]
     }
 
     var jsonObject: Any {
@@ -511,7 +652,7 @@ extension AnyCodable {
             return dictionaryValue.mapValues(\.jsonObject)
         }
 
-        if let array = value as? [AnyCodable] {
+        if let array = arrayValue {
             return array.map(\.jsonObject)
         }
 
@@ -665,7 +806,7 @@ extension Message {
         self.from = ChatPeer(type: payload.from.type, id: payload.from.id, name: payload.from.name, avatar: payload.from.avatar)
         self.to = ChatPeer(type: payload.to.type, id: payload.to.id, name: payload.to.name, avatar: payload.to.avatar)
         self.content = MessageContent(type: payload.content.type, body: payload.content.body, url: payload.content.url, name: payload.content.name, size: payload.content.size, meta: payload.content.meta)
-        self.seq = Int(payload.seq ?? 0)
+        self.seq = payload.seq.map(Int.init)
         self.timestamp = payload.timestamp
         self.createdAt = Date(timeIntervalSince1970: Double(payload.timestamp))
     }

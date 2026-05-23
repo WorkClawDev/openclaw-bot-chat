@@ -1,6 +1,8 @@
 export const BOT_CHAT_CHANNEL_ID = "bot-chat" as const;
 export const BOT_CHAT_DEFAULT_ACCOUNT_ID = "default" as const;
 export const BOT_CHAT_SLASH_COMMAND_TOPIC = "control/bot-chat/slash-commands" as const;
+export const BOT_CHAT_SLASH_AUTOCOMPLETE_REQUEST_TOPIC =
+  "control/bot-chat/slash-autocomplete/request" as const;
 export const BOT_CHAT_PAIRING_APPROVED_MESSAGE =
   "BotChat pairing approved. You can send messages to OpenClaw now." as const;
 

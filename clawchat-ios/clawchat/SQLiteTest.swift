@@ -159,10 +159,9 @@ final class LocalMessageStore {
     }
 
     func upsert(conversations: [Conversation]) {
-        guard !conversations.isEmpty else { return }
-
         queue.async {
             self.upsertConversationsLocked(conversations)
+            self.pruneCachedConversationsLocked(keeping: conversations.map(\.id))
             self.notifyConversationChanges()
         }
     }
@@ -351,6 +350,31 @@ final class LocalMessageStore {
         for conversation in conversations {
             let merged = mergeConversation(existing: cachedConversationLocked(id: conversation.id), remote: conversation)
             writeConversationLocked(merged, lastMessageSeq: nil)
+        }
+    }
+
+    private func pruneCachedConversationsLocked(keeping conversationIDs: [String]) {
+        guard let database else { return }
+
+        let uniqueIDs = Array(Set(conversationIDs))
+        if uniqueIDs.isEmpty {
+            sqlite3_exec(database, "DELETE FROM cached_conversations", nil, nil, nil)
+            return
+        }
+
+        let placeholders = Array(repeating: "?", count: uniqueIDs.count).joined(separator: ",")
+        guard let statement = prepareStatement(
+            sql: "DELETE FROM cached_conversations WHERE id NOT IN (\(placeholders))"
+        ) else {
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, conversationID) in uniqueIDs.enumerated() {
+            bind(text: conversationID, to: Int32(index + 1), in: statement)
+        }
+        if sqlite3_step(statement) != SQLITE_DONE {
+            print("Failed to prune cached conversations: \(String(cString: sqlite3_errmsg(database)))")
         }
     }
 

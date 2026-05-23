@@ -12,10 +12,14 @@ class RealtimeService: NSObject, ObservableObject {
 
     @Published var connectionState: RealtimeConnectionState = .idle
     @Published var lastMessagesByConversation: [String: Message] = [:]
+    @Published var slashCommands: [SlashCommand] = []
+    @Published var slashAutocompleteChoicesByKey: [String: [SlashCommandChoice]] = [:]
+    @Published var slashAutocompletePendingKeys: Set<String> = []
 
     let messagePublisher = PassthroughSubject<Message, Never>()
 
     private var bootstrap: RealtimeBootstrapResponse?
+    private var slashAutocompleteRequestIdsByKey: [String: String] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var mqttClient: CocoaMQTT?
     private var activeConversationID: String?
@@ -75,6 +79,10 @@ class RealtimeService: NSObject, ObservableObject {
         activeConversationID = nil
         requestedTopics.removeAll()
         subscribedTopics.removeAll()
+        slashCommands.removeAll()
+        slashAutocompleteChoicesByKey.removeAll()
+        slashAutocompletePendingKeys.removeAll()
+        slashAutocompleteRequestIdsByKey.removeAll()
         connectionState = .idle
     }
 
@@ -265,7 +273,89 @@ class RealtimeService: NSObject, ObservableObject {
         return true
     }
 
+    @discardableResult
+    func requestSlashAutocomplete(
+        commandName: String,
+        argName: String?,
+        argIndex: Int,
+        partial: String
+    ) -> String? {
+        guard let mqttClient, let user = AuthManager.shared.currentUser else {
+            log("slash autocomplete skipped: has_client=\(mqttClient != nil) has_user=\(AuthManager.shared.currentUser != nil)")
+            return nil
+        }
+        guard let requestTopic = normalizedOptionalTopic(bootstrap?.slashAutocompleteRequestTopic),
+              let responseTopic = normalizedOptionalTopic(bootstrap?.slashAutocompleteResponseTopic)
+        else {
+            log("slash autocomplete skipped: topics unavailable")
+            return nil
+        }
+
+        let normalizedCommandName = commandName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedCommandName.isEmpty else {
+            return nil
+        }
+
+        let normalizedPartial = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = slashAutocompleteKey(
+            commandName: normalizedCommandName,
+            argIndex: argIndex,
+            partial: normalizedPartial
+        )
+        let requestId = UUID().uuidString.lowercased()
+        slashAutocompleteRequestIdsByKey[key] = requestId
+        DispatchQueue.main.async {
+            self.slashAutocompletePendingKeys.insert(key)
+        }
+
+        var meta: [String: AnyCodable] = [
+            "content_type": AnyCodable("slash_autocomplete_request"),
+            "request_id": AnyCodable(requestId),
+            "response_topic": AnyCodable(responseTopic),
+            "command_name": AnyCodable(normalizedCommandName),
+            "arg_index": AnyCodable(argIndex),
+            "partial": AnyCodable(normalizedPartial),
+            "user_id": AnyCodable(user.id.uuidString.lowercased())
+        ]
+        if let argName, !argName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            meta["arg_name"] = AnyCodable(argName.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        let payload = RealtimeMessagePayload(
+            id: requestId,
+            topic: requestTopic,
+            conversationId: requestTopic,
+            timestamp: Int64(Date().timeIntervalSince1970),
+            from: MessagePeerPayload(type: "user", id: user.id.uuidString.lowercased(), name: user.username),
+            to: MessagePeerPayload(type: "system", id: "bot-chat", name: nil),
+            content: RealtimeContentPayload(
+                type: "control",
+                body: "slash_autocomplete_request",
+                meta: meta
+            ),
+            seq: nil
+        )
+
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            log("slash autocomplete skipped: failed to encode request id=\(requestId)")
+            return nil
+        }
+        mqttClient.publish(requestTopic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1)
+        return key
+    }
+
+    func slashAutocompleteKey(commandName: String, argIndex: Int, partial: String) -> String {
+        "\(commandName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()):\(argIndex):\(partial.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+    }
+
     private func handleRealtimePayload(_ payload: RealtimeMessagePayload) {
+        if handleSlashAutocompleteResponseIfNeeded(payload) {
+            return
+        }
+        if handleSlashCommandCatalogIfNeeded(payload) {
+            return
+        }
+
         log(
             "message decoded id=\(payload.id) topic=\(payload.topic) conversation_id=\(payload.conversationId) from=\(payload.from.type)/\(payload.from.id) to=\(payload.to.type)/\(payload.to.id) seq=\(payload.seq.map(String.init) ?? "<nil>")",
             highFrequency: true
@@ -281,6 +371,56 @@ class RealtimeService: NSObject, ObservableObject {
             self.messagePublisher.send(message)
             self.lastMessagesByConversation[message.conversationId] = message
         }
+    }
+
+    private func handleSlashCommandCatalogIfNeeded(_ payload: RealtimeMessagePayload) -> Bool {
+        let contentType = payload.content.meta?["content_type"]?.stringValue
+        let slashTopic = normalizedTopic(bootstrap?.slashCommandTopic)
+        let payloadTopic = normalizedTopic(payload.topic)
+        let isSlashCommandCatalog = contentType == "slash_commands" || (!slashTopic.isEmpty && payloadTopic == slashTopic)
+        guard isSlashCommandCatalog else {
+            return false
+        }
+
+        let commands = SlashCommand.catalog(from: payload.content.meta)
+        log("slash commands catalog received topic=\(payload.topic) count=\(commands.count)")
+        DispatchQueue.main.async {
+            self.slashCommands = commands
+        }
+        return true
+    }
+
+    private func handleSlashAutocompleteResponseIfNeeded(_ payload: RealtimeMessagePayload) -> Bool {
+        let contentType = payload.content.meta?["content_type"]?.stringValue
+        let responseTopic = normalizedTopic(bootstrap?.slashAutocompleteResponseTopic)
+        let payloadTopic = normalizedTopic(payload.topic)
+        let isAutocompleteResponse = contentType == "slash_autocomplete_response"
+            || (!responseTopic.isEmpty && payloadTopic == responseTopic)
+        guard isAutocompleteResponse else {
+            return false
+        }
+
+        guard let meta = payload.content.meta else {
+            return true
+        }
+
+        let requestId = meta["request_id"]?.stringValue ?? meta["requestId"]?.stringValue
+        let commandName = meta["command_name"]?.stringValue ?? meta["commandName"]?.stringValue ?? ""
+        let argIndex = meta["arg_index"]?.intValue ?? meta["argIndex"]?.intValue ?? 0
+        let partial = meta["partial"]?.stringValue ?? ""
+        let key = slashAutocompleteKey(commandName: commandName, argIndex: argIndex, partial: partial)
+
+        if let requestId, let expectedRequestId = slashAutocompleteRequestIdsByKey[key], expectedRequestId != requestId {
+            return true
+        }
+
+        let choices = SlashCommandChoice.catalog(from: meta["choices"]?.arrayValue) ?? []
+        log("slash autocomplete response received topic=\(payload.topic) key=\(key) choices=\(choices.count)")
+        DispatchQueue.main.async {
+            self.slashAutocompleteChoicesByKey[key] = choices
+            self.slashAutocompletePendingKeys.remove(key)
+        }
+        return true
     }
 
     private func log(_ message: String, highFrequency: Bool = false) {
@@ -310,6 +450,11 @@ class RealtimeService: NSObject, ObservableObject {
 
     private func normalizedTopic(_ value: String?) -> String {
         value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func normalizedOptionalTopic(_ value: String?) -> String? {
+        let normalized = normalizedTopic(value)
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func normalizedMessageBody(for content: RealtimeContentPayload) -> String {

@@ -21,15 +21,16 @@ type BotRuntimeHandler struct {
 }
 
 type botRuntimeBootstrapResponse struct {
-	Bot           botRuntimeBotInfo         `json:"bot"`
-	Broker        config.BrokerClientConfig `json:"broker"`
-	ClientID      string                    `json:"client_id"`
-	Groups        []botRuntimeGroupInfo     `json:"groups"`
-	Conversations []botRuntimeDialogInfo    `json:"conversations"`
-	Subscriptions []realtimeSubscription    `json:"subscriptions"`
-	PublishTopics []string                  `json:"publish_topics"`
-	SlashCommandTopic string                `json:"slash_command_topic,omitempty"`
-	History       realtimeHistoryInfo       `json:"history"`
+	Bot                           botRuntimeBotInfo         `json:"bot"`
+	Broker                        config.BrokerClientConfig `json:"broker"`
+	ClientID                      string                    `json:"client_id"`
+	Groups                        []botRuntimeGroupInfo     `json:"groups"`
+	Conversations                 []botRuntimeDialogInfo    `json:"conversations"`
+	Subscriptions                 []realtimeSubscription    `json:"subscriptions"`
+	PublishTopics                 []string                  `json:"publish_topics"`
+	SlashCommandTopic             string                    `json:"slash_command_topic,omitempty"`
+	SlashAutocompleteRequestTopic string                    `json:"slash_autocomplete_request_topic,omitempty"`
+	History                       realtimeHistoryInfo       `json:"history"`
 }
 
 type botRuntimeBotInfo struct {
@@ -141,9 +142,13 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 		ClientID:      fmt.Sprintf("bot-%s-%s", bot.ID.String(), uuid.NewString()[:8]),
 		Groups:        groupInfos,
 		Conversations: dialogs,
-		Subscriptions: toRealtimeSubscriptions(subscriptionTopics, h.broker.QOS),
-		PublishTopics: service.UniqueTopicsForExport(append(publishTopics, botChatSlashCommandTopic)),
-		SlashCommandTopic: botChatSlashCommandTopic,
+		Subscriptions: toRealtimeSubscriptions(
+			service.UniqueTopicsForExport(append(subscriptionTopics, botChatSlashAutocompleteRequestTopic)),
+			h.broker.QOS,
+		),
+		PublishTopics:                 service.UniqueTopicsForExport(append(publishTopics, botChatSlashCommandTopic)),
+		SlashCommandTopic:             botChatSlashCommandTopic,
+		SlashAutocompleteRequestTopic: botChatSlashAutocompleteRequestTopic,
 		History: realtimeHistoryInfo{
 			MaxCatchupBatch: 200,
 		},

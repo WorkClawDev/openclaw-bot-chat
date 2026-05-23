@@ -16,17 +16,23 @@ type RealtimeHandler struct {
 	broker     config.BrokerClientConfig
 }
 
-const botChatSlashCommandTopic = "control/bot-chat/slash-commands"
+const (
+	botChatSlashCommandTopic                 = "control/bot-chat/slash-commands"
+	botChatSlashAutocompleteRequestTopic     = "control/bot-chat/slash-autocomplete/request"
+	botChatSlashAutocompleteResponseTopicFmt = "control/bot-chat/slash-autocomplete/response/user/%s"
+)
 
 type realtimeBootstrapResponse struct {
-	Broker        config.BrokerClientConfig `json:"broker"`
-	ClientID      string                    `json:"client_id"`
-	PrincipalType string                    `json:"principal_type"`
-	PrincipalID   string                    `json:"principal_id"`
-	Subscriptions []realtimeSubscription    `json:"subscriptions"`
-	PublishTopics []string                  `json:"publish_topics"`
-	SlashCommandTopic string                `json:"slash_command_topic,omitempty"`
-	History       realtimeHistoryInfo       `json:"history"`
+	Broker                         config.BrokerClientConfig `json:"broker"`
+	ClientID                       string                    `json:"client_id"`
+	PrincipalType                  string                    `json:"principal_type"`
+	PrincipalID                    string                    `json:"principal_id"`
+	Subscriptions                  []realtimeSubscription    `json:"subscriptions"`
+	PublishTopics                  []string                  `json:"publish_topics"`
+	SlashCommandTopic              string                    `json:"slash_command_topic,omitempty"`
+	SlashAutocompleteRequestTopic  string                    `json:"slash_autocomplete_request_topic,omitempty"`
+	SlashAutocompleteResponseTopic string                    `json:"slash_autocomplete_response_topic,omitempty"`
+	History                        realtimeHistoryInfo       `json:"history"`
 }
 
 type realtimeSubscription struct {
@@ -63,16 +69,20 @@ func (h *RealtimeHandler) Bootstrap(c *gin.Context) {
 		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	topics = append(topics, botChatSlashCommandTopic)
+	responseTopic := fmt.Sprintf(botChatSlashAutocompleteResponseTopicFmt, userID.String())
+	subscriptionTopics := service.UniqueTopicsForExport(append(topics, botChatSlashCommandTopic, responseTopic))
+	publishTopics := service.UniqueTopicsForExport(append(topics, botChatSlashAutocompleteRequestTopic))
 
 	apiresponse.Success(c, realtimeBootstrapResponse{
-		Broker:        h.broker,
-		ClientID:      fmt.Sprintf("frontend-%s-%s", userID.String(), uuid.NewString()[:8]),
-		PrincipalType: "user",
-		PrincipalID:   userID.String(),
-		Subscriptions: toRealtimeSubscriptions(topics, h.broker.QOS),
-		PublishTopics: topics,
-		SlashCommandTopic: botChatSlashCommandTopic,
+		Broker:                         h.broker,
+		ClientID:                       fmt.Sprintf("frontend-%s-%s", userID.String(), uuid.NewString()[:8]),
+		PrincipalType:                  "user",
+		PrincipalID:                    userID.String(),
+		Subscriptions:                  toRealtimeSubscriptions(subscriptionTopics, h.broker.QOS),
+		PublishTopics:                  publishTopics,
+		SlashCommandTopic:              botChatSlashCommandTopic,
+		SlashAutocompleteRequestTopic:  botChatSlashAutocompleteRequestTopic,
+		SlashAutocompleteResponseTopic: responseTopic,
 		History: realtimeHistoryInfo{
 			MaxCatchupBatch: 200,
 		},
