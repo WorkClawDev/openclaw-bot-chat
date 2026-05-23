@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
-import { Card, CardContent, CardFooter } from '@/components/Card'
+import { BrandLogo } from '@/components/BrandLogo'
 
 export default function RegisterPage() {
   const router = useRouter()
@@ -82,17 +82,19 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-gray-100 p-4">
-      <Card className="w-full max-w-md">
-        <CardContent>
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-primary-600 mb-2">Create Account</h1>
-            <p className="text-gray-600">Join BotChat and start chatting</p>
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4 sm:p-6">
+      <section className="w-full max-w-[440px] rounded-2xl border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60 backdrop-blur sm:p-8">
+        <div className="mb-7 space-y-4 text-center">
+          <BrandLogo size="lg" className="justify-center" />
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black tracking-normal text-slate-900">Create account</h1>
+            <p className="text-sm text-slate-500">Set up direct bot chat, groups, images, and realtime history.</p>
           </div>
+        </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {errors.general && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+              <div className="min-h-[44px] rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
                 {errors.general}
               </div>
             )}
@@ -124,6 +126,7 @@ export default function RegisterPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               error={errors.password}
+              helperText="Use at least 8 characters."
               autoComplete="new-password"
             />
 
@@ -137,21 +140,25 @@ export default function RegisterPage() {
               autoComplete="new-password"
             />
 
-            <Button type="submit" className="w-full" isLoading={isLoading}>
-              Create Account
+            <Button type="submit" className="w-full rounded-xl" isLoading={isLoading}>
+              Create account
             </Button>
           </form>
-        </CardContent>
 
-        <CardFooter className="justify-center">
-          <p className="text-sm text-gray-600">
+          <div className="mt-5 grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
+            <span className="rounded-lg bg-slate-50 px-3 py-2">Bot direct chat</span>
+            <span className="rounded-lg bg-slate-50 px-3 py-2">Group rooms</span>
+            <span className="rounded-lg bg-slate-50 px-3 py-2">Image sharing</span>
+            <span className="rounded-lg bg-slate-50 px-3 py-2">Realtime history</span>
+          </div>
+
+          <p className="mt-6 text-center text-sm text-slate-600">
             Already have an account?{' '}
-            <Link href="/login" className="text-primary-600 hover:underline font-medium">
+            <Link href="/login" className="font-bold text-sky-600 hover:underline">
               Sign in
             </Link>
           </p>
-        </CardFooter>
-      </Card>
+      </section>
     </div>
   )
 }

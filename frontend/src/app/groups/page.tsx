@@ -1,7 +1,6 @@
 'use client'
 
 import React, { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChat } from '@/contexts/ChatContext'
 import { groupsApi } from '@/lib/api'
@@ -9,6 +8,10 @@ import { AppLayout } from '@/components/AppLayout'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
 import { Avatar } from '@/components/Avatar'
+import { IconButton } from '@/components/IconButton'
+import { PaneHeader } from '@/components/PaneHeader'
+import { StatusPill } from '@/components/StatusPill'
+import { WorkspaceCollectionPane } from '@/components/WorkspaceCollectionPane'
 import { LoadingPage } from '@/components/Loading'
 import { ConversationItem } from '@/components/Chat/ConversationItem'
 import { MessageBubble } from '@/components/Chat/MessageBubble'
@@ -16,11 +19,11 @@ import { ChatInput } from '@/components/Chat/ChatInput'
 import type { Group, GroupMember } from '@/lib/types'
 
 export default function GroupsPage() {
-  const router = useRouter()
   const { isAuthenticated, isLoading: authLoading, user } = useAuth()
   const {
     groups,
     bots,
+    isLoading: chatLoading,
     currentConversation,
     messages,
     openGroupConversation,
@@ -82,88 +85,69 @@ export default function GroupsPage() {
 
   return (
     <AppLayout>
-      {/* Column 2: Group List */}
-      <aside className={`w-full md:w-[300px] h-full bg-white/65 backdrop-blur-xl border-r border-white/20 flex flex-col overflow-hidden flex-shrink-0 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
-        <div className="p-4 border-b border-white/20 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-slate-800 tracking-tight">Groups</h2>
-            <button
-              onClick={() => { setView('create'); setShowMobileList(false); }}
-              className="w-8 h-8 flex items-center justify-center rounded-lg bg-sky-500 text-white shadow-sm hover:bg-sky-600 transition-colors"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
-          </div>
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Search groups..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-white/50 border border-white/50 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 transition-all"
-            />
-            <svg className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto py-2">
-          {filteredGroups.length === 0 ? (
-            <div className="p-8 text-center text-slate-400 space-y-2">
-              <p className="text-sm font-medium">No groups found</p>
-              <Button size="sm" variant="ghost" onClick={() => { setView('create'); setShowMobileList(false); }}>Create one</Button>
-            </div>
-          ) : (
-            filteredGroups.map(group => (
-              <ConversationItem
-                key={group.id}
-                name={group.name}
-                avatar={group.avatar}
-                isActive={selectedGroup?.id === group.id && view === 'chat'}
-                onClick={() => handleGroupClick(group)}
-                lastMessage={group.description || ''}
-              />
-            ))
-          )}
-        </div>
-      </aside>
+      <WorkspaceCollectionPane
+        title="Groups"
+        createLabel="Create group"
+        searchPlaceholder="Search groups..."
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
+        items={filteredGroups}
+        isLoading={chatLoading}
+        isVisible={showMobileList}
+        emptyLabel="No groups found"
+        emptyActionLabel="Create one"
+        onCreate={() => { setView('create'); setShowMobileList(false); }}
+        renderItem={(group) => (
+          <ConversationItem
+            key={group.id}
+            name={group.name}
+            avatar={group.avatar}
+            isActive={selectedGroup?.id === group.id && view === 'chat'}
+            onClick={() => handleGroupClick(group)}
+            lastMessage={group.description || ''}
+          />
+        )}
+      />
 
       {/* Column 3: Main Area */}
-      <section className={`flex-1 h-full flex flex-col bg-white/95 relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
+      <section className={`flex-1 h-full flex flex-col bg-white relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
         {view === 'chat' && currentConversation ? (
           <>
-            {/* Chat Header */}
-            <header className="h-[60px] md:h-[72px] px-4 md:px-6 flex items-center justify-between border-b border-slate-100 bg-white/80 backdrop-blur-md z-10">
-              <div className="flex items-center gap-2 md:gap-3">
-                <button
+            <PaneHeader
+              leading={
+                <>
+                <IconButton
                   onClick={() => setShowMobileList(true)}
-                  className="md:hidden p-1.5 -ml-1.5 text-slate-400 hover:text-sky-500 rounded-lg"
+                  label="Back to groups"
+                  variant="ghost"
+                  className="md:hidden"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
-                </button>
+                </IconButton>
                 <Avatar name={currentConversation.name} src={currentConversation.avatar} size="md" />
-                <div>
-                  <h3 className="font-bold text-slate-800">{currentConversation.name}</h3>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    {selectedGroup?.member_count || 0} Members
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
+                </>
+              }
+              title={currentConversation.name}
+              subtitle={
+                <>
+                  <StatusPill tone="neutral">{selectedGroup?.member_count || 0} members</StatusPill>
+                  <StatusPill tone={connectionState === 'connected' ? 'success' : 'warning'}>
+                    {connectionState === 'connected' ? 'realtime on' : connectionState}
+                  </StatusPill>
+                </>
+              }
+              actions={
+                <IconButton
                   onClick={() => setShowDrawer(!showDrawer)}
-                  className={`p-2 transition-all rounded-xl ${showDrawer ? 'text-sky-500 bg-sky-50' : 'text-slate-400 hover:text-sky-500 hover:bg-sky-50'}`}
-                  title="Group Info"
+                  label="Group details"
+                  active={showDrawer}
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
                   </svg>
-                </button>
-              </div>
-            </header>
+                </IconButton>
+              }
+            />
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
@@ -196,11 +180,11 @@ export default function GroupsPage() {
             <ChatInput onSendMessage={sendMessage} placeholder={`Message ${selectedGroup?.name}...`} />
           </>
         ) : view === 'create' ? (
-          <div className="flex-1 overflow-y-auto p-12 max-w-2xl mx-auto w-full">
+          <div className="flex-1 overflow-y-auto p-5 md:p-10 lg:p-12 max-w-2xl mx-auto w-full">
             <header className="mb-6 md:mb-8 flex items-start gap-3">
-              <button onClick={() => { setView('chat'); setShowMobileList(true); }} className="md:hidden mt-1 p-1 -ml-2 text-slate-400 hover:text-sky-500">
+              <IconButton onClick={() => { setView('chat'); setShowMobileList(true); }} label="Back to groups" variant="ghost" className="md:hidden -ml-2 mt-1">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
-              </button>
+              </IconButton>
               <div>
                 <h2 className="text-2xl md:text-3xl font-bold text-slate-800 tracking-tight">Create New Group</h2>
               <p className="text-slate-500 mt-1">Bring your bots together in one conversation.</p>
@@ -209,7 +193,9 @@ export default function GroupsPage() {
             
             <CreateGroupForm
               onCancel={() => { setView('chat'); setShowMobileList(true); }}
-              onSuccess={() => {
+              onSuccess={(group) => {
+                openGroupConversation(group)
+                setSelectedGroup(group)
                 void refreshGroups()
                 setView('chat')
                 setShowMobileList(false)
@@ -231,9 +217,9 @@ export default function GroupsPage() {
         )}
 
         {/* Column 4: Right Drawer */}
-        {selectedGroup && (
+        {selectedGroup && showDrawer && (
           <div 
-            className={`absolute right-0 top-0 h-full w-full md:w-[320px] bg-white shadow-2xl md:border-l border-slate-100 transition-transform duration-300 z-20 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}
+            className="absolute right-0 top-0 z-20 h-full w-full bg-white shadow-2xl transition-transform duration-300 md:w-[320px] md:border-l border-slate-100"
           >
             <GroupDrawer
               group={selectedGroup}
@@ -255,7 +241,7 @@ function CreateGroupForm({
   onSuccess
 }: {
   onCancel: () => void
-  onSuccess: () => void
+  onSuccess: (group: Group) => void
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -269,8 +255,8 @@ function CreateGroupForm({
     setIsLoading(true)
     setError('')
     try {
-      await groupsApi.create({ name, description })
-      onSuccess()
+      const created = await groupsApi.create({ name, description })
+      onSuccess(created)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create group')
     } finally {
@@ -377,11 +363,11 @@ function GroupDrawer({
     <div className="flex flex-col h-full">
       <header className="h-[72px] px-6 flex items-center justify-between border-b border-slate-100">
         <h3 className="font-bold text-slate-800">Group Details</h3>
-        <button onClick={onClose} className="p-2 hover:bg-slate-50 rounded-lg text-slate-400">
+        <IconButton onClick={onClose} label="Close group details" variant="ghost">
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
-        </button>
+        </IconButton>
       </header>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-8">
@@ -413,12 +399,14 @@ function GroupDrawer({
                <div className="flex gap-2">
                  <button 
                   onClick={() => setMemberType('user')}
+                  aria-pressed={memberType === 'user'}
                   className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-tighter rounded-lg transition-all ${memberType === 'user' ? 'bg-sky-500 text-white shadow-md shadow-sky-100' : 'bg-white text-slate-400 border border-slate-200'}`}
                  >
                    User
                  </button>
                  <button 
                   onClick={() => setMemberType('bot')}
+                  aria-pressed={memberType === 'bot'}
                   className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-tighter rounded-lg transition-all ${memberType === 'bot' ? 'bg-sky-500 text-white shadow-md shadow-sky-100' : 'bg-white text-slate-400 border border-slate-200'}`}
                  >
                    Bot

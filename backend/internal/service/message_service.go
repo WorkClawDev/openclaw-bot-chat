@@ -210,9 +210,11 @@ type MessagePeerPayload struct {
 }
 
 type MessageContentPayload struct {
-	Type string                 `json:"type"`
-	Body string                 `json:"body"`
-	Meta map[string]interface{} `json:"meta,omitempty"`
+	Type      string                 `json:"type"`
+	Body      string                 `json:"body"`
+	URL       string                 `json:"url,omitempty"`
+	SourceURL string                 `json:"source_url,omitempty"`
+	Meta      map[string]interface{} `json:"meta,omitempty"`
 }
 
 type normalizedMessage struct {
@@ -304,7 +306,7 @@ func normalizeIncomingMessage(topic string, payload MessagePayload) normalizedMe
 	if contentPayload != nil {
 		normalized.contentType = firstNonEmpty(contentPayload.Type, normalized.contentType)
 		normalized.body = firstNonEmpty(contentPayload.Body, normalized.body)
-		normalized.meta = firstNonEmptyMap(contentPayload.Meta, normalized.meta)
+		normalized.meta = withMessageContentAsset(firstNonEmptyMap(contentPayload.Meta, normalized.meta), contentPayload)
 	}
 	if normalized.body == "" {
 		normalized.body = legacyText
@@ -785,6 +787,32 @@ func decodeContentPayload(raw json.RawMessage) (*MessageContentPayload, string) 
 	}
 
 	return nil, ""
+}
+
+func withMessageContentAsset(meta map[string]interface{}, content *MessageContentPayload) map[string]interface{} {
+	if content == nil {
+		return meta
+	}
+
+	sourceURL := strings.TrimSpace(content.SourceURL)
+	urlValue := strings.TrimSpace(content.URL)
+	if sourceURL == "" && urlValue == "" {
+		return meta
+	}
+
+	payload := model.AssetPayloadFromMap(meta)
+	if payload == nil {
+		payload = &model.AssetPayload{}
+	}
+
+	if payload.SourceURL == "" && sourceURL != "" {
+		payload.SourceURL = sourceURL
+	}
+	if payload.DownloadURL == "" && payload.ExternalURL == "" && urlValue != "" && urlValue != payload.SourceURL {
+		payload.ExternalURL = urlValue
+	}
+
+	return model.UpsertAssetPayload(meta, payload)
 }
 
 func normalizeMessageBody(contentType string, body string, meta map[string]interface{}) string {

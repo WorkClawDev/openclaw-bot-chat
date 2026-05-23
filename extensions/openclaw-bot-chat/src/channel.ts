@@ -1,9 +1,12 @@
 import {
   BOT_CHAT_CHANNEL_ID,
+  BOT_CHAT_SLASH_COMMAND_TOPIC,
   type ChannelPlugin,
   type ChannelOutboundAdapter,
   type ResolvedBotChatAccount,
 } from "./channel-api.js";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { createBotChatPluginBase } from "./shared.js";
 import { botChatStatus } from "./status.js";
 import { botChatSetupAdapter } from "./channel.setup.js";
@@ -27,18 +30,74 @@ type BotChatAttachment = {
   asset?: Record<string, unknown>;
 };
 
+type BotChatSlashCommand = {
+  name: string;
+  description?: string;
+  acceptsArgs?: boolean;
+  args?: Array<Record<string, unknown>>;
+};
+
 const botChatOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   textChunkLimit: 4000,
   sendText: async ({ cfg, to, text, accountId, metadata }) => {
     const account = resolveBotChatAccount(cfg, accountId ?? undefined);
     const target = buildBotChatOutboundMessageTarget({ raw: to, account, metadata });
+    const mediaDirective = extractBotChatMediaDirective(text);
+    const body = mediaDirective?.body ?? text;
     const result = await getBotChatRuntime().sendToChannel({
       channelId: target.channelId,
       userId: target.userId,
-      text,
+      text: body,
       metadata: {
         ...(metadata ?? {}),
+        target: target.normalizedTarget,
+        chatType: target.chatType,
+        botId: account.botId,
+        toType: target.recipientType,
+        publishTopic: target.publishTopic,
+      },
+    });
+    return {
+      channel: BOT_CHAT_CHANNEL_ID,
+      messageId: result.messageId,
+      channelId: target.channelId,
+      conversationId: target.channelId,
+      timestamp: Date.now(),
+      meta: {
+        target: target.normalizedTarget,
+        chatType: target.chatType,
+        recipientType: target.recipientType,
+        publishTopic: target.publishTopic,
+      },
+    };
+  },
+  sendMedia: async ({ cfg, to, text, mediaUrl, mediaAccess, accountId, metadata }) => {
+    const account = resolveBotChatAccount(cfg, accountId ?? undefined);
+    const target = buildBotChatOutboundMessageTarget({ raw: to, account, metadata });
+    const fallbackBody = text?.trim() || readFileNameFromMediaPath(mediaUrl) || "Image";
+    let asset: Record<string, unknown> | undefined;
+    try {
+      asset = await prepareBotChatOutboundMediaAsset(account, mediaUrl);
+    } catch {
+      asset = undefined;
+    }
+    const body = text?.trim() || readString(asset?.file_name) || fallbackBody;
+    const result = await getBotChatRuntime().sendToChannel({
+      channelId: target.channelId,
+      userId: target.userId,
+      text: body,
+      metadata: {
+        ...(metadata ?? {}),
+        ...(asset
+          ? {
+              content_type: "image",
+              asset: {
+                ...asset,
+                ...(mediaAccess ? { access: mediaAccess } : {}),
+              },
+            }
+          : {}),
         target: target.normalizedTarget,
         chatType: target.chatType,
         botId: account.botId,
@@ -88,6 +147,11 @@ export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
             message,
           });
         },
+      });
+      await publishBotChatSlashCommands({
+        cfg: ctx.cfg,
+        account: ctx.account,
+        log: ctx.log,
       });
       ctx.setStatus?.({
         connected: true,
@@ -198,6 +262,7 @@ async function dispatchBotChatReply(params: {
       OriginatingTo: params.message.channelId,
       ExplicitDeliverRoute: true,
       NativeChannelId: params.message.channelId,
+      CommandSource: resolveBotChatCommandSource(params.message),
       Timestamp: Date.now(),
     },
     dispatcherOptions: {
@@ -229,6 +294,12 @@ async function dispatchBotChatReply(params: {
   });
   const replyText = mergeBotChatReplyChunks(replyChunks);
   if (replyText) {
+    const preparedReply = await prepareBotChatReplyDelivery(
+      replyText,
+      params.account,
+      buildBotChatReplyMetadata(params.message.metadata),
+      params.log,
+    );
     params.log?.debug?.("botchat.reply.deliver", {
       channelId: params.message.channelId,
       userId: params.message.userId,
@@ -237,9 +308,9 @@ async function dispatchBotChatReply(params: {
     await getBotChatRuntime().sendToChannel({
       channelId: params.message.channelId,
       userId: params.message.userId,
-      text: replyText,
+      text: preparedReply.text,
       metadata: {
-        ...buildBotChatReplyMetadata(params.message.metadata),
+        ...preparedReply.metadata,
         botId: params.account.botId,
         toType: "user",
         publishTopic: params.message.metadata?.topic ?? params.message.channelId,
@@ -409,6 +480,299 @@ function buildBotChatReplyMetadata(
   };
 }
 
+async function prepareBotChatReplyDelivery(
+  text: string,
+  account: ResolvedBotChatAccount,
+  metadata: Record<string, unknown>,
+  log?: {
+    warn?(message: string, fields?: Record<string, unknown>): void;
+  },
+): Promise<{ text: string; metadata: Record<string, unknown> }> {
+  const directive = extractBotChatMediaDirective(text);
+  if (!directive) {
+    return { text, metadata };
+  }
+
+  try {
+    const mediaAsset = await prepareBotChatOutboundMediaAsset(account, directive.mediaPath);
+    const body = directive.body || readString(mediaAsset.file_name) || "Image";
+    return {
+      text: body,
+      metadata: {
+        ...metadata,
+        content_type: "image",
+        asset: mediaAsset,
+      },
+    };
+  } catch (error) {
+    log?.warn?.("botchat.reply.media_directive_failed", {
+      mediaPath: directive.mediaPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { text, metadata };
+  }
+}
+
+async function publishBotChatSlashCommands(params: {
+  cfg: Record<string, unknown>;
+  account: ResolvedBotChatAccount;
+  log?: {
+    warn?(message: string, fields?: Record<string, unknown>): void;
+    debug?(message: string, fields?: Record<string, unknown>): void;
+  };
+}): Promise<void> {
+  const commands = await resolveOpenClawNativeCommands(params.cfg, params.log);
+  if (!commands) {
+    return;
+  }
+
+  try {
+    await getBotChatRuntime().sendToChannel({
+      channelId: BOT_CHAT_SLASH_COMMAND_TOPIC,
+      userId: "*",
+      text: "slash_commands",
+      metadata: {
+        topic: BOT_CHAT_SLASH_COMMAND_TOPIC,
+        botId: params.account.botId,
+        toType: "user",
+        content_type: "slash_commands",
+        slash_commands: commands,
+        retain: true,
+      },
+    });
+  } catch (error) {
+    params.log?.warn?.("botchat.slash_commands.publish_error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function resolveOpenClawNativeCommands(
+  cfg: Record<string, unknown>,
+  log?: { debug?(message: string, fields?: Record<string, unknown>): void },
+): Promise<BotChatSlashCommand[] | null> {
+  try {
+    const module = await import("openclaw/plugin-sdk/command-auth-native");
+    const skillCommands = module.listSkillCommandsForAgents?.({ cfg }) ?? [];
+    const specs = module.listNativeCommandSpecsForConfig?.(cfg, {
+      skillCommands,
+      provider: "bot-chat",
+    });
+    if (!Array.isArray(specs)) {
+      return [];
+    }
+    const commands = specs
+      .map(normalizeBotChatSlashCommand)
+      .filter((command): command is BotChatSlashCommand => command !== null);
+    return appendOpenClawPluginCommands(commands, cfg, log);
+  } catch (error) {
+    log?.debug?.("botchat.slash_commands.native_registry_unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function appendOpenClawPluginCommands(
+  commands: BotChatSlashCommand[],
+  cfg: Record<string, unknown>,
+  log?: { debug?(message: string, fields?: Record<string, unknown>): void },
+): Promise<BotChatSlashCommand[]> {
+  try {
+    const runtime = await import("openclaw/plugin-sdk/plugin-runtime");
+    const pluginCommands = runtime.getPluginCommandSpecs?.("bot-chat", { config: cfg }) ?? [];
+    if (!Array.isArray(pluginCommands) || pluginCommands.length === 0) {
+      return commands;
+    }
+
+    const merged = [...commands];
+    const existing = new Set(commands.map((command) => command.name.toLowerCase()));
+    for (const pluginCommand of pluginCommands) {
+      const normalized = normalizeBotChatSlashCommand(pluginCommand);
+      if (!normalized || existing.has(normalized.name.toLowerCase())) {
+        continue;
+      }
+      existing.add(normalized.name.toLowerCase());
+      merged.push(normalized);
+    }
+    return merged;
+  } catch (error) {
+    log?.debug?.("botchat.slash_commands.plugin_runtime_unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return commands;
+  }
+}
+
+function normalizeBotChatSlashCommand(spec: Record<string, unknown>): BotChatSlashCommand | null {
+  const name = readString(spec.name ?? spec.nativeName ?? spec.command);
+  if (!name) {
+    return null;
+  }
+
+  return {
+    name: name.replace(/^\/+/, ""),
+    description: readString(spec.description ?? spec.summary) ?? "",
+    acceptsArgs: spec.acceptsArgs === true || Array.isArray(spec.args) || Array.isArray(spec.options),
+    args: Array.isArray(spec.args)
+      ? spec.args.filter(isRecord)
+      : Array.isArray(spec.options)
+        ? spec.options.filter(isRecord)
+        : undefined,
+  };
+}
+
+function resolveBotChatCommandSource(message: {
+  text: string;
+  metadata?: Record<string, unknown>;
+}): "native" | "text" {
+  const metadata = message.metadata ?? {};
+  const source = readString(metadata.command_source ?? metadata.commandSource);
+  if (source === "native" || metadata.native_command === true || metadata.nativeCommand === true) {
+    return "native";
+  }
+  return "text";
+}
+
+function extractBotChatMediaDirective(text: string): { mediaPath: string; body: string } | undefined {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const directiveIndex = lines.findIndex((line) => line.trimStart().startsWith("MEDIA:"));
+  if (directiveIndex < 0) {
+    return undefined;
+  }
+
+  const directiveLine = lines[directiveIndex]?.trim();
+  const mediaPath = directiveLine?.slice("MEDIA:".length).trim();
+  if (!mediaPath) {
+    return undefined;
+  }
+
+  const body = lines
+    .filter((_line, index) => index !== directiveIndex)
+    .join("\n")
+    .trim();
+  return { mediaPath, body };
+}
+
+async function buildBotChatMediaAsset(mediaPath: string): Promise<Record<string, unknown>> {
+  const fileName = readFileNameFromMediaPath(mediaPath);
+  const mimeType = resolveBotChatMediaMimeType(mediaPath);
+  const sourceUrl = isWebResolvableUrl(mediaPath)
+    ? mediaPath
+    : await buildDataUrlFromFile(mediaPath, mimeType);
+
+  return {
+    kind: "image",
+    type: "image",
+    source_url: sourceUrl,
+    ...(fileName ? { file_name: fileName } : {}),
+    ...(mimeType ? { content_type: mimeType, mime_type: mimeType } : {}),
+  };
+}
+
+async function prepareBotChatOutboundMediaAsset(
+  account: ResolvedBotChatAccount,
+  mediaPath: string,
+): Promise<Record<string, unknown>> {
+  if (isWebResolvableUrl(mediaPath)) {
+    return buildBotChatMediaAsset(mediaPath);
+  }
+
+  return importBotChatMediaAsset(account, mediaPath);
+}
+
+async function importBotChatMediaAsset(
+  account: ResolvedBotChatAccount,
+  mediaPath: string,
+): Promise<Record<string, unknown>> {
+  const backendUrl = readString(account.backendUrl);
+  const botKey = readString(account.config?.botKey);
+  if (!backendUrl || !botKey) {
+    throw new Error("BotChat backendUrl and botKey are required to import local media");
+  }
+
+  const mimeType = resolveBotChatMediaMimeType(mediaPath);
+  const dataUrl = await buildDataUrlFromFile(mediaPath, mimeType);
+  const fileName = readFileNameFromMediaPath(mediaPath);
+  const response = await fetch(`${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/assets/image/import`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Bot-Key": botKey,
+    },
+    body: JSON.stringify({
+      data_url: dataUrl,
+      file_name: fileName,
+      content_type: mimeType,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`bot media import failed: ${response.status}`);
+  }
+
+  const json = (await response.json()) as { data?: Record<string, unknown> };
+  const imported = readRecord(json.data);
+  if (!imported) {
+    throw new Error("bot media import returned no asset payload");
+  }
+  return imported;
+}
+
+function isWebResolvableUrl(value: string): boolean {
+  return /^(https?:|data:)/i.test(value);
+}
+
+async function buildDataUrlFromFile(filePath: string, mimeType: string): Promise<string> {
+  const contents = await fs.readFile(filePath);
+  return `data:${mimeType};base64,${contents.toString("base64")}`;
+}
+
+function readFileNameFromMediaPath(mediaPath: string): string | undefined {
+  if (!mediaPath) {
+    return undefined;
+  }
+
+  if (isWebResolvableUrl(mediaPath)) {
+    try {
+      const url = new URL(mediaPath);
+      const baseName = path.basename(url.pathname);
+      return baseName || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const baseName = path.basename(mediaPath);
+  return baseName || undefined;
+}
+
+function resolveBotChatMediaMimeType(mediaPath: string): string {
+  const extension = path.extname(mediaPath).trim().toLowerCase();
+  switch (extension) {
+    case ".apng":
+      return "image/apng";
+    case ".avif":
+      return "image/avif";
+    case ".gif":
+      return "image/gif";
+    case ".jpeg":
+    case ".jpg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".webp":
+      return "image/webp";
+    default:
+      return "application/octet-stream";
+  }
+}
+
 async function waitForAbort(signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return;
@@ -429,6 +793,10 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readNumber(value: unknown): number | undefined {

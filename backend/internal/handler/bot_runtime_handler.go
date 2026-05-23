@@ -16,6 +16,7 @@ import (
 
 type BotRuntimeHandler struct {
 	msgService *service.MessageService
+	assetSvc   *service.AssetService
 	broker     config.BrokerClientConfig
 }
 
@@ -27,6 +28,7 @@ type botRuntimeBootstrapResponse struct {
 	Conversations []botRuntimeDialogInfo    `json:"conversations"`
 	Subscriptions []realtimeSubscription    `json:"subscriptions"`
 	PublishTopics []string                  `json:"publish_topics"`
+	SlashCommandTopic string                `json:"slash_command_topic,omitempty"`
 	History       realtimeHistoryInfo       `json:"history"`
 }
 
@@ -52,9 +54,14 @@ type botRuntimeDialogInfo struct {
 	UpdatedAt      int64  `json:"updated_at,omitempty"`
 }
 
-func NewBotRuntimeHandler(msgService *service.MessageService, mqttCfg config.MQTTConfig) *BotRuntimeHandler {
+func NewBotRuntimeHandler(
+	msgService *service.MessageService,
+	assetSvc *service.AssetService,
+	mqttCfg config.MQTTConfig,
+) *BotRuntimeHandler {
 	return &BotRuntimeHandler{
 		msgService: msgService,
+		assetSvc:   assetSvc,
 		broker: config.BrokerClientConfig{
 			TCPPublicURL: mqttCfg.TCPPublicURL,
 			WSPublicURL:  mqttCfg.WSPublicURL,
@@ -135,11 +142,46 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 		Groups:        groupInfos,
 		Conversations: dialogs,
 		Subscriptions: toRealtimeSubscriptions(subscriptionTopics, h.broker.QOS),
-		PublishTopics: service.UniqueTopicsForExport(publishTopics),
+		PublishTopics: service.UniqueTopicsForExport(append(publishTopics, botChatSlashCommandTopic)),
+		SlashCommandTopic: botChatSlashCommandTopic,
 		History: realtimeHistoryInfo{
 			MaxCatchupBatch: 200,
 		},
 	})
+}
+
+func (h *BotRuntimeHandler) ImportImage(c *gin.Context) {
+	bot, ok := middleware.GetBot(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	if h.assetSvc == nil {
+		apiresponse.InternalError(c, "asset service unavailable")
+		return
+	}
+
+	var req service.ImportBotImageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	asset, err := h.assetSvc.ImportImageForBot(c.Request.Context(), bot.ID, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAssetProviderDisabled),
+			errors.Is(err, service.ErrAssetTooLarge),
+			errors.Is(err, service.ErrAssetUnsupportedType),
+			errors.Is(err, service.ErrAssetInvalid):
+			apiresponse.BadRequest(c, err.Error())
+		default:
+			apiresponse.InternalError(c, err.Error())
+		}
+		return
+	}
+
+	apiresponse.Success(c, responsedto.NewAssetResponse(asset))
 }
 
 func (h *BotRuntimeHandler) GetConversationMessages(c *gin.Context) {

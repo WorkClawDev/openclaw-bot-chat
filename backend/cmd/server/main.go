@@ -115,7 +115,7 @@ func main() {
 	msgHandler := handler.NewMessageHandler(msgService)
 	realtimeHandler := handler.NewRealtimeHandler(msgService, cfg.MQTT)
 	assetHandler := handler.NewAssetHandler(assetService)
-	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService, cfg.MQTT)
+	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService, assetService, cfg.MQTT)
 	groupHandler := handler.NewGroupHandler(groupService)
 
 	// --- Routes ---
@@ -236,6 +236,7 @@ func setupRoutes(
 	{
 		botRuntime.GET("/bootstrap", botRuntimeHandler.Bootstrap)
 		botRuntime.GET("/messages/*conversation_id", botRuntimeHandler.GetConversationMessages)
+		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
 	}
 
 	// Protected routes

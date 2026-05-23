@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o backend ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o backend ./cmd/server
 
 # Runtime stage
 FROM alpine:3.19

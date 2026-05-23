@@ -25,6 +25,7 @@ import type {
   RealtimeBootstrapResponse,
   RealtimeConnectionState,
   RealtimeMessagePayload,
+  SlashCommand,
 } from '@/lib/types'
 import { useAuth } from './AuthContext'
 
@@ -34,6 +35,7 @@ interface ChatContextType {
   messages: Map<string, Message[]>
   bots: Bot[]
   groups: Group[]
+  slashCommands: SlashCommand[]
   isLoading: boolean
   connectionState: RealtimeConnectionState
   setCurrentConversation: (conv: Conversation | null) => void
@@ -57,8 +59,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<Map<string, Message[]>>(new Map())
   const [bots, setBots] = useState<Bot[]>([])
   const [groups, setGroups] = useState<Group[]>([])
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const [realtimeBootstrap, setRealtimeBootstrap] = useState<RealtimeBootstrapResponse | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false)
   const [connectionState, setConnectionState] = useState<RealtimeConnectionState>('idle')
   const subscriptionsRef = useRef<Map<string, () => void>>(new Map())
   const conversationsRef = useRef<Conversation[]>([])
@@ -163,6 +166,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = mqtt.subscribe(
       topic,
       (incomingTopic, payload) => {
+        if (
+          incomingTopic === realtimeBootstrap.slash_command_topic ||
+          isSlashCommandCatalogPayload(payload)
+        ) {
+          setSlashCommands(readSlashCommandsFromPayload(payload))
+          return
+        }
+
         const conversationId = payload.conversation_id || incomingTopic
         const existingConversation = conversationsRef.current.find((item) => item.id === conversationId)
         const conversation =
@@ -403,6 +414,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       setGroups([])
       setRealtimeBootstrap(null)
       setConnectionState('idle')
+      setHasLoadedInitialData(false)
       hasConnectedOnceRef.current = false
       lastSeqByConversationRef.current.clear()
       for (const [, unsubscribe] of subscriptionsRef.current.entries()) {
@@ -414,7 +426,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }
 
     let cancelled = false
-    setIsLoading(true)
+    setHasLoadedInitialData(false)
 
     Promise.all([
       refreshBots(),
@@ -427,7 +439,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       })
       .finally(() => {
         if (!cancelled) {
-          setIsLoading(false)
+          setHasLoadedInitialData(true)
         }
       })
 
@@ -527,6 +539,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     })
   }, [conversations, ensureTopicSubscription, realtimeBootstrap, user])
 
+  const isLoading = isAuthenticated && !hasLoadedInitialData
+
   return (
     <ChatContext.Provider
       value={{
@@ -535,6 +549,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         messages,
         bots,
         groups,
+        slashCommands,
         isLoading,
         connectionState,
         setCurrentConversation,
@@ -576,6 +591,64 @@ function buildOutgoingContent(input: ComposerMessageInput): Message['content'] {
     body: input.body?.trim() || '',
     meta: input.meta || {},
   }
+}
+
+function isSlashCommandCatalogPayload(payload: RealtimeMessagePayload): boolean {
+  return payload.content?.meta?.content_type === 'slash_commands'
+}
+
+function readSlashCommandsFromPayload(payload: RealtimeMessagePayload): SlashCommand[] {
+  const raw = payload.content?.meta?.slash_commands
+  if (!Array.isArray(raw)) {
+    return []
+  }
+
+  const commands: SlashCommand[] = []
+  raw.forEach((item) => {
+    if (!isRecord(item)) {
+      return
+    }
+    const name = typeof item.name === 'string' ? item.name.trim().replace(/^\/+/, '') : ''
+    if (!name) {
+      return
+    }
+    commands.push({
+      name,
+      description: typeof item.description === 'string' ? item.description : undefined,
+      acceptsArgs: item.acceptsArgs === true,
+      args: readSlashCommandArgs(item.args),
+    })
+  })
+  return commands
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function readSlashCommandArgs(value: unknown): SlashCommand['args'] {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+
+  const args: NonNullable<SlashCommand['args']> = []
+  value.forEach((item) => {
+    if (!isRecord(item)) {
+      return
+    }
+    const name = typeof item.name === 'string' ? item.name.trim() : ''
+    if (!name) {
+      return
+    }
+    args.push({
+      name,
+      description: typeof item.description === 'string' ? item.description : undefined,
+      type: typeof item.type === 'string' ? item.type : undefined,
+      required: item.required === true,
+      choices: Array.isArray(item.choices) ? item.choices : undefined,
+    })
+  })
+  return args.length > 0 ? args : undefined
 }
 
 export function useChat() {

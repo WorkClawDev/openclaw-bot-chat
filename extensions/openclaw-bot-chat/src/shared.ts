@@ -61,6 +61,7 @@ export function createBotChatPluginBase(params: {
   | "reload"
   | "configSchema"
   | "config"
+  | "commands"
   | "setup"
   | "messaging"
   | "security"
@@ -76,7 +77,11 @@ export function createBotChatPluginBase(params: {
       polls: false,
       reactions: false,
       threads: false,
-      nativeCommands: false,
+      nativeCommands: true,
+    },
+    commands: {
+      nativeCommandsAutoEnabled: true,
+      nativeSkillsAutoEnabled: true,
     },
     reload: { configPrefixes: ["channels.bot-chat"] },
     configSchema: BotChatChannelConfigSchema as unknown as Record<string, unknown>,

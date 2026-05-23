@@ -6,7 +6,7 @@ import { Theme } from 'emoji-picker-react'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
 import { assetsApi, groupsApi } from '@/lib/api'
-import { Bot, ComposerMessageInput, GroupMember } from '@/lib/types'
+import { Bot, ComposerMessageInput, GroupMember, SlashCommand } from '@/lib/types'
 import { STICKERS, Sticker } from '@/lib/stickers'
 
 const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false })
@@ -40,12 +40,16 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
 
-  const { bots, currentConversation } = useChat()
+  const { bots, currentConversation, slashCommands } = useChat()
   const [mentionActive, setMentionActive] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
   const [mentionStartIndex, setMentionStartIndex] = useState(-1)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [groupBots, setGroupBots] = useState<MentionBot[]>([])
+  const [slashActive, setSlashActive] = useState(false)
+  const [slashQuery, setSlashQuery] = useState('')
+  const [slashStartIndex, setSlashStartIndex] = useState(-1)
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0)
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -106,6 +110,10 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     bot.name.toLowerCase().includes(mentionQuery.toLowerCase())
   )
 
+  const filteredSlashCommands = slashCommands
+    .filter((command) => command.name.toLowerCase().includes(slashQuery.toLowerCase()))
+    .slice(0, 8)
+
   const overlayRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -126,6 +134,10 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   useEffect(() => {
     setSelectedIndex(0)
   }, [mentionQuery])
+
+  useEffect(() => {
+    setSelectedSlashIndex(0)
+  }, [slashQuery])
 
   useEffect(() => {
     if (currentConversation?.target.type !== 'group') {
@@ -167,10 +179,14 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       await onSendMessage({
         type: 'text',
         body: content.trim(),
-        meta: buildMentionMeta(content, mentionBots),
+        meta: {
+          ...buildMentionMeta(content, mentionBots),
+          ...buildSlashCommandMeta(content, slashCommands),
+        },
       })
       setContent('')
       setMentionActive(false)
+      setSlashActive(false)
     } catch (error) {
       console.error('Failed to send message:', error)
     } finally {
@@ -217,6 +233,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       })
       setContent('')
       setMentionActive(false)
+      setSlashActive(false)
     } catch (error) {
       console.error('Failed to upload image:', error)
     } finally {
@@ -245,10 +262,41 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     }, 0)
   }
 
-  const checkMentionState = (target: HTMLTextAreaElement) => {
+  const insertSlashCommand = (command: SlashCommand) => {
+    const beforeSlash = content.slice(0, slashStartIndex)
+    const commandText = `/${command.name} `
+    const cursorPosition = textareaRef.current?.selectionStart || content.length
+    const afterSlash = content.slice(cursorPosition)
+
+    const newContent = beforeSlash + commandText + afterSlash
+    setContent(newContent)
+    setSlashActive(false)
+    setSlashQuery('')
+
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus()
+        const newCursorPos = beforeSlash.length + commandText.length
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos)
+      }
+    }, 0)
+  }
+
+  const checkComposerState = (target: HTMLTextAreaElement) => {
     const value = target.value
     const cursorPosition = target.selectionStart || 0
     const textBeforeCursor = value.slice(0, cursorPosition)
+
+    const slashMatch = textBeforeCursor.match(/(?:^|\n)\/([a-zA-Z0-9_-]*)$/)
+    if (slashMatch) {
+      const fullMatch = slashMatch[0]
+      setSlashActive(true)
+      setSlashQuery(slashMatch[1] || '')
+      setSlashStartIndex(cursorPosition - fullMatch.trimStart().length)
+      setMentionActive(false)
+      return
+    }
+    setSlashActive(false)
     
     // Match @name or ＠name at the end of textBeforeCursor
     // We allow mentions to start after: start of line, space, newline, punctuation, or Chinese characters (anything not a word char)
@@ -267,14 +315,37 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setContent(e.target.value)
-    checkMentionState(e.target)
+    checkComposerState(e.target)
   }
 
   const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
-    checkMentionState(e.target as HTMLTextAreaElement)
+    checkComposerState(e.target as HTMLTextAreaElement)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashActive && filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedSlashIndex((prev) => (prev > 0 ? prev - 1 : filteredSlashCommands.length - 1))
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedSlashIndex((prev) => (prev < filteredSlashCommands.length - 1 ? prev + 1 : 0))
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        insertSlashCommand(filteredSlashCommands[selectedSlashIndex])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashActive(false)
+        return
+      }
+    }
+
     if (mentionActive && filteredBots.length > 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault()
@@ -333,7 +404,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   }
 
   return (
-    <div className="px-3 md:px-6 py-3 md:py-4 bg-white/50 border-t border-slate-200/50 backdrop-blur-sm relative" ref={pickerRef}>
+    <div className="relative border-t border-slate-200/70 bg-white/80 px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-sm md:px-6 md:py-4 md:pb-[calc(1rem+env(safe-area-inset-bottom))]" ref={pickerRef}>
       {/* Pickers */}
       {(showEmojiPicker || showStickerPicker) && (
         <div className="absolute bottom-full left-3 md:left-6 mb-2 z-50 animate-in slide-in-from-bottom-2">
@@ -375,6 +446,54 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       )}
 
       {/* Auto-complete Popup */}
+      {slashActive && (
+        <div
+          className="absolute bottom-full left-3 md:left-6 mb-2 w-[calc(100%-24px)] md:w-80 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden z-50 animate-in slide-in-from-bottom-2"
+          onPointerDown={(e) => e.preventDefault()}
+        >
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+            Commands
+          </div>
+          <div className="max-h-56 overflow-y-auto scrollbar-thin">
+            {filteredSlashCommands.length > 0 ? (
+              filteredSlashCommands.map((command, index) => (
+                <button
+                  key={command.name}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    insertSlashCommand(command);
+                  }}
+                  onMouseEnter={() => setSelectedSlashIndex(index)}
+                  className={`w-full flex items-start gap-3 px-3 py-2 text-left transition-colors ${
+                    index === selectedSlashIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
+                  }`}
+                >
+                  <span className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg text-sm font-black ${
+                    index === selectedSlashIndex ? 'bg-sky-100 text-sky-600' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    /
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className={`block truncate text-sm font-bold ${index === selectedSlashIndex ? 'text-sky-600' : 'text-slate-700'}`}>
+                      /{command.name}
+                    </span>
+                    {command.description ? (
+                      <span className="block truncate text-xs text-slate-400">
+                        {command.description}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-4 text-center text-sm text-slate-400 font-medium italic">
+                No commands found
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {mentionActive && (
         <div
           className="absolute bottom-full left-3 md:left-6 mb-2 w-[calc(100%-24px)] md:w-64 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden z-50 animate-in slide-in-from-bottom-2"
@@ -438,6 +557,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                 : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'
             }`}
             title="Emoji"
+            aria-label="Open emoji picker"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -456,6 +576,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                 : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'
             }`}
             title="Stickers"
+            aria-label="Open sticker picker"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
@@ -471,6 +592,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                 : 'text-slate-300'
             }`}
             title="Upload image"
+            aria-label="Upload image"
           >
             {isUploading ? (
               <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
@@ -505,14 +627,19 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
             onSelect={handleSelect}
             onKeyDown={handleKeyDown}
             onScroll={handleScroll}
-            onBlur={() => setMentionActive(false)}
+            onBlur={() => {
+              setMentionActive(false)
+              setSlashActive(false)
+            }}
             disabled={disabled || isSending || isUploading}
             rows={1}
             className="w-full bg-transparent border-none focus:ring-0 resize-none py-2 px-3 placeholder:text-transparent max-h-[200px] relative z-10 m-0"
             style={{ color: 'transparent', caretColor: '#334155' }}
+            aria-label={placeholder}
           />
         </div>
         <button
+          type="button"
           onClick={() => void handleSend()}
           disabled={!content.trim() || isSending || isUploading || disabled}
           className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all flex-shrink-0 ${
@@ -520,6 +647,8 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
               ? 'bg-[#0EA5E9] text-white shadow-lg shadow-sky-200 hover:scale-105 active:scale-95'
               : 'bg-slate-100 text-slate-400'
           }`}
+          title="Send message"
+          aria-label="Send message"
         >
           {isSending ? (
             <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -562,6 +691,32 @@ function buildMentionMeta(
   return {
     mentioned_bot_ids: encoded.mentionedBotIds,
     ...(encoded.normalizedBody ? { normalized_body: encoded.normalizedBody } : {}),
+  }
+}
+
+function buildSlashCommandMeta(
+  body: string,
+  commands: SlashCommand[],
+): Record<string, unknown> {
+  const text = body.trim()
+  if (!text.startsWith('/')) {
+    return {}
+  }
+
+  const commandName = text.slice(1).split(/\s+/, 1)[0]?.trim()
+  if (!commandName) {
+    return {}
+  }
+
+  const matched = commands.find((command) => command.name.toLowerCase() === commandName.toLowerCase())
+  if (!matched) {
+    return {}
+  }
+
+  return {
+    command_source: 'native',
+    native_command: true,
+    native_command_name: matched.name,
   }
 }
 

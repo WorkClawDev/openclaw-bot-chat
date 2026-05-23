@@ -97,6 +97,21 @@ export interface ComposerMessageInput {
   meta?: Record<string, unknown>
 }
 
+export interface SlashCommandArg {
+  name: string
+  description?: string
+  type?: string
+  required?: boolean
+  choices?: unknown[]
+}
+
+export interface SlashCommand {
+  name: string
+  description?: string
+  acceptsArgs?: boolean
+  args?: SlashCommandArg[]
+}
+
 export interface Message {
   id: string
   db_id?: number
@@ -220,6 +235,7 @@ export interface RealtimeBootstrapResponse {
   principal_id: string
   subscriptions: RealtimeSubscription[]
   publish_topics: string[]
+  slash_command_topic?: string
   history?: {
     max_catchup_batch?: number
   }

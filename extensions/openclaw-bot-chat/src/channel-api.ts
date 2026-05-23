@@ -1,5 +1,6 @@
 export const BOT_CHAT_CHANNEL_ID = "bot-chat" as const;
 export const BOT_CHAT_DEFAULT_ACCOUNT_ID = "default" as const;
+export const BOT_CHAT_SLASH_COMMAND_TOPIC = "control/bot-chat/slash-commands" as const;
 export const BOT_CHAT_PAIRING_APPROVED_MESSAGE =
   "BotChat pairing approved. You can send messages to OpenClaw now." as const;
 
@@ -76,6 +77,11 @@ export type ChannelCapabilities = {
   reactions?: boolean;
   threads?: boolean;
   nativeCommands?: boolean;
+};
+
+export type ChannelCommandAdapter = {
+  nativeCommandsAutoEnabled?: boolean;
+  nativeSkillsAutoEnabled?: boolean;
 };
 
 export type ChannelConfigAdapter<ResolvedAccount> = {
@@ -172,6 +178,16 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
   }) => Promise<void | { stop?: () => Promise<void> }>;
 };
 
+export type ChannelOutboundDeliveryResult = {
+  channel: string;
+  messageId: string;
+  channelId?: string;
+  roomId?: string;
+  conversationId?: string;
+  timestamp?: number;
+  meta?: Record<string, unknown>;
+};
+
 export type ChannelOutboundAdapter = {
   deliveryMode: "direct" | "gateway" | "hybrid";
   textChunkLimit?: number;
@@ -181,15 +197,16 @@ export type ChannelOutboundAdapter = {
     text: string;
     accountId?: string | null;
     metadata?: Record<string, unknown>;
-  }) => Promise<{
-    channel: string;
-    messageId: string;
-    channelId?: string;
-    roomId?: string;
-    conversationId?: string;
-    timestamp?: number;
-    meta?: Record<string, unknown>;
-  }>;
+  }) => Promise<ChannelOutboundDeliveryResult>;
+  sendMedia?: (params: {
+    cfg: Record<string, unknown>;
+    to: string;
+    text?: string;
+    mediaUrl: string;
+    mediaAccess?: Record<string, unknown>;
+    accountId?: string | null;
+    metadata?: Record<string, unknown>;
+  }) => Promise<ChannelOutboundDeliveryResult>;
 };
 
 export type ChannelPairingAdapter = {
@@ -293,6 +310,7 @@ export type ChannelPlugin<ResolvedAccount = unknown> = {
   reload?: { configPrefixes: string[]; noopPrefixes?: string[] };
   configSchema?: Record<string, unknown>;
   config: ChannelConfigAdapter<ResolvedAccount>;
+  commands?: ChannelCommandAdapter;
   setup?: ChannelSetupAdapter;
   status?: ChannelStatusAdapter<ResolvedAccount>;
   gateway?: ChannelGatewayAdapter<ResolvedAccount>;

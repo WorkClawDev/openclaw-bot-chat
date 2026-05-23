@@ -2,17 +2,29 @@
 
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useChat } from '@/contexts/ChatContext'
 import { AppLayout } from '@/components/AppLayout'
-import { Card, CardContent, CardHeader } from '@/components/Card'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
 import { Avatar } from '@/components/Avatar'
 import { LoadingPage } from '@/components/Loading'
+import { StatusPill } from '@/components/StatusPill'
 import { useAppearanceStore, BackgroundType, FontType } from '@/lib/store'
+
+type SettingsTab = 'profile' | 'appearance' | 'notifications' | 'security' | 'system'
+
+const settingsSections: Array<{ id: SettingsTab; label: string; group: string }> = [
+  { id: 'profile', label: 'Account & Profile', group: 'Account' },
+  { id: 'appearance', label: 'Appearance', group: 'Preferences' },
+  { id: 'notifications', label: 'Notifications', group: 'Preferences' },
+  { id: 'security', label: 'Security', group: 'Account' },
+  { id: 'system', label: 'System', group: 'Diagnostics' },
+]
 
 export default function SettingsPage() {
   const { isAuthenticated, isLoading: authLoading, user, updateUser, changePassword, logout } = useAuth()
-  const [activeTab, setActiveTab] = useState<'profile' | 'appearance' | 'notifications' | 'security'>('profile')
+  const { connectionState } = useChat()
+  const [activeTab, setActiveTab] = useState<SettingsTab>('profile')
   const { background, font, setBackground, setFont } = useAppearanceStore()
   
   const [username, setUsername] = useState('')
@@ -109,42 +121,43 @@ export default function SettingsPage() {
 
   return (
     <AppLayout>
-      {/* Column 2: Settings Nav */}
-      <aside className="w-[300px] h-screen bg-white/65 backdrop-blur-xl border-r border-white/20 flex flex-col overflow-hidden">
-        <div className="p-4 border-b border-white/20">
+      <aside className="hidden h-full w-[300px] flex-shrink-0 flex-col overflow-hidden border-r border-slate-200/70 bg-white/80 backdrop-blur-xl md:flex">
+        <div className="p-4 border-b border-slate-200/70">
           <h2 className="text-xl font-bold text-slate-800 tracking-tight">Settings</h2>
         </div>
-        <div className="p-2 space-y-1">
-          <button 
-            onClick={() => setActiveTab('profile')}
-            className={`w-full text-left px-4 py-3 rounded-xl font-bold text-sm transition-all ${activeTab === 'profile' ? 'bg-sky-500/10 text-sky-600' : 'text-slate-500 hover:bg-white/50'}`}
-          >
-            Account & Profile
-          </button>
-          <button 
-            onClick={() => setActiveTab('appearance')}
-            className={`w-full text-left px-4 py-3 rounded-xl font-bold text-sm transition-all ${activeTab === 'appearance' ? 'bg-sky-500/10 text-sky-600' : 'text-slate-500 hover:bg-white/50'}`}
-          >
-            Appearance
-          </button>
-          <button 
-            onClick={() => setActiveTab('notifications')}
-            className={`w-full text-left px-4 py-3 rounded-xl font-bold text-sm transition-all ${activeTab === 'notifications' ? 'bg-sky-500/10 text-sky-600' : 'text-slate-500 hover:bg-white/50'}`}
-          >
-            Notifications
-          </button>
-          <button 
-            onClick={() => setActiveTab('security')}
-            className={`w-full text-left px-4 py-3 rounded-xl font-bold text-sm transition-all ${activeTab === 'security' ? 'bg-sky-500/10 text-sky-600' : 'text-slate-500 hover:bg-white/50'}`}
-          >
-            Security
-          </button>
+        <div className="p-2 space-y-5">
+          {['Account', 'Preferences', 'Diagnostics'].map((group) => (
+            <div key={group} className="space-y-1">
+              <p className="px-4 pt-2 text-[10px] font-black uppercase tracking-normal text-slate-400">{group}</p>
+              {settingsSections.filter((section) => section.group === group).map((section) => (
+                <button
+                  key={section.id}
+                  onClick={() => setActiveTab(section.id)}
+                  className={`w-full rounded-xl px-4 py-3 text-left text-sm font-bold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${activeTab === section.id ? 'bg-sky-50 text-sky-700 ring-1 ring-sky-100' : 'text-slate-500 hover:bg-white'}`}
+                >
+                  {section.label}
+                </button>
+              ))}
+            </div>
+          ))}
         </div>
       </aside>
 
-      {/* Column 3: Main Settings Area */}
-      <section className="flex-1 h-screen overflow-y-auto bg-white/95 p-12">
-        <div className="max-w-2xl mx-auto space-y-12 pb-20">
+      <section className="flex-1 h-full overflow-y-auto bg-white p-4 md:p-10 lg:p-12">
+        <div className="md:hidden -mx-4 mb-5 overflow-x-auto border-b border-slate-200 px-4 pb-3">
+          <div className="flex min-w-max gap-2">
+            {settingsSections.map((section) => (
+              <button
+                key={section.id}
+                onClick={() => setActiveTab(section.id)}
+                className={`rounded-xl px-3 py-2 text-sm font-bold transition-all ${activeTab === section.id ? 'bg-sky-500 text-white' : 'bg-slate-100 text-slate-600'}`}
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mx-auto max-w-[760px] space-y-10 pb-20">
           {activeTab === 'profile' && (
             <>
               <header>
@@ -155,7 +168,7 @@ export default function SettingsPage() {
               {/* Profile Section */}
               <section className="space-y-6">
                 <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest ml-1">Profile Information</h2>
-                <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm space-y-8">
+                <div className="bg-white rounded-xl p-5 md:p-8 border border-slate-100 shadow-sm space-y-8">
                   <div className="flex items-center gap-6">
                     <Avatar name={user.username} size="xl" className="w-20 h-20 shadow-lg shadow-slate-100 ring-4 ring-slate-50" />
                     <div>
@@ -206,7 +219,7 @@ export default function SettingsPage() {
               <section className="space-y-8">
                 <div>
                   <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest ml-1 mb-4">Background Theme</h2>
-                  <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                     {[
                       { id: 'default', name: 'Default', colors: 'bg-slate-100' },
                       { id: 'dark', name: 'Dark Night', colors: 'bg-slate-900' },
@@ -218,10 +231,10 @@ export default function SettingsPage() {
                       <button
                         key={theme.id}
                         onClick={() => setBackground(theme.id as BackgroundType)}
-                        className={`p-4 rounded-2xl border-2 transition-all text-left space-y-2 ${background === theme.id ? 'border-sky-500 bg-sky-50/50' : 'border-transparent bg-slate-50 hover:bg-slate-100'}`}
+                        className={`p-3 rounded-xl border-2 transition-all text-left space-y-2 ${background === theme.id ? 'border-sky-500 bg-sky-50/50' : 'border-transparent bg-slate-50 hover:bg-slate-100'}`}
                       >
                         <div className={`w-full h-12 rounded-lg ${theme.colors}`} />
-                        <span className="text-sm font-bold text-slate-700 block text-center">{theme.name}</span>
+                        <span className="block truncate text-center text-sm font-bold text-slate-700">{theme.name}</span>
                       </button>
                     ))}
                   </div>
@@ -240,7 +253,7 @@ export default function SettingsPage() {
                       <button
                         key={f.id}
                         onClick={() => setFont(f.id as FontType)}
-                        className={`w-full flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${font === f.id ? 'border-sky-500 bg-sky-50/50' : 'border-transparent bg-slate-50 hover:bg-slate-100'}`}
+                        className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${font === f.id ? 'border-sky-500 bg-sky-50/50' : 'border-transparent bg-slate-50 hover:bg-slate-100'}`}
                       >
                         <span className={`text-lg ${f.class} text-slate-700`}>{f.name}</span>
                         {font === f.id && <div className="w-2 h-2 rounded-full bg-sky-500" />}
@@ -262,7 +275,7 @@ export default function SettingsPage() {
               {/* Password Section */}
               <section className="space-y-6">
                 <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest ml-1">Change Password</h2>
-                <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm space-y-6">
+                <div className="bg-white rounded-xl p-5 md:p-8 border border-slate-100 shadow-sm space-y-6">
                   <form onSubmit={handleChangePassword} className="space-y-6">
                     <Input
                       type="password"
@@ -273,7 +286,7 @@ export default function SettingsPage() {
                       className="rounded-2xl"
                     />
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <Input
                         type="password"
                         label="New Password"
@@ -314,7 +327,7 @@ export default function SettingsPage() {
               {/* Danger Zone */}
               <section className="space-y-6 pt-6">
                 <h2 className="text-sm font-black text-red-400 uppercase tracking-widest ml-1">Danger Zone</h2>
-                <div className="bg-red-50 rounded-3xl p-8 border border-red-100 flex items-center justify-between">
+                <div className="bg-red-50 rounded-xl p-5 md:p-8 border border-red-100 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h4 className="font-bold text-red-900">Sign Out</h4>
                     <p className="text-sm text-red-600/70">Sign out of your account on this device.</p>
@@ -333,15 +346,49 @@ export default function SettingsPage() {
                 <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Notifications</h1>
                 <p className="text-slate-500 mt-1">Configure how you receive updates and messages.</p>
               </header>
-              <div className="bg-white rounded-3xl p-12 border border-slate-100 text-center space-y-4">
+              <div className="bg-white rounded-xl p-8 md:p-12 border border-slate-100 text-center space-y-4">
                 <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto text-2xl">🔔</div>
                 <h3 className="text-xl font-bold text-slate-800">Notification settings coming soon</h3>
                 <p className="text-slate-400 max-w-sm mx-auto">We are working on bringing desktop and email notifications to the platform.</p>
               </div>
             </>
           )}
+
+          {activeTab === 'system' && (
+            <>
+              <header>
+                <h1 className="text-3xl font-bold text-slate-800 tracking-tight">System</h1>
+                <p className="text-slate-500 mt-1">Connection and session state for this browser.</p>
+              </header>
+
+              <section className="space-y-4">
+                <SystemRow
+                  label="Realtime connection"
+                  value={connectionState}
+                  badge={<StatusPill tone={connectionState === 'connected' ? 'success' : connectionState === 'idle' ? 'neutral' : 'warning'}>{connectionState}</StatusPill>}
+                />
+                <SystemRow label="API base URL" value={process.env.NEXT_PUBLIC_API_URL || 'Same origin'} />
+                <SystemRow label="MQTT WebSocket endpoint" value={process.env.NEXT_PUBLIC_MQTT_WS_URL || 'Provided by realtime bootstrap'} />
+                <SystemRow label="User ID" value={user.id} />
+                <SystemRow label="Username" value={user.username} />
+                <SystemRow label="Email" value={user.email} />
+              </section>
+            </>
+          )}
         </div>
       </section>
     </AppLayout>
+  )
+}
+
+function SystemRow({ label, value, badge }: { label: string; value: string; badge?: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-xs font-black uppercase tracking-normal text-slate-400">{label}</p>
+        {badge}
+      </div>
+      <p className="break-all font-mono text-sm text-slate-700">{value}</p>
+    </div>
   )
 }

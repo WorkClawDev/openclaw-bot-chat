@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import {
   buildBotChatOutboundMessageTarget,
   buildBotChatOutboundPayload,
@@ -261,6 +264,46 @@ test('normalize inbound payload accepts text aliases', () => {
   assert.equal(topLevelTextMessage.text, 'hello from top-level text');
 });
 
+test('normalize inbound image payload preserves asset metadata and fallback text for replay', () => {
+  const message = normalizeBotChatInboundMessage(
+    {
+      id: 'img-1',
+      conversation_id: 'conv-1',
+      from: { id: 'user-1' },
+      content: {
+        type: 'image',
+        url: 'https://assets.example/image.png',
+        meta: {
+          file_name: 'image.png',
+          mime_type: 'image/png',
+        },
+      },
+    },
+    'topic/inbound',
+  );
+
+  assert.deepEqual(message, {
+    channelId: 'conv-1',
+    userId: 'user-1',
+    text: 'image.png',
+    metadata: {
+      topic: 'topic/inbound',
+      content_type: 'image',
+      message_id: 'img-1',
+      file_name: 'image.png',
+      mime_type: 'image/png',
+      asset: {
+        kind: 'image',
+        type: 'image',
+        source_url: 'https://assets.example/image.png',
+        file_name: 'image.png',
+        mime_type: 'image/png',
+        content_type: 'image/png',
+      },
+    },
+  });
+});
+
 test('outbound payload preserves text, target ids, and thread metadata', () => {
   const payload = JSON.parse(
     buildBotChatOutboundPayload({
@@ -292,6 +335,27 @@ test('outbound payload preserves text, target ids, and thread metadata', () => {
   assert.equal('botId' in payload.content.meta, false);
   assert.equal('toType' in payload.content.meta, false);
   assert.equal('publishTopic' in payload.content.meta, false);
+});
+
+test('outbound image payload prefers hydrated asset urls over source_url', () => {
+  const payload = JSON.parse(
+    buildBotChatOutboundPayload({
+      channelId: 'conv-2',
+      userId: 'user-2',
+      text: 'image caption',
+      metadata: {
+        content_type: 'image',
+        asset: {
+          id: 'asset-1',
+          download_url: 'https://assets.example/image.png?sig=ok',
+          source_url: '/tmp/local-image.png',
+        },
+      },
+    }),
+  );
+
+  assert.equal(payload.content.type, 'image');
+  assert.equal(payload.content.url, 'https://assets.example/image.png?sig=ok');
 });
 
 test('state path stays scoped by bot id', () => {
@@ -358,6 +422,9 @@ test('botChatPlugin exposes formal channel plugin surface', () => {
   assert.equal(botChatPlugin.meta.label, 'BotChat');
   assert.deepEqual(botChatPlugin.capabilities.chatTypes, ['direct', 'channel']);
   assert.equal(botChatPlugin.capabilities.threads, false);
+  assert.equal(botChatPlugin.capabilities.nativeCommands, true);
+  assert.equal(botChatPlugin.commands.nativeCommandsAutoEnabled, true);
+  assert.equal(botChatPlugin.commands.nativeSkillsAutoEnabled, true);
   assert.ok(botChatPlugin.config);
   assert.ok(botChatPlugin.setup);
   assert.ok(botChatPlugin.status);
@@ -506,6 +573,104 @@ test('outbound adapter uses parsed BotChat target mapping', async () => {
   ]);
 });
 
+test('outbound adapter strips MEDIA lines from text and imports local media before sendMedia', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  const fetchCalls = [];
+  const tempFile = path.join(os.tmpdir(), `botchat-media-${Date.now()}.png`);
+
+  await fs.writeFile(tempFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  setBotChatRuntime({
+    async start() {},
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `msg-${sent.length}` };
+    },
+  });
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    return {
+      ok: true,
+      async json() {
+        return {
+          data: {
+            id: 'asset-1',
+            kind: 'image',
+            mime_type: 'image/png',
+            content_type: 'image/png',
+            file_name: 'reply.png',
+            download_url: 'https://assets.example/reply.png?sig=ok',
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    await botChatPlugin.outbound.sendText({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      to: 'dm:alice',
+      text: `caption\nMEDIA:${tempFile}`,
+    });
+    await botChatPlugin.outbound.sendMedia({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      to: 'dm:alice',
+      text: '',
+      mediaUrl: tempFile,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    setBotChatRuntime(originalRuntime);
+    await fs.rm(tempFile, { force: true });
+  }
+
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/assets/image/import');
+  const importPayload = JSON.parse(fetchCalls[0].init.body);
+  assert.equal(importPayload.file_name.endsWith('.png'), true);
+  assert.equal(importPayload.content_type, 'image/png');
+  assert.equal(importPayload.data_url.startsWith('data:image/png;base64,'), true);
+
+  assert.deepEqual(sent, [
+    {
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'caption',
+      metadata: {
+        target: 'dm:alice',
+        chatType: 'direct',
+        botId: 'bot-a',
+        toType: 'user',
+        publishTopic: 'chat/dm/user/alice/bot/bot-a',
+      },
+    },
+    {
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'reply.png',
+      metadata: {
+        content_type: 'image',
+        asset: {
+          id: 'asset-1',
+          kind: 'image',
+          mime_type: 'image/png',
+          content_type: 'image/png',
+          file_name: 'reply.png',
+          download_url: 'https://assets.example/reply.png?sig=ok',
+        },
+        target: 'dm:alice',
+        chatType: 'direct',
+        botId: 'bot-a',
+        toType: 'user',
+        publishTopic: 'chat/dm/user/alice/bot/bot-a',
+      },
+    },
+  ]);
+});
+
 test('gateway startAccount returns stop handle when host has no abort signal', async () => {
   const originalRuntime = getBotChatRuntime();
   let stopped = false;
@@ -597,6 +762,7 @@ test('gateway replies do not reuse inbound message ids', async () => {
 
   assert.equal(dispatchCalls.length, 1);
   assert.equal(dispatchCalls[0].ctx.Body, 'hi');
+  assert.equal(dispatchCalls[0].ctx.CommandSource, 'text');
   assert.deepEqual(sent, [
     {
       channelId: 'chat/dm/user/alice/bot/bot-a',
@@ -611,6 +777,63 @@ test('gateway replies do not reuse inbound message ids', async () => {
       },
     },
   ]);
+});
+
+test('gateway dispatch marks autocomplete slash commands as native commands', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel() {
+      return { messageId: 'unused-reply' };
+    },
+  });
+
+  const abort = new AbortController();
+  const dispatchCalls = [];
+  const startPromise = botChatPlugin.gateway.startAccount({
+    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+    account: resolveBotChatAccount({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+    }),
+    abortSignal: abort.signal,
+    channelRuntime: {
+      reply: {
+        async dispatchReplyWithBufferedBlockDispatcher(params) {
+          dispatchCalls.push(params);
+        },
+      },
+    },
+  });
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: '/help',
+      metadata: {
+        message_id: 'command-message-1',
+        senderType: 'user',
+        command_source: 'native',
+        native_command_name: 'help',
+      },
+    });
+  } finally {
+    abort.abort();
+    await startPromise;
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].ctx.CommandBody, '/help');
+  assert.equal(dispatchCalls[0].ctx.CommandSource, 'native');
 });
 
 test('gateway dispatch includes BotChat image assets as attachments', async () => {

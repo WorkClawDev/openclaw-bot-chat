@@ -26,6 +26,50 @@ func TestNormalizeIncomingMessageUsesMQTTTopicAsCanonicalConversation(t *testing
 	}
 }
 
+func TestNormalizeIncomingMessagePromotesImageURLIntoAssetMeta(t *testing.T) {
+	normalized := normalizeIncomingMessage("chat/group/11111111-1111-1111-1111-111111111111", MessagePayload{
+		ContentRaw: []byte(`{"type":"image","body":"generated image","url":"https://assets.example/image.png?sig=ok"}`),
+	})
+
+	payload := withMessageContentAsset(normalized.meta, &MessageContentPayload{
+		Type: "image",
+		URL:  "https://assets.example/image.png?sig=ok",
+	})
+	if !reflect.DeepEqual(normalized.meta, payload) {
+		t.Fatalf("normalizeIncomingMessage() meta = %#v, want %#v", normalized.meta, payload)
+	}
+
+	asset := normalized.meta["asset"].(map[string]interface{})
+	if got := asset["external_url"]; got != "https://assets.example/image.png?sig=ok" {
+		t.Fatalf("asset external_url = %#v", got)
+	}
+}
+
+func TestWithMessageContentAssetPrefersExistingAssetFields(t *testing.T) {
+	meta := map[string]interface{}{
+		"asset": map[string]interface{}{
+			"id":           "asset-1",
+			"download_url": "https://cdn.example/already-ready.png",
+		},
+	}
+
+	next := withMessageContentAsset(meta, &MessageContentPayload{
+		URL:       "https://assets.example/image.png?sig=ok",
+		SourceURL: "https://source.example/image.png",
+	})
+
+	asset := next["asset"].(map[string]interface{})
+	if got := asset["download_url"]; got != "https://cdn.example/already-ready.png" {
+		t.Fatalf("asset download_url = %#v", got)
+	}
+	if got := asset["source_url"]; got != "https://source.example/image.png" {
+		t.Fatalf("asset source_url = %#v", got)
+	}
+	if _, exists := asset["external_url"]; exists {
+		t.Fatalf("asset external_url should not override existing asset URLs: %#v", asset["external_url"])
+	}
+}
+
 func TestUniqueSortedTopicsNormalizesAndDeduplicates(t *testing.T) {
 	topics := uniqueSortedTopics([]string{
 		"chat/group/22222222-2222-2222-2222-222222222222",

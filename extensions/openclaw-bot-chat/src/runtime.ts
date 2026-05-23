@@ -45,6 +45,11 @@ interface BootstrapResponse {
   };
   subscriptions?: Array<{ topic?: string; qos?: number }>;
   publish_topics?: string[];
+  conversations?: Array<{
+    conversation_id?: string;
+    last_seq?: number;
+    last_message_id?: string;
+  }>;
 }
 
 interface CheckpointRecord {
@@ -55,6 +60,9 @@ interface CheckpointRecord {
 }
 
 type MqttQos = 0 | 1 | 2;
+const BOT_CHAT_MQTT_KEEPALIVE_SECONDS = 30;
+const BOT_CHAT_MQTT_RECONNECT_MS = 1000;
+const BOT_CHAT_MQTT_CONNECT_TIMEOUT_MS = 30000;
 
 export interface BotChatRuntime {
   start(
@@ -212,7 +220,7 @@ function inferBotChatDirectUserId(value: string, botId: string): string | undefi
 }
 
 function omitBotChatInternalMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
-  const { botId: _botId, toType: _toType, publishTopic: _publishTopic, ...rest } = metadata;
+  const { botId: _botId, toType: _toType, publishTopic: _publishTopic, retain: _retain, ...rest } = metadata;
   return rest;
 }
 
@@ -443,10 +451,20 @@ export function buildBotChatOutboundPayload(message: BotChatMessage): string {
     randomUUID();
   const botId = readString(message.metadata?.botId) ?? BOT_CHAT_DEFAULT_ACCOUNT_ID;
   const toType = readString(message.metadata?.toType) ?? "user";
+  const contentType = readString(message.metadata?.content_type);
+  const asset = isRecord(message.metadata?.asset) ? message.metadata.asset : undefined;
+  const assetUrl =
+    readString(asset?.download_url) ??
+    readString(asset?.external_url) ??
+    readString(asset?.source_url);
   const contentMeta = {
     ...omitBotChatInternalMetadata(message.metadata ?? {}),
     message_id: messageId,
   };
+  const content =
+    contentType === "image"
+      ? { type: "image", body: message.text, ...(assetUrl ? { url: assetUrl } : {}), meta: contentMeta }
+      : { type: "text", body: message.text, meta: contentMeta };
   return JSON.stringify({
     id: messageId,
     conversation_id: message.channelId,
@@ -454,7 +472,7 @@ export function buildBotChatOutboundPayload(message: BotChatMessage): string {
     ...(replyToId ? { reply_to_id: replyToId } : {}),
     from: { type: "bot", id: botId },
     to: { type: toType, id: message.userId },
-    content: { type: "text", body: message.text, meta: contentMeta },
+    content,
     timestamp: Math.floor(Date.now() / 1000),
   });
 }
@@ -518,10 +536,15 @@ class DefaultBotChatRuntime implements BotChatRuntime {
 
     this.statePath = buildBotChatStatePath(config);
     await this.loadState();
+    this.syncCheckpointsFromBootstrap(bootstrap);
 
     const mqtt = await import("mqtt");
     this.mqttClient = mqtt.connect(brokerUrl, {
       clientId: readString(bootstrap.client_id),
+      keepalive: BOT_CHAT_MQTT_KEEPALIVE_SECONDS,
+      reconnectPeriod: BOT_CHAT_MQTT_RECONNECT_MS,
+      connectTimeout: BOT_CHAT_MQTT_CONNECT_TIMEOUT_MS,
+      clean: true,
       username: readString(bootstrap.broker?.username),
       password: readString(bootstrap.broker?.password),
     });
@@ -544,6 +567,18 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       void this.recoverHistory(config);
     });
 
+    this.mqttClient.on("reconnect", () => {
+      logger.warn("botchat.mqtt.reconnecting", {
+        brokerUrl,
+      });
+    });
+
+    this.mqttClient.on("close", () => {
+      logger.warn("botchat.mqtt.closed", {
+        brokerUrl,
+      });
+    });
+
     this.mqttClient.on("message", (topic, payload) => {
       void this.handleInbound(topic, payload.toString("utf8"), config);
     });
@@ -553,8 +588,6 @@ class DefaultBotChatRuntime implements BotChatRuntime {
         error: error.message,
       });
     });
-
-    await this.recoverHistory(config);
   }
 
   async stop(): Promise<void> {
@@ -606,8 +639,9 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       },
     });
 
+    const retain = message.metadata?.retain === true;
     await new Promise<void>((resolve, reject) => {
-      client.publish(topic, payload, { qos: this.qos }, (error) => {
+      client.publish(topic, payload, { qos: this.qos, retain }, (error) => {
         if (error) {
           reject(error);
           return;
@@ -735,6 +769,29 @@ class DefaultBotChatRuntime implements BotChatRuntime {
         }
         await this.onInboundMessage(normalized);
       }
+    }
+  }
+
+  private syncCheckpointsFromBootstrap(bootstrap: BootstrapResponse): void {
+    for (const conversation of bootstrap.conversations ?? []) {
+      const channelId = readString(conversation.conversation_id);
+      if (!channelId) {
+        continue;
+      }
+
+      const existing = this.checkpoints.get(channelId);
+      const lastSeq = readNumber(conversation.last_seq);
+      const lastMessageId = readString(conversation.last_message_id);
+      if (existing?.lastSeq !== undefined) {
+        continue;
+      }
+
+      this.checkpoints.set(channelId, {
+        channelId,
+        lastSeq: lastSeq ?? existing?.lastSeq,
+        lastMessageId: lastMessageId ?? existing?.lastMessageId,
+        updatedAt: existing?.updatedAt ?? Date.now(),
+      });
     }
   }
 
@@ -904,10 +961,16 @@ function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
   const contentType =
     readString(content?.type) ?? readString(raw.content_type) ?? readString(raw.msg_type);
   const contentMeta = isRecord(content?.meta) ? content.meta : undefined;
+  const contentAsset = buildInboundContentAsset(raw, content, contentMeta, contentType);
   const messageId = readString(raw.id) ?? readString(raw.message_id);
   const seq = readNumber(raw.seq);
   const userId = readString(from?.id) ?? readString(raw.from_id);
-  const text = readString(content?.body) ?? readString(content?.text) ?? readString(raw.body) ?? readString(raw.text);
+  const text =
+    readString(content?.body) ??
+    readString(content?.text) ??
+    readString(raw.body) ??
+    readString(raw.text) ??
+    inferInboundMessageText(contentType, contentAsset);
   const threadId =
     readString(raw.thread_id) ?? readString(contentMeta?.threadId) ?? readString(contentMeta?.thread_id);
   const replyToId =
@@ -930,10 +993,65 @@ function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
       ...(messageId ? { message_id: messageId } : {}),
       ...(seq !== undefined ? { seq } : {}),
       ...(contentMeta ?? {}),
+      ...(contentAsset ? { asset: contentAsset } : {}),
       ...(threadId ? { threadId } : {}),
       ...(replyToId ? { replyToId } : {}),
     },
   };
+}
+
+function buildInboundContentAsset(
+  raw: Record<string, unknown>,
+  content: Record<string, unknown> | undefined,
+  contentMeta: Record<string, unknown> | undefined,
+  contentType: string | undefined,
+): Record<string, unknown> | undefined {
+  const metaAsset = isRecord(contentMeta?.asset) ? contentMeta.asset : undefined;
+  if (metaAsset) {
+    return metaAsset;
+  }
+
+  const sourceUrl =
+    readString(content?.url) ??
+    readString(content?.source_url) ??
+    readString(raw.url) ??
+    readString(raw.source_url);
+  if (!sourceUrl) {
+    return undefined;
+  }
+
+  const fileName =
+    readString(contentMeta?.file_name) ??
+    readString(contentMeta?.filename) ??
+    readString(contentMeta?.name) ??
+    readString(raw.file_name) ??
+    readString(raw.filename) ??
+    readString(raw.name);
+  const mimeType =
+    readString(contentMeta?.mime_type) ??
+    readString(contentMeta?.mimeType) ??
+    readString(contentMeta?.content_type) ??
+    readString(raw.mime_type) ??
+    readString(raw.mimeType);
+  const kind = contentType === "image" ? "image" : readString(contentType) ?? "file";
+
+  return {
+    kind,
+    type: kind,
+    source_url: sourceUrl,
+    ...(fileName ? { file_name: fileName } : {}),
+    ...(mimeType ? { mime_type: mimeType, content_type: mimeType } : {}),
+  };
+}
+
+function inferInboundMessageText(
+  contentType: string | undefined,
+  asset: Record<string, unknown> | undefined,
+): string | undefined {
+  if (contentType !== "image" || !asset) {
+    return undefined;
+  }
+  return readString(asset.file_name) ?? "Image";
 }
 
 async function fetchConversationMessages(

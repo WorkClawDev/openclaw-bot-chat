@@ -329,20 +329,44 @@ function getDirectPeerRank(type: 'user' | 'bot'): number {
 function normalizeMessageContent(content: ChatMessageContent): MessageContent {
   const meta = content.meta || {}
   const asset = readAsset(meta)
+  const type = normalizeMessageContentType(content.type, meta)
   const url =
     content.url ||
     asset?.download_url ||
     asset?.external_url ||
-    asset?.source_url
+    asset?.source_url ||
+    readString(meta.download_url) ||
+    readString(meta.external_url) ||
+    readString(meta.source_url) ||
+    readString(meta.url)
 
   return {
     ...content,
-    type: content.type || 'text',
+    type,
     url,
-    name: content.name || asset?.file_name,
+    name: content.name || asset?.file_name || readString(meta.file_name) || readString(meta.name),
     size: content.size || asset?.size,
     meta,
   }
+}
+
+function normalizeMessageContentType(
+  contentType: MessageContent['type'] | undefined,
+  meta: Record<string, unknown>,
+): MessageContent['type'] {
+  const metaType = readString(meta.content_type)
+  if (
+    metaType === 'image' ||
+    metaType === 'file' ||
+    metaType === 'audio' ||
+    metaType === 'video'
+  ) {
+    if (!contentType || contentType === 'text') {
+      return metaType
+    }
+  }
+
+  return contentType || 'text'
 }
 
 function readAsset(meta: Record<string, unknown> | undefined) {
@@ -362,6 +386,10 @@ function readAsset(meta: Record<string, unknown> | undefined) {
     external_url?: string
     source_url?: string
   }
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 function pickLatestMessage(left?: Message, right?: Message): Message | undefined {

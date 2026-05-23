@@ -2,7 +2,7 @@
 
 import React from 'react'
 import { Avatar } from '@/components/Avatar'
-import type { Bot, Group, Conversation } from '@/lib/types'
+import { StatusPill } from '@/components/StatusPill'
 
 interface ConversationItemProps {
   name: string
@@ -28,14 +28,14 @@ export function ConversationItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full h-[72px] flex items-center gap-3 px-4 transition-all duration-200 group relative ${
+      className={`group relative flex h-[76px] w-full items-center gap-3 px-4 text-left transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500 ${
         isActive
-          ? 'bg-[#0EA5E9]/10'
-          : 'hover:bg-white/50'
+          ? 'bg-sky-50'
+          : 'hover:bg-white/70'
       }`}
     >
       {isActive && (
-        <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#0EA5E9]" />
+        <div className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-sky-500" />
       )}
       
       <div className="relative flex-shrink-0">
@@ -47,9 +47,9 @@ export function ConversationItem({
         )}
       </div>
 
-      <div className="flex-1 min-w-0 text-left">
+      <div className="min-w-0 flex-1">
         <div className="flex justify-between items-baseline mb-0.5">
-          <h4 className={`text-sm font-semibold truncate ${isActive ? 'text-[#0EA5E9]' : 'text-slate-900'}`}>
+          <h4 className={`truncate text-sm font-bold ${isActive ? 'text-sky-700' : 'text-slate-900'}`}>
             {name}
           </h4>
           {timestamp && (
@@ -59,13 +59,18 @@ export function ConversationItem({
           )}
         </div>
         <div className="flex justify-between items-center">
-          <p className="text-xs text-slate-500 truncate pr-4">
+          <p className="truncate pr-4 text-xs text-slate-500">
             {lastMessage || 'No messages yet'}
           </p>
           {unreadCount > 0 && (
-            <span className="bg-[#0EA5E9] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+            <span className="min-w-[18px] rounded-full bg-sky-500 px-1.5 py-0.5 text-center text-[10px] font-bold text-white">
               {unreadCount}
             </span>
+          )}
+          {unreadCount === 0 && status === 'online' && (
+            <StatusPill tone="success" className="hidden sm:inline-flex">
+              Online
+            </StatusPill>
           )}
         </div>
       </div>

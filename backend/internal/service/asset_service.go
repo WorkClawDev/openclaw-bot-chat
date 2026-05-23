@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -49,6 +50,13 @@ type CompleteImageUploadRequest struct {
 type PreparedUpload struct {
 	Asset  *model.AssetPayload      `json:"asset"`
 	Upload *storage.PresignedUpload `json:"upload"`
+}
+
+type ImportBotImageRequest struct {
+	SourceURL   string `json:"source_url,omitempty"`
+	DataURL     string `json:"data_url,omitempty"`
+	FileName    string `json:"file_name,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 type AssetService struct {
@@ -226,6 +234,31 @@ func (s *AssetService) HydrateMessageAsset(ctx context.Context, meta map[string]
 	return model.UpsertAssetPayload(meta, enriched)
 }
 
+func (s *AssetService) ImportImageForBot(ctx context.Context, botID uuid.UUID, req ImportBotImageRequest) (*model.AssetPayload, error) {
+	if req.SourceURL != "" {
+		return s.ImportRemoteImageForBot(ctx, botID, req.SourceURL)
+	}
+	if req.DataURL == "" {
+		return nil, ErrAssetInvalid
+	}
+
+	contentType, payload, err := decodeImageDataURL(req.DataURL)
+	if err != nil {
+		return nil, err
+	}
+	if req.ContentType != "" {
+		contentType = strings.ToLower(strings.TrimSpace(req.ContentType))
+	}
+	if !isAllowedImageContentType(contentType) {
+		return nil, ErrAssetUnsupportedType
+	}
+	if s.assetCfg.MaxImageSizeMB > 0 && int64(len(payload)) > int64(s.assetCfg.MaxImageSizeMB)*1024*1024 {
+		return nil, ErrAssetTooLarge
+	}
+
+	return s.importImageBytesForBot(ctx, botID, payload, req.FileName, contentType, "")
+}
+
 func (s *AssetService) buildAssetPayload(ctx context.Context, asset *model.Asset) (*model.AssetPayload, error) {
 	if asset == nil {
 		return nil, ErrAssetNotFound
@@ -346,46 +379,7 @@ func (s *AssetService) ImportRemoteImageForBot(ctx context.Context, botID uuid.U
 		return nil, ErrAssetTooLarge
 	}
 
-	width, height := decodeImageDimensions(buffer.Bytes())
-	sum := hex.EncodeToString(hasher.Sum(nil))
-	objectKey := s.buildObjectKey(botID.String(), path.Base(req.URL.Path), contentType)
-
-	if _, err := s.storage.PutObject(ctx, storage.PutObjectInput{
-		ObjectKey:     objectKey,
-		Reader:        bytes.NewReader(buffer.Bytes()),
-		ContentType:   contentType,
-		ContentLength: size,
-	}); err != nil {
-		return nil, err
-	}
-
-	asset := &model.Asset{
-		ID:              uuid.New(),
-		Kind:            model.AssetKindImage,
-		StorageProvider: s.storage.Provider(),
-		Bucket:          s.storage.Bucket(),
-		ObjectKey:       objectKey,
-		MIMEType:        contentType,
-		Size:            size,
-		FileName:        sanitizeFileName(path.Base(req.URL.Path)),
-		Status:          model.AssetStatusReady,
-		OwnerBotID:      &botID,
-		SourceURL:       &sourceURL,
-	}
-	if width > 0 {
-		asset.Width = &width
-	}
-	if height > 0 {
-		asset.Height = &height
-	}
-	if sum != "" {
-		asset.SHA256 = &sum
-	}
-	if err := s.repo.Create(ctx, asset); err != nil {
-		return nil, err
-	}
-
-	return s.buildAssetPayload(ctx, asset)
+	return s.importImageBytesForBot(ctx, botID, buffer.Bytes(), path.Base(req.URL.Path), contentType, sourceURL)
 }
 
 func assetOwnedBySender(asset *model.Asset, senderType string, senderID string) bool {
@@ -405,6 +399,129 @@ func isAllowedImageContentType(contentType string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *AssetService) importImageBytesForBot(
+	ctx context.Context,
+	botID uuid.UUID,
+	payload []byte,
+	fileName string,
+	contentType string,
+	sourceURL string,
+) (*model.AssetPayload, error) {
+	if !s.Enabled() {
+		return nil, ErrAssetProviderDisabled
+	}
+	if !isAllowedImageContentType(contentType) {
+		return nil, ErrAssetUnsupportedType
+	}
+
+	size := int64(len(payload))
+	if size <= 0 {
+		return nil, ErrAssetInvalid
+	}
+	if s.assetCfg.MaxImageSizeMB > 0 && size > int64(s.assetCfg.MaxImageSizeMB)*1024*1024 {
+		return nil, ErrAssetTooLarge
+	}
+
+	normalizedFileName := sanitizeFileName(fileName)
+	if normalizedFileName == "" {
+		normalizedFileName = fmt.Sprintf("%s%s", botID.String(), fileExtensionForContentType(contentType))
+	}
+
+	width, height := decodeImageDimensions(payload)
+	sumBytes := sha256.Sum256(payload)
+	sum := hex.EncodeToString(sumBytes[:])
+	objectKey := s.buildObjectKey(botID.String(), normalizedFileName, contentType)
+
+	if _, err := s.storage.PutObject(ctx, storage.PutObjectInput{
+		ObjectKey:     objectKey,
+		Reader:        bytes.NewReader(payload),
+		ContentType:   contentType,
+		ContentLength: size,
+	}); err != nil {
+		return nil, err
+	}
+
+	asset := &model.Asset{
+		ID:              uuid.New(),
+		Kind:            model.AssetKindImage,
+		StorageProvider: s.storage.Provider(),
+		Bucket:          s.storage.Bucket(),
+		ObjectKey:       objectKey,
+		MIMEType:        contentType,
+		Size:            size,
+		FileName:        normalizedFileName,
+		Status:          model.AssetStatusReady,
+		OwnerBotID:      &botID,
+	}
+	if sourceURL != "" {
+		asset.SourceURL = &sourceURL
+	}
+	if width > 0 {
+		asset.Width = &width
+	}
+	if height > 0 {
+		asset.Height = &height
+	}
+	if sum != "" {
+		asset.SHA256 = &sum
+	}
+	if err := s.repo.Create(ctx, asset); err != nil {
+		return nil, err
+	}
+
+	return s.buildAssetPayload(ctx, asset)
+}
+
+func decodeImageDataURL(value string) (string, []byte, error) {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "data:") {
+		return "", nil, ErrAssetInvalid
+	}
+
+	header, encoded, ok := strings.Cut(value, ",")
+	if !ok {
+		return "", nil, ErrAssetInvalid
+	}
+
+	mediaType := strings.TrimPrefix(header, "data:")
+	parts := strings.Split(mediaType, ";")
+	contentType := strings.ToLower(strings.TrimSpace(parts[0]))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	isBase64 := false
+	for _, part := range parts[1:] {
+		if strings.EqualFold(strings.TrimSpace(part), "base64") {
+			isBase64 = true
+			break
+		}
+	}
+	if !isBase64 {
+		return "", nil, ErrAssetInvalid
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", nil, ErrAssetInvalid
+	}
+	return contentType, decoded, nil
+}
+
+func fileExtensionForContentType(contentType string) string {
+	switch contentType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ""
 	}
 }
 

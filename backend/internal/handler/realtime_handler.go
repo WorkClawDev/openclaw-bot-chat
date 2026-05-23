@@ -16,6 +16,8 @@ type RealtimeHandler struct {
 	broker     config.BrokerClientConfig
 }
 
+const botChatSlashCommandTopic = "control/bot-chat/slash-commands"
+
 type realtimeBootstrapResponse struct {
 	Broker        config.BrokerClientConfig `json:"broker"`
 	ClientID      string                    `json:"client_id"`
@@ -23,6 +25,7 @@ type realtimeBootstrapResponse struct {
 	PrincipalID   string                    `json:"principal_id"`
 	Subscriptions []realtimeSubscription    `json:"subscriptions"`
 	PublishTopics []string                  `json:"publish_topics"`
+	SlashCommandTopic string                `json:"slash_command_topic,omitempty"`
 	History       realtimeHistoryInfo       `json:"history"`
 }
 
@@ -60,6 +63,7 @@ func (h *RealtimeHandler) Bootstrap(c *gin.Context) {
 		apiresponse.InternalError(c, err.Error())
 		return
 	}
+	topics = append(topics, botChatSlashCommandTopic)
 
 	apiresponse.Success(c, realtimeBootstrapResponse{
 		Broker:        h.broker,
@@ -68,6 +72,7 @@ func (h *RealtimeHandler) Bootstrap(c *gin.Context) {
 		PrincipalID:   userID.String(),
 		Subscriptions: toRealtimeSubscriptions(topics, h.broker.QOS),
 		PublishTopics: topics,
+		SlashCommandTopic: botChatSlashCommandTopic,
 		History: realtimeHistoryInfo{
 			MaxCatchupBatch: 200,
 		},

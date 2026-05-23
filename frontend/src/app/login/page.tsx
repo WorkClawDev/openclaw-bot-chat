@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
-import { Card, CardContent, CardFooter } from '@/components/Card'
+import { BrandLogo } from '@/components/BrandLogo'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -53,17 +53,19 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-gray-100 p-4">
-      <Card className="w-full max-w-md">
-        <CardContent>
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-primary-600 mb-2">Welcome Back</h1>
-            <p className="text-gray-600">Sign in to continue to BotChat</p>
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4 sm:p-6">
+      <section className="w-full max-w-[420px] rounded-2xl border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60 backdrop-blur sm:p-8">
+        <div className="mb-8 space-y-4 text-center">
+          <BrandLogo size="lg" className="justify-center" />
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black tracking-normal text-slate-900">Sign in</h1>
+            <p className="text-sm text-slate-500">Return to realtime human and bot chat.</p>
           </div>
+        </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {errors.general && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+              <div className="min-h-[44px] rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
                 {errors.general}
               </div>
             )}
@@ -88,21 +90,18 @@ export default function LoginPage() {
               autoComplete="current-password"
             />
 
-            <Button type="submit" className="w-full" isLoading={isLoading}>
-              Sign In
+            <Button type="submit" className="w-full rounded-xl" isLoading={isLoading}>
+              Sign in
             </Button>
           </form>
-        </CardContent>
 
-        <CardFooter className="justify-center">
-          <p className="text-sm text-gray-600">
+          <p className="mt-6 text-center text-sm text-slate-600">
             Don&apos;t have an account?{' '}
-            <Link href="/register" className="text-primary-600 hover:underline font-medium">
-              Sign up
+            <Link href="/register" className="font-bold text-sky-600 hover:underline">
+              Register
             </Link>
           </p>
-        </CardFooter>
-      </Card>
+      </section>
     </div>
   )
 }
