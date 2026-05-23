@@ -26,7 +26,10 @@ import {
   buildBotChatHistoryMessagesUrl,
 } from '../src/runtime.ts';
 import { inspectBotChatAccount } from '../src/account-inspect.ts';
-import { botChatPlugin } from '../src/channel.ts';
+import {
+  botChatPlugin,
+  setBotChatSlashCommandResolversForTest,
+} from '../src/channel.ts';
 import { botChatSetupPlugin } from '../src/channel.setup.ts';
 import { botChatDoctor } from '../src/doctor.ts';
 import { botChatSecrets } from '../src/secret-config-contract.ts';
@@ -442,6 +445,148 @@ test('botChatPlugin exposes formal channel plugin surface', () => {
   assert.equal(botChatPlugin.security.mode, 'allowFrom');
 });
 
+test('gateway publishes retained slash command catalog from OpenClaw registries', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const sent = [];
+  setBotChatRuntime({
+    async start() {},
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `catalog-${sent.length}` };
+    },
+  });
+  setBotChatSlashCommandResolversForTest({
+    listSkillCommandsForAgents() {
+      return [
+        {
+          name: 'skill-run',
+          description: 'Run a skill',
+          args: [{ name: 'skill', required: true }],
+        },
+      ];
+    },
+    listNativeCommandSpecsForConfig(_cfg, params) {
+      assert.equal(params.provider, 'bot-chat');
+      assert.equal(params.skillCommands.length, 1);
+      return [
+        {
+          name: '/help',
+          summary: 'Show help',
+          options: [{ name: 'topic', type: 'string' }],
+        },
+        {
+          nativeName: 'skill-run',
+          description: 'Duplicate skill command from native registry',
+        },
+      ];
+    },
+    getPluginCommandSpecs(provider, options) {
+      assert.equal(provider, 'bot-chat');
+      assert.equal(options.config.botId, 'bot-a');
+      return [
+        {
+          command: '/plugin-do',
+          description: 'Run plugin command',
+        },
+      ];
+    },
+  });
+
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+    setBotChatSlashCommandResolversForTest(undefined);
+  }
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].channelId, 'control/bot-chat/slash-commands');
+  assert.equal(sent[0].userId, '*');
+  assert.equal(sent[0].text, 'slash_commands');
+  assert.deepEqual(sent[0].metadata.slash_commands, [
+    {
+      name: 'help',
+      description: 'Show help',
+      acceptsArgs: true,
+      args: [{ name: 'topic', type: 'string' }],
+    },
+    {
+      name: 'skill-run',
+      description: 'Duplicate skill command from native registry',
+      acceptsArgs: false,
+      args: undefined,
+    },
+    {
+      name: 'plugin-do',
+      description: 'Run plugin command',
+      acceptsArgs: false,
+      args: undefined,
+    },
+  ]);
+  assert.equal(sent[0].metadata.content_type, 'slash_commands');
+  assert.equal(sent[0].metadata.retain, true);
+});
+
+test('gateway publishes plugin slash commands when native registry is unavailable', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const sent = [];
+  setBotChatRuntime({
+    async start() {},
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `catalog-${sent.length}` };
+    },
+  });
+  setBotChatSlashCommandResolversForTest({
+    listNativeCommandSpecsForConfig() {
+      throw new Error('native registry failed');
+    },
+    getPluginCommandSpecs() {
+      return [
+        {
+          name: 'plugin-only',
+          description: 'Available without native command registry',
+        },
+      ];
+    },
+  });
+
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+    setBotChatSlashCommandResolversForTest(undefined);
+  }
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].metadata.slash_commands, [
+    {
+      name: 'plugin-only',
+      description: 'Available without native command registry',
+      acceptsArgs: false,
+      args: undefined,
+    },
+  ]);
+});
+
 test('account inspector reports botKey source without leaking describe snapshots', () => {
   const fromConfig = inspectBotChatAccount({
     cfg: { backendUrl: 'http://backend', botKey: 'secret-key', name: 'Configured BotChat' },
@@ -834,6 +979,7 @@ test('gateway dispatch marks autocomplete slash commands as native commands', as
   assert.equal(dispatchCalls.length, 1);
   assert.equal(dispatchCalls[0].ctx.CommandBody, '/help');
   assert.equal(dispatchCalls[0].ctx.CommandSource, 'native');
+  assert.equal(dispatchCalls[0].ctx.CommandAuthorized, true);
 });
 
 test('gateway dispatch includes BotChat image assets as attachments', async () => {

@@ -16,14 +16,16 @@ declare module "openclaw/plugin-sdk/native-command-registry" {
 }
 
 declare module "openclaw/plugin-sdk/command-auth-native" {
-  export function listSkillCommandsForAgents(params: {
-    cfg: Record<string, unknown>;
-  }): Array<Record<string, unknown>>;
-
   export function listNativeCommandSpecsForConfig(
     cfg: Record<string, unknown>,
     params?: { provider?: string; skillCommands?: Array<Record<string, unknown>> },
   ): Array<Record<string, unknown>>;
+}
+
+declare module "openclaw/plugin-sdk/skill-commands-runtime" {
+  export function listSkillCommandsForAgents(params: {
+    cfg: Record<string, unknown>;
+  }): Array<Record<string, unknown>>;
 }
 
 declare module "openclaw/plugin-sdk/plugin-runtime" {

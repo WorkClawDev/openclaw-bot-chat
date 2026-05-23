@@ -479,6 +479,7 @@ export function buildBotChatOutboundPayload(message: BotChatMessage): string {
 
 class DefaultBotChatRuntime implements BotChatRuntime {
   private started = false;
+  private connected = false;
   private mqttClient?: import("mqtt").MqttClient;
   private logger?: RuntimeLogger;
   private hooks?: RuntimeHooks;
@@ -491,6 +492,10 @@ class DefaultBotChatRuntime implements BotChatRuntime {
   private qos: MqttQos = 1;
   private backendUrl?: string;
   private botKey?: string;
+  private connectWaiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
 
   async start(
     config: Record<string, unknown>,
@@ -501,6 +506,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       return;
     }
     this.started = true;
+    this.connected = false;
     this.logger = logger;
     this.hooks = hooks;
     this.approver = await createApprover(config);
@@ -550,6 +556,8 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     });
 
     this.mqttClient.on("connect", () => {
+      this.connected = true;
+      this.resolveConnectWaiters();
       logger.info("botchat.mqtt.connected", {
         brokerUrl,
         subscriptions: subscriptions.length,
@@ -574,6 +582,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     });
 
     this.mqttClient.on("close", () => {
+      this.connected = false;
       logger.warn("botchat.mqtt.closed", {
         brokerUrl,
       });
@@ -595,6 +604,8 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       return;
     }
     this.started = false;
+    this.connected = false;
+    this.rejectConnectWaiters(new Error("mqtt client stopped"));
 
     await new Promise<void>((resolve) => {
       if (!this.mqttClient) {
@@ -623,6 +634,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     if (!topic) {
       throw new Error("publish topic is not configured");
     }
+    await this.waitForMqttConnected();
 
     const messageId =
       readString(message.metadata?.messageId) ??
@@ -655,6 +667,49 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       messageId,
     });
     return { messageId };
+  }
+
+  private async waitForMqttConnected(): Promise<void> {
+    const client = this.mqttClient;
+    if (!client) {
+      throw new Error("mqtt client is not ready");
+    }
+    if (this.connected || client.connected) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let timer: NodeJS.Timeout;
+      const waiter = {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+      timer = setTimeout(() => {
+        this.connectWaiters = this.connectWaiters.filter((item) => item !== waiter);
+        reject(new Error("mqtt client did not connect before publish timeout"));
+      }, BOT_CHAT_MQTT_CONNECT_TIMEOUT_MS);
+      this.connectWaiters.push(waiter);
+    });
+  }
+
+  private resolveConnectWaiters(): void {
+    const waiters = this.connectWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter.resolve();
+    }
+  }
+
+  private rejectConnectWaiters(error: Error): void {
+    const waiters = this.connectWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
   }
 
   private resolvePublishTopic(message: BotChatMessage): string | undefined {

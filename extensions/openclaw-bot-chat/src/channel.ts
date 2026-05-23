@@ -5,8 +5,10 @@ import {
   type ChannelOutboundAdapter,
   type ResolvedBotChatAccount,
 } from "./channel-api.js";
+import { createRequire } from "node:module";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createBotChatPluginBase } from "./shared.js";
 import { botChatStatus } from "./status.js";
 import { botChatSetupAdapter } from "./channel.setup.js";
@@ -36,6 +38,38 @@ type BotChatSlashCommand = {
   acceptsArgs?: boolean;
   args?: Array<Record<string, unknown>>;
 };
+
+type BotChatSlashCommandResolvers = {
+  listSkillCommandsForAgents?: (params: { cfg: Record<string, unknown> }) => Array<Record<string, unknown>>;
+  listNativeCommandSpecsForConfig?: (
+    cfg: Record<string, unknown>,
+    params?: { provider?: string; skillCommands?: Array<Record<string, unknown>> },
+  ) => Array<Record<string, unknown>>;
+  getPluginCommandSpecs?: (
+    provider?: string,
+    options?: { config?: Record<string, unknown> },
+  ) => Array<Record<string, unknown>>;
+};
+
+type BotChatNativeCommandRegistryModule = {
+  listNativeCommandSpecsForConfig?: BotChatSlashCommandResolvers["listNativeCommandSpecsForConfig"];
+};
+
+type BotChatSkillCommandRuntimeModule = {
+  listSkillCommandsForAgents?: BotChatSlashCommandResolvers["listSkillCommandsForAgents"];
+};
+
+type BotChatPluginRuntimeModule = {
+  getPluginCommandSpecs?: BotChatSlashCommandResolvers["getPluginCommandSpecs"];
+};
+
+let botChatSlashCommandResolversForTest: BotChatSlashCommandResolvers | undefined;
+
+export function setBotChatSlashCommandResolversForTest(
+  resolvers: BotChatSlashCommandResolvers | undefined,
+): void {
+  botChatSlashCommandResolversForTest = resolvers;
+}
 
 const botChatOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: "direct",
@@ -263,6 +297,7 @@ async function dispatchBotChatReply(params: {
       ExplicitDeliverRoute: true,
       NativeChannelId: params.message.channelId,
       CommandSource: resolveBotChatCommandSource(params.message),
+      CommandAuthorized: true,
       Timestamp: Date.now(),
     },
     dispatcherOptions: {
@@ -517,14 +552,19 @@ async function publishBotChatSlashCommands(params: {
   cfg: Record<string, unknown>;
   account: ResolvedBotChatAccount;
   log?: {
+    info?(message: string, fields?: Record<string, unknown>): void;
     warn?(message: string, fields?: Record<string, unknown>): void;
     debug?(message: string, fields?: Record<string, unknown>): void;
   };
 }): Promise<void> {
   const commands = await resolveOpenClawNativeCommands(params.cfg, params.log);
   if (!commands) {
+    params.log?.warn?.("botchat.slash_commands.unavailable");
     return;
   }
+  params.log?.info?.("botchat.slash_commands.resolved", {
+    count: commands.length,
+  });
 
   try {
     await getBotChatRuntime().sendToChannel({
@@ -540,6 +580,10 @@ async function publishBotChatSlashCommands(params: {
         retain: true,
       },
     });
+    params.log?.info?.("botchat.slash_commands.published", {
+      count: commands.length,
+      topic: BOT_CHAT_SLASH_COMMAND_TOPIC,
+    });
   } catch (error) {
     params.log?.warn?.("botchat.slash_commands.publish_error", {
       error: error instanceof Error ? error.message : String(error),
@@ -551,57 +595,139 @@ async function resolveOpenClawNativeCommands(
   cfg: Record<string, unknown>,
   log?: { debug?(message: string, fields?: Record<string, unknown>): void },
 ): Promise<BotChatSlashCommand[] | null> {
-  try {
-    const module = await import("openclaw/plugin-sdk/command-auth-native");
-    const skillCommands = module.listSkillCommandsForAgents?.({ cfg }) ?? [];
-    const specs = module.listNativeCommandSpecsForConfig?.(cfg, {
-      skillCommands,
-      provider: "bot-chat",
-    });
-    if (!Array.isArray(specs)) {
-      return [];
+  const resolvers = botChatSlashCommandResolversForTest ?? (await loadBotChatSlashCommandResolvers(log));
+  if (!resolvers) {
+    return null;
+  }
+
+  const commands: BotChatSlashCommand[] = [];
+  const seen = new Set<string>();
+  const callResolver = <T>(name: string, resolve: () => T): T | undefined => {
+    try {
+      return resolve();
+    } catch (error) {
+      log?.debug?.(`botchat.slash_commands.${name}_failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
     }
-    const commands = specs
-      .map(normalizeBotChatSlashCommand)
-      .filter((command): command is BotChatSlashCommand => command !== null);
-    return appendOpenClawPluginCommands(commands, cfg, log);
+  };
+  const addCommandSpecs = (specs: unknown) => {
+    if (!Array.isArray(specs)) {
+      return;
+    }
+
+    for (const spec of specs) {
+      if (!isRecord(spec)) {
+        continue;
+      }
+      const normalized = normalizeBotChatSlashCommand(spec);
+      if (!normalized || seen.has(normalized.name.toLowerCase())) {
+        continue;
+      }
+      seen.add(normalized.name.toLowerCase());
+      commands.push(normalized);
+    }
+  };
+
+  const skillCommands =
+    callResolver("skill_registry", () => resolvers.listSkillCommandsForAgents?.({ cfg })) ?? [];
+  addCommandSpecs(
+    callResolver("native_registry", () =>
+      resolvers.listNativeCommandSpecsForConfig?.(cfg, {
+        skillCommands,
+        provider: "bot-chat",
+      }),
+    ),
+  );
+  addCommandSpecs(skillCommands);
+  addCommandSpecs(
+    callResolver("plugin_registry", () =>
+      resolvers.getPluginCommandSpecs?.("bot-chat", { config: cfg }),
+    ),
+  );
+
+  return commands;
+}
+
+async function loadBotChatSlashCommandResolvers(
+  log?: { debug?(message: string, fields?: Record<string, unknown>): void },
+): Promise<BotChatSlashCommandResolvers | null> {
+  const resolvers: BotChatSlashCommandResolvers = {};
+
+  try {
+    const nativeRegistry = await importOpenClawSdkModule<BotChatNativeCommandRegistryModule>(
+      "openclaw/plugin-sdk/native-command-registry",
+    );
+    resolvers.listNativeCommandSpecsForConfig = nativeRegistry.listNativeCommandSpecsForConfig;
   } catch (error) {
     log?.debug?.("botchat.slash_commands.native_registry_unavailable", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return null;
   }
-}
 
-async function appendOpenClawPluginCommands(
-  commands: BotChatSlashCommand[],
-  cfg: Record<string, unknown>,
-  log?: { debug?(message: string, fields?: Record<string, unknown>): void },
-): Promise<BotChatSlashCommand[]> {
   try {
-    const runtime = await import("openclaw/plugin-sdk/plugin-runtime");
-    const pluginCommands = runtime.getPluginCommandSpecs?.("bot-chat", { config: cfg }) ?? [];
-    if (!Array.isArray(pluginCommands) || pluginCommands.length === 0) {
-      return commands;
-    }
+    const skillCommands = await importOpenClawSdkModule<BotChatSkillCommandRuntimeModule>(
+      "openclaw/plugin-sdk/skill-commands-runtime",
+    );
+    resolvers.listSkillCommandsForAgents = skillCommands.listSkillCommandsForAgents;
+  } catch (error) {
+    log?.debug?.("botchat.slash_commands.skill_commands_unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
-    const merged = [...commands];
-    const existing = new Set(commands.map((command) => command.name.toLowerCase()));
-    for (const pluginCommand of pluginCommands) {
-      const normalized = normalizeBotChatSlashCommand(pluginCommand);
-      if (!normalized || existing.has(normalized.name.toLowerCase())) {
-        continue;
-      }
-      existing.add(normalized.name.toLowerCase());
-      merged.push(normalized);
-    }
-    return merged;
+  try {
+    const commandAuth = await importOpenClawSdkModule<BotChatNativeCommandRegistryModule>(
+      "openclaw/plugin-sdk/command-auth-native",
+    );
+    resolvers.listNativeCommandSpecsForConfig ??= commandAuth.listNativeCommandSpecsForConfig;
+  } catch (error) {
+    log?.debug?.("botchat.slash_commands.command_auth_unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    const pluginRuntime = await importOpenClawSdkModule<BotChatPluginRuntimeModule>(
+      "openclaw/plugin-sdk/plugin-runtime",
+    );
+    resolvers.getPluginCommandSpecs = pluginRuntime.getPluginCommandSpecs;
   } catch (error) {
     log?.debug?.("botchat.slash_commands.plugin_runtime_unavailable", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return commands;
   }
+
+  return Object.values(resolvers).some((resolver) => typeof resolver === "function") ? resolvers : null;
+}
+
+async function importOpenClawSdkModule<T extends Record<string, unknown>>(specifier: string): Promise<T> {
+  try {
+    return (await import(specifier)) as T;
+  } catch (primaryError) {
+    const resolved = resolveOpenClawSdkSpecifierFromHost(specifier);
+    if (!resolved) {
+      throw primaryError;
+    }
+    return (await import(pathToFileURL(resolved).href)) as T;
+  }
+}
+
+function resolveOpenClawSdkSpecifierFromHost(specifier: string): string | undefined {
+  const candidates = [
+    typeof process.argv[1] === "string" ? process.argv[1] : undefined,
+    process.env.OPENCLAW_CLI_ENTRYPOINT,
+  ].filter((item): item is string => typeof item === "string" && path.isAbsolute(item));
+
+  for (const candidate of candidates) {
+    try {
+      return createRequire(candidate).resolve(specifier);
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 function normalizeBotChatSlashCommand(spec: Record<string, unknown>): BotChatSlashCommand | null {

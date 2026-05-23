@@ -50,6 +50,8 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   const [slashQuery, setSlashQuery] = useState('')
   const [slashStartIndex, setSlashStartIndex] = useState(-1)
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0)
+  const slashListRef = useRef<HTMLDivElement>(null)
+  const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -112,7 +114,6 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
   const filteredSlashCommands = slashCommands
     .filter((command) => command.name.toLowerCase().includes(slashQuery.toLowerCase()))
-    .slice(0, 8)
 
   const overlayRef = useRef<HTMLDivElement>(null)
 
@@ -138,6 +139,14 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   useEffect(() => {
     setSelectedSlashIndex(0)
   }, [slashQuery])
+
+  useEffect(() => {
+    if (!slashActive) {
+      return
+    }
+    const item = slashItemRefs.current[selectedSlashIndex]
+    item?.scrollIntoView({ block: 'nearest' })
+  }, [selectedSlashIndex, slashActive])
 
   useEffect(() => {
     if (currentConversation?.target.type !== 'group') {
@@ -452,13 +461,16 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
           onPointerDown={(e) => e.preventDefault()}
         >
           <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            Commands
+            Commands {filteredSlashCommands.length > 0 ? `(${filteredSlashCommands.length})` : ''}
           </div>
-          <div className="max-h-56 overflow-y-auto scrollbar-thin">
+          <div ref={slashListRef} className="max-h-[min(26rem,60vh)] overflow-y-auto overscroll-contain scrollbar-thin">
             {filteredSlashCommands.length > 0 ? (
               filteredSlashCommands.map((command, index) => (
                 <button
                   key={command.name}
+                  ref={(element) => {
+                    slashItemRefs.current[index] = element
+                  }}
                   onPointerDown={(e) => {
                     e.preventDefault();
                     insertSlashCommand(command);
@@ -468,17 +480,17 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                     index === selectedSlashIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
                   }`}
                 >
-                  <span className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg text-sm font-black ${
+                  <span className={`mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-lg text-sm font-black ${
                     index === selectedSlashIndex ? 'bg-sky-100 text-sky-600' : 'bg-slate-100 text-slate-500'
                   }`}>
                     /
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className={`block truncate text-sm font-bold ${index === selectedSlashIndex ? 'text-sky-600' : 'text-slate-700'}`}>
+                    <span className={`block break-words text-sm font-bold ${index === selectedSlashIndex ? 'text-sky-600' : 'text-slate-700'}`}>
                       /{command.name}
                     </span>
                     {command.description ? (
-                      <span className="block truncate text-xs text-slate-400">
+                      <span className="block break-words text-xs leading-5 text-slate-500">
                         {command.description}
                       </span>
                     ) : null}
