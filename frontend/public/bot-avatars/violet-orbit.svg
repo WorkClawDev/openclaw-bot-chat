@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Violet orbit bot avatar">
+  <defs>
+    <linearGradient id="bg" x1="84" y1="48" x2="426" y2="462" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a78bfa"/>
+      <stop offset="0.52" stop-color="#ec4899"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="face" x1="171" y1="143" x2="342" y2="366" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fdf2f8"/>
+      <stop offset="1" stop-color="#e9d5ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="132" fill="url(#bg)"/>
+  <ellipse cx="256" cy="256" rx="168" ry="70" fill="none" stroke="#fdf2f8" stroke-width="18" opacity="0.75" transform="rotate(-24 256 256)"/>
+  <ellipse cx="256" cy="256" rx="168" ry="70" fill="none" stroke="#f5d0fe" stroke-width="14" opacity="0.45" transform="rotate(31 256 256)"/>
+  <rect x="168" y="150" width="176" height="212" rx="88" fill="url(#face)"/>
+  <circle cx="220" cy="252" r="19" fill="#86198f"/>
+  <circle cx="292" cy="252" r="19" fill="#86198f"/>
+  <path d="M221 307c23 18 47 18 70 0" fill="none" stroke="#86198f" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="374" cy="187" r="24" fill="#fdf2f8"/>
+</svg>

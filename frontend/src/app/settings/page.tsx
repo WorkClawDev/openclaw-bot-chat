@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChat } from '@/contexts/ChatContext'
 import { AppLayout } from '@/components/AppLayout'
@@ -10,6 +10,7 @@ import { Avatar } from '@/components/Avatar'
 import { LoadingPage } from '@/components/Loading'
 import { StatusPill } from '@/components/StatusPill'
 import { useAppearanceStore, BackgroundType, FontType } from '@/lib/store'
+import { cropAndUploadAvatar } from '@/lib/imageUpload'
 
 type SettingsTab = 'profile' | 'appearance' | 'notifications' | 'security' | 'system'
 
@@ -29,8 +30,11 @@ export default function SettingsPage() {
   
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState('')
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false)
   const [isSavingProfile, setIsSavingProfile] = useState(false)
   const [profileMessage, setProfileMessage] = useState('')
+  const avatarInputRef = useRef<HTMLInputElement>(null)
 
   const [oldPassword, setOldPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -49,6 +53,7 @@ export default function SettingsPage() {
     if (user) {
       setUsername(user.username)
       setEmail(user.email)
+      setAvatarUrl(user.avatar || user.avatar_url || '')
     }
   }, [user])
 
@@ -63,12 +68,48 @@ export default function SettingsPage() {
     setProfileMessage('')
 
     try {
-      await updateUser({ username, email })
+      await updateUser({ username, email, avatar_url: avatarUrl })
       setProfileMessage('Profile updated successfully!')
     } catch (error) {
       setProfileMessage(error instanceof Error ? error.message : 'Failed to update profile')
     } finally {
       setIsSavingProfile(false)
+    }
+  }
+
+  const handleAvatarFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || isUploadingAvatar) {
+      event.target.value = ''
+      return
+    }
+
+    setIsUploadingAvatar(true)
+    setProfileMessage('')
+    try {
+      const uploadedAvatarUrl = await cropAndUploadAvatar(file)
+      setAvatarUrl(uploadedAvatarUrl)
+      await updateUser({ avatar_url: uploadedAvatarUrl })
+      setProfileMessage('Avatar updated successfully!')
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : 'Failed to upload avatar')
+    } finally {
+      setIsUploadingAvatar(false)
+      event.target.value = ''
+    }
+  }
+
+  const handleRemoveAvatar = async () => {
+    setIsUploadingAvatar(true)
+    setProfileMessage('')
+    try {
+      setAvatarUrl('')
+      await updateUser({ avatar_url: '' })
+      setProfileMessage('Avatar removed successfully!')
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : 'Failed to remove avatar')
+    } finally {
+      setIsUploadingAvatar(false)
     }
   }
 
@@ -170,11 +211,44 @@ export default function SettingsPage() {
                 <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest ml-1">Profile Information</h2>
                 <div className="bg-white rounded-xl p-5 md:p-8 border border-slate-100 shadow-sm space-y-8">
                   <div className="flex items-center gap-6">
-                    <Avatar name={user.username} size="xl" className="w-20 h-20 shadow-lg shadow-slate-100 ring-4 ring-slate-50" />
+                    <Avatar name={user.username} src={avatarUrl || undefined} size="xl" className="w-20 h-20 shadow-lg shadow-slate-100 ring-4 ring-slate-50" />
                     <div>
                       <h3 className="text-xl font-bold text-slate-800">{user.username}</h3>
                       <p className="text-sm text-slate-400">{user.email}</p>
-                      <Button size="sm" variant="ghost" className="mt-2 text-sky-500 font-bold px-0 hover:bg-transparent">Change Avatar</Button>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <input
+                          ref={avatarInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={(event) => {
+                            void handleAvatarFileSelect(event)
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          isLoading={isUploadingAvatar}
+                          onClick={() => avatarInputRef.current?.click()}
+                          className="px-0 font-bold text-sky-500 hover:bg-transparent"
+                        >
+                          Change Avatar
+                        </Button>
+                        {avatarUrl && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              void handleRemoveAvatar()
+                            }}
+                            className="px-0 font-bold text-slate-400 hover:bg-transparent"
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -200,7 +274,7 @@ export default function SettingsPage() {
                       </div>
                     )}
 
-                    <Button type="submit" isLoading={isSavingProfile} className="rounded-2xl px-8 shadow-lg shadow-sky-50">
+                    <Button type="submit" isLoading={isSavingProfile} disabled={isUploadingAvatar} className="rounded-2xl px-8 shadow-lg shadow-sky-50">
                       Save Profile Changes
                     </Button>
                   </form>

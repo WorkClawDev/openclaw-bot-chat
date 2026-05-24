@@ -17,7 +17,15 @@ import { LoadingPage } from '@/components/Loading'
 import { ConversationItem } from '@/components/Chat/ConversationItem'
 import { MessageBubble } from '@/components/Chat/MessageBubble'
 import { ChatInput } from '@/components/Chat/ChatInput'
+import { cropAndUploadAvatar } from '@/lib/imageUpload'
 import type { Bot, BotKey } from '@/lib/types'
+
+const BOT_AVATAR_PRESETS = [
+  { id: 'coral-circuit', name: 'Coral', src: '/bot-avatars/coral-circuit.svg' },
+  { id: 'green-signal', name: 'Signal', src: '/bot-avatars/green-signal.svg' },
+  { id: 'indigo-core', name: 'Core', src: '/bot-avatars/indigo-core.svg' },
+  { id: 'violet-orbit', name: 'Orbit', src: '/bot-avatars/violet-orbit.svg' },
+]
 
 export default function BotsPage() {
   const { isAuthenticated, isLoading: authLoading, user } = useAuth()
@@ -100,7 +108,7 @@ export default function BotsPage() {
           <ConversationItem
             key={bot.id}
             name={bot.name}
-            avatar={bot.avatar}
+            avatar={bot.avatar || bot.avatar_url}
             isActive={selectedBot?.id === bot.id && view === 'chat'}
             onClick={() => handleBotClick(bot)}
             status="none"
@@ -247,8 +255,18 @@ function CreateEditBotForm({
 }) {
   const [name, setName] = useState(bot?.name || '')
   const [description, setDescription] = useState(bot?.description || '')
+  const [avatarUrl, setAvatarUrl] = useState(bot?.avatar || bot?.avatar_url || '')
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+  const avatarInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    setName(bot?.name || '')
+    setDescription(bot?.description || '')
+    setAvatarUrl(bot?.avatar || bot?.avatar_url || '')
+    setError('')
+  }, [bot?.id, bot?.name, bot?.description, bot?.avatar, bot?.avatar_url])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -257,17 +275,43 @@ function CreateEditBotForm({
     setIsLoading(true)
     setError('')
     try {
+      const payload = {
+        name,
+        description,
+        avatar_url: avatarUrl,
+      }
+
       if (bot) {
-        const updated = await botsApi.update(bot.id, { name, description })
+        const updated = await botsApi.update(bot.id, payload)
         onSuccess(updated)
       } else {
-        const created = await botsApi.create({ name, description })
+        const created = await botsApi.create(payload)
         onSuccess(created)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save bot')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleAvatarFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || isUploadingAvatar) {
+      event.target.value = ''
+      return
+    }
+
+    setIsUploadingAvatar(true)
+    setError('')
+    try {
+      const uploadedAvatarUrl = await cropAndUploadAvatar(file)
+      setAvatarUrl(uploadedAvatarUrl)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload avatar')
+    } finally {
+      setIsUploadingAvatar(false)
+      event.target.value = ''
     }
   }
 
@@ -280,6 +324,72 @@ function CreateEditBotForm({
       )}
       
       <div className="space-y-4">
+        <section className="space-y-3">
+          <div className="flex items-center gap-4">
+            <Avatar
+              name={name || 'Bot'}
+              src={avatarUrl || undefined}
+              size="xl"
+              className="h-20 w-20 flex-none shadow-lg shadow-slate-100 ring-4 ring-slate-50"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-slate-700">Bot Avatar</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={(event) => {
+                    void handleAvatarFileSelect(event)
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  isLoading={isUploadingAvatar}
+                  onClick={() => avatarInputRef.current?.click()}
+                  className="rounded-xl"
+                >
+                  Upload image
+                </Button>
+                {avatarUrl && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setAvatarUrl('')}
+                    className="rounded-xl"
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-4 gap-3">
+            {BOT_AVATAR_PRESETS.map((preset) => {
+              const selected = avatarUrl === preset.src
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => setAvatarUrl(preset.src)}
+                  className={`aspect-square rounded-2xl border p-1.5 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
+                    selected ? 'border-sky-400 bg-sky-50 shadow-sm' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                  aria-label={`Use ${preset.name} avatar`}
+                  title={preset.name}
+                >
+                  <img src={preset.src} alt="" className="h-full w-full rounded-xl object-cover" />
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
         <Input
           label="Display Name"
           placeholder="e.g. JARVIS"
@@ -301,7 +411,7 @@ function CreateEditBotForm({
 
       <div className="flex items-center justify-between pt-4 border-t border-slate-100">
         <div className="flex gap-3">
-          <Button type="submit" isLoading={isLoading} className="rounded-2xl px-8 shadow-lg shadow-sky-100">
+          <Button type="submit" isLoading={isLoading} disabled={isUploadingAvatar} className="rounded-2xl px-8 shadow-lg shadow-sky-100">
             {bot ? 'Save Changes' : 'Create Bot'}
           </Button>
           <Button type="button" variant="ghost" onClick={onCancel} className="rounded-2xl">

@@ -8,6 +8,7 @@ import {
   compareMessagesByTime,
   createBotDraftConversation,
   createGroupDraftConversation,
+  enrichMessagePeers,
   normalizeApiMessage,
   normalizeConversations,
   normalizeRealtimeMessage,
@@ -68,6 +69,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const lastSeqByConversationRef = useRef<Map<string, number>>(new Map())
   const hasConnectedOnceRef = useRef(false)
 
+  const enrichMessage = useCallback(
+    (message: Message) => enrichMessagePeers(message, { currentUser: user, bots, groups }),
+    [bots, groups, user],
+  )
+
   const mergeConversationMessages = useCallback((existing: Message[], incoming: Message[]) => {
     const merged = new Map<string, Message>()
 
@@ -109,35 +115,37 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const upsertMessage = useCallback((message: Message) => {
+    const enrichedMessage = enrichMessage(message)
+
     setMessages((prev) => {
-      const current = prev.get(message.conversation_id) || []
-      const existingIndex = current.findIndex((item) => item.id === message.id)
+      const current = prev.get(enrichedMessage.conversation_id) || []
+      const existingIndex = current.findIndex((item) => item.id === enrichedMessage.id)
       const nextMessages = [...current]
 
       if (existingIndex >= 0) {
         nextMessages[existingIndex] = {
           ...nextMessages[existingIndex],
-          ...message,
+          ...enrichedMessage,
           pending: false,
           failed: false,
         }
       } else {
-        nextMessages.push(message)
+        nextMessages.push(enrichedMessage)
       }
 
       nextMessages.sort(compareMessagesByTime)
 
-      return new Map(prev).set(message.conversation_id, nextMessages)
+      return new Map(prev).set(enrichedMessage.conversation_id, nextMessages)
     })
 
     setConversations((prev) =>
       prev
         .map((conversation) =>
-          conversation.id === message.conversation_id
+          conversation.id === enrichedMessage.conversation_id
             ? {
                 ...conversation,
                 last_message: {
-                  ...message,
+                  ...enrichedMessage,
                   pending: false,
                   failed: false,
                 },
@@ -147,13 +155,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         .sort(compareConversationsByLatest),
     )
 
-    if (typeof message.seq === 'number') {
-      const known = lastSeqByConversationRef.current.get(message.conversation_id) || 0
-      if (message.seq > known) {
-        lastSeqByConversationRef.current.set(message.conversation_id, message.seq)
+    if (typeof enrichedMessage.seq === 'number') {
+      const known = lastSeqByConversationRef.current.get(enrichedMessage.conversation_id) || 0
+      if (enrichedMessage.seq > known) {
+        lastSeqByConversationRef.current.set(enrichedMessage.conversation_id, enrichedMessage.seq)
       }
     }
-  }, [])
+  }, [enrichMessage])
 
   const ensureTopicSubscription = useCallback((topic: string) => {
     if (!topic || subscriptionsRef.current.has(topic) || !user || !realtimeBootstrap) {
@@ -227,7 +235,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const loadedMessages = await Promise.all(
         conversation.topics.map(async (topic) => {
           const items = await conversationsApi.getMessages(topic)
-          return items.map((item) => normalizeApiMessage(item, conversation.id))
+          return items.map((item) => enrichMessage(normalizeApiMessage(item, conversation.id)))
         }),
       )
 
@@ -256,7 +264,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         lastSeqByConversationRef.current.set(conversationId, highestSeq)
       }
     },
-    [mergeConversationMessages],
+    [enrichMessage, mergeConversationMessages],
   )
 
   const catchupConversation = useCallback(
@@ -274,7 +282,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const loadedMessages = await Promise.all(
         conversation.topics.map(async (topic) => {
           const items = await conversationsApi.getMessages(topic, maxBatch, undefined, afterSeq)
-          return items.map((item) => normalizeApiMessage(item, conversation.id))
+          return items.map((item) => enrichMessage(normalizeApiMessage(item, conversation.id)))
         }),
       )
 
@@ -304,7 +312,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       )
       lastSeqByConversationRef.current.set(conversation.id, highestSeq)
     },
-    [mergeConversationMessages, realtimeBootstrap],
+    [enrichMessage, mergeConversationMessages, realtimeBootstrap],
   )
 
   const catchupAllConversations = useCallback(async () => {
@@ -358,8 +366,18 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         topic: currentConversation.send_topic,
         sender_id: user.id,
         sender_type: 'user',
-        from: { type: 'user', id: user.id, name: user.username },
-        to: { type: currentConversation.target.type, id: currentConversation.target.id, name: currentConversation.name },
+        from: {
+          type: 'user',
+          id: user.id,
+          name: user.username,
+          avatar: user.avatar || user.avatar_url || null,
+        },
+        to: {
+          type: currentConversation.target.type,
+          id: currentConversation.target.id,
+          name: currentConversation.name,
+          avatar: currentConversation.avatar || null,
+        },
         content,
         timestamp,
         created_at: new Date().toISOString(),
@@ -479,6 +497,31 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     conversationsRef.current = conversations
   }, [conversations])
+
+  useEffect(() => {
+    setMessages((prev) => {
+      let changed = false
+      const next = new Map<string, Message[]>()
+
+      for (const [conversationId, conversationMessages] of prev.entries()) {
+        const enrichedMessages = conversationMessages.map((message) => {
+          const enriched = enrichMessage(message)
+          if (
+            enriched.from.name !== message.from.name ||
+            enriched.from.avatar !== message.from.avatar ||
+            enriched.to.name !== message.to.name ||
+            enriched.to.avatar !== message.to.avatar
+          ) {
+            changed = true
+          }
+          return enriched
+        })
+        next.set(conversationId, enrichedMessages)
+      }
+
+      return changed ? next : prev
+    })
+  }, [enrichMessage])
 
   useEffect(() => {
     if (!currentConversation) return

@@ -171,6 +171,43 @@ func (s *AssetService) CompleteImageUpload(ctx context.Context, ownerUserID uuid
 	return s.buildAssetPayload(ctx, asset)
 }
 
+func (s *AssetService) GetPublicImageURL(ctx context.Context, assetID string) (string, error) {
+	if !s.Enabled() {
+		return "", ErrAssetProviderDisabled
+	}
+
+	parsedID, err := uuid.Parse(strings.TrimSpace(assetID))
+	if err != nil {
+		return "", ErrAssetInvalid
+	}
+
+	asset, err := s.repo.GetByID(ctx, parsedID)
+	if err != nil {
+		return "", ErrAssetNotFound
+	}
+	if asset.Kind != model.AssetKindImage {
+		return "", ErrAssetUnsupportedType
+	}
+	if asset.Status != model.AssetStatusReady {
+		return "", ErrAssetNotReady
+	}
+
+	payload, err := s.buildAssetPayload(ctx, asset)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case payload.DownloadURL != "":
+		return payload.DownloadURL, nil
+	case payload.ExternalURL != "":
+		return payload.ExternalURL, nil
+	case payload.SourceURL != "":
+		return payload.SourceURL, nil
+	default:
+		return "", ErrAssetNotReady
+	}
+}
+
 func (s *AssetService) ResolveMessageAsset(ctx context.Context, senderType string, senderID string, contentType string, meta map[string]interface{}) (map[string]interface{}, error) {
 	if contentType != string(model.MsgTypeImage) || len(meta) == 0 {
 		return model.RemoveEphemeralAssetFields(meta), nil

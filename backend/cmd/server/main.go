@@ -239,6 +239,8 @@ func setupRoutes(
 		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
 	}
 
+	api.GET("/assets/image/:id", assetHandler.RedirectPublicImage)
+
 	// Protected routes
 	protected := api.Group("")
 	protected.Use(middleware.JWTAuth(jwtManager))

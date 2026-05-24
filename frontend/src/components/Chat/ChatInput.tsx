@@ -5,7 +5,8 @@ import dynamic from 'next/dynamic'
 import { Theme } from 'emoji-picker-react'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
-import { assetsApi, groupsApi } from '@/lib/api'
+import { groupsApi } from '@/lib/api'
+import { uploadImageAsset } from '@/lib/imageUpload'
 import { Bot, ComposerMessageInput, GroupMember, SlashCommand } from '@/lib/types'
 import { STICKERS, Sticker } from '@/lib/stickers'
 
@@ -21,6 +22,7 @@ interface MentionBot {
   id: string
   name: string
   avatar?: string | null
+  avatar_url?: string | null
   aliases: string[]
 }
 
@@ -212,27 +214,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
     setIsUploading(true)
     try {
-      const prepared = await assetsApi.prepareImageUpload({
-        file_name: file.name,
-        content_type: file.type,
-        size: file.size,
-        conversation_id: currentConversation.send_topic,
-      })
-
-      const uploadResponse = await fetch(prepared.upload.url, {
-        method: prepared.upload.method || 'PUT',
-        headers: prepared.upload.headers,
-        body: file,
-      })
-
-      if (!uploadResponse.ok) {
-        throw new Error(`Upload failed with status ${uploadResponse.status}`)
-      }
-
-      const asset = await assetsApi.completeImageUpload({
-        asset_id: prepared.asset.id || '',
-        object_key: prepared.asset.object_key || '',
-      })
+      const asset = await uploadImageAsset(file, { conversationId: currentConversation.send_topic })
 
       await onSendMessage({
         type: 'image',
@@ -528,7 +510,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                     index === selectedIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
                   }`}
                 >
-                  <Avatar name={bot.name} src={bot.avatar || undefined} size="sm" />
+                  <Avatar name={bot.name} src={bot.avatar || bot.avatar_url || undefined} size="sm" />
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-bold truncate ${index === selectedIndex ? 'text-sky-600' : 'text-slate-700'}`}>
                       {bot.name}

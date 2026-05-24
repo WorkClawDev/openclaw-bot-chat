@@ -74,7 +74,12 @@ export function PrimaryNav() {
       {/* User / Bottom */}
       <div className="flex flex-row md:flex-col gap-4 items-center">
         <div className="hidden md:block">
-        <Avatar name={user?.username || 'User'} size="sm" className="ring-2 ring-white/50" />
+          <Avatar
+            name={user?.username || 'User'}
+            src={user?.avatar || user?.avatar_url || undefined}
+            size="sm"
+            className="ring-2 ring-white/50"
+          />
         </div>
         <button
           onClick={logout}

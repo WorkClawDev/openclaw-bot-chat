@@ -8,6 +8,9 @@ export interface User {
   id: string
   username: string
   email: string
+  nickname?: string
+  avatar?: string | null
+  avatar_url?: string | null
   created_at?: string
   updated_at?: string
 }

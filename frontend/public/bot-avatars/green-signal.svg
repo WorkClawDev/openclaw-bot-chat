@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Green signal bot avatar">
+  <defs>
+    <linearGradient id="bg" x1="68" y1="54" x2="438" y2="460" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14b8a6"/>
+      <stop offset="0.48" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#164e63"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="166" y1="138" x2="346" y2="374" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ecfeff"/>
+      <stop offset="1" stop-color="#bbf7d0"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="132" fill="url(#bg)"/>
+  <path d="M112 288c42-78 95-117 159-117 58 0 102 31 132 94" fill="none" stroke="#dcfce7" stroke-width="24" stroke-linecap="round" opacity="0.72"/>
+  <path d="M138 351c30-53 69-79 117-79 44 0 79 21 106 64" fill="none" stroke="#ecfeff" stroke-width="20" stroke-linecap="round" opacity="0.82"/>
+  <rect x="174" y="148" width="164" height="216" rx="82" fill="url(#panel)"/>
+  <rect x="205" y="191" width="102" height="36" rx="18" fill="#064e3b"/>
+  <circle cx="224" cy="278" r="18" fill="#047857"/>
+  <circle cx="288" cy="278" r="18" fill="#047857"/>
+  <path d="M224 321c19 15 45 15 64 0" fill="none" stroke="#047857" stroke-width="14" stroke-linecap="round"/>
+</svg>

@@ -128,7 +128,7 @@ test('outbound target builder maps direct and channel targets', () => {
   });
   assert.deepEqual(buildBotChatOutboundMessageTarget({ raw: 'group:group-1', account }), {
     channelId: 'chat/group/group-1',
-    userId: 'bot-a',
+    userId: 'group-1',
     normalizedTarget: 'channel:chat/group/group-1',
     chatType: 'channel',
     publishTopic: 'chat/group/group-1',
@@ -338,6 +338,26 @@ test('outbound payload preserves text, target ids, and thread metadata', () => {
   assert.equal('botId' in payload.content.meta, false);
   assert.equal('toType' in payload.content.meta, false);
   assert.equal('publishTopic' in payload.content.meta, false);
+});
+
+test('outbound group payload addresses the group id instead of the sender id', () => {
+  const payload = JSON.parse(
+    buildBotChatOutboundPayload({
+      channelId: 'chat/group/group-1',
+      userId: 'alice',
+      text: 'reply',
+      metadata: {
+        message_id: '11111111-2222-4333-8444-555555555555',
+        botId: 'bot-2',
+        toType: 'group',
+      },
+    }),
+  );
+
+  assert.equal(payload.conversation_id, 'chat/group/group-1');
+  assert.equal(payload.from.id, 'bot-2');
+  assert.equal(payload.to.type, 'group');
+  assert.equal(payload.to.id, 'group-1');
 });
 
 test('outbound image payload prefers hydrated asset urls over source_url', () => {
@@ -1014,6 +1034,87 @@ test('gateway replies do not reuse inbound message ids', async () => {
         botId: 'bot-a',
         toType: 'user',
         publishTopic: 'chat/dm/user/alice/bot/bot-a',
+      },
+    },
+  ]);
+});
+
+test('gateway replies to group messages as group-addressed messages', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  const sent = [];
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `reply-${sent.length}` };
+    },
+  });
+
+  const abort = new AbortController();
+  const dispatchCalls = [];
+  const account = resolveBotChatAccount({
+    backendUrl: 'http://backend',
+    botKey: 'key',
+    botId: 'bot-a',
+  });
+  const startPromise = botChatPlugin.gateway.startAccount({
+    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+    account,
+    abortSignal: abort.signal,
+    channelRuntime: {
+      reply: {
+        async dispatchReplyWithBufferedBlockDispatcher(params) {
+          dispatchCalls.push(params);
+          await params.dispatcherOptions.deliver(
+            { text: 'group reply' },
+            { kind: 'final' },
+          );
+        },
+      },
+    },
+  });
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await capturedHooks.emitMessage({
+      channelId: 'chat/group/group-1',
+      userId: 'alice',
+      text: '@OpenClaw hi',
+      metadata: {
+        topic: 'chat/group/group-1',
+        message_id: 'group-message-1',
+        senderType: 'user',
+        mentioned_bot_ids: ['bot-a'],
+      },
+    });
+  } finally {
+    abort.abort();
+    await startPromise;
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].ctx.ChatType, 'group');
+  assert.deepEqual(dispatchCalls[0].replyOptions, {
+    sourceReplyDeliveryMode: 'automatic',
+  });
+  assert.deepEqual(sent, [
+    {
+      channelId: 'chat/group/group-1',
+      userId: 'group-1',
+      text: 'group reply',
+      metadata: {
+        topic: 'chat/group/group-1',
+        mentioned_bot_ids: ['bot-a'],
+        replyToId: 'group-message-1',
+        botId: 'bot-a',
+        toType: 'group',
+        publishTopic: 'chat/group/group-1',
       },
     },
   ]);

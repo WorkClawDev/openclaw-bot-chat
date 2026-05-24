@@ -1,7 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { authApi } from '@/lib/api'
+import { AUTH_SESSION_EXPIRED_EVENT, authApi } from '@/lib/api'
 import type { User } from '@/lib/types'
 
 interface AuthContextType {
@@ -42,6 +42,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     loadUser()
   }, [loadUser])
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setUser(null)
+      setIsLoading(false)
+    }
+
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () => {
+      window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    }
+  }, [])
 
   const login = async (identifier: string, password: string) => {
     const tokens = await authApi.login({ identifier, password })

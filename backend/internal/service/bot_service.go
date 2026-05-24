@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,8 +42,8 @@ func NewBotService(botRepo *repository.BotRepository, keyRepo *repository.BotKey
 // CreateBotRequest represents bot creation request
 type CreateBotRequest struct {
 	Name        string        `json:"name" binding:"required,min=1,max=128"`
-	Description *string        `json:"description"`
-	AvatarURL   *string        `json:"avatar_url"`
+	Description *string       `json:"description"`
+	AvatarURL   *string       `json:"avatar_url"`
 	BotType     model.BotType `json:"bot_type"`
 	IsPublic    bool          `json:"is_public"`
 	Config      model.JSONMap `json:"config"`
@@ -53,7 +54,7 @@ type UpdateBotRequest struct {
 	Name        *string          `json:"name"`
 	Description *string          `json:"description"`
 	AvatarURL   *string          `json:"avatar_url"`
-	BotType     *model.BotType  `json:"bot_type"`
+	BotType     *model.BotType   `json:"bot_type"`
 	Status      *model.BotStatus `json:"status"`
 	IsPublic    *bool            `json:"is_public"`
 	Config      *model.JSONMap   `json:"config"`
@@ -65,7 +66,7 @@ func (s *BotService) Create(ctx context.Context, req CreateBotRequest, ownerID u
 		OwnerID:     ownerID,
 		Name:        req.Name,
 		Description: req.Description,
-		AvatarURL:   req.AvatarURL,
+		AvatarURL:   normalizeOptionalString(req.AvatarURL),
 		BotType:     req.BotType,
 		Status:      model.BotStatusEnabled,
 		IsPublic:    req.IsPublic,
@@ -113,7 +114,7 @@ func (s *BotService) Update(ctx context.Context, botID, ownerID uuid.UUID, req U
 		bot.Description = req.Description
 	}
 	if req.AvatarURL != nil {
-		bot.AvatarURL = req.AvatarURL
+		bot.AvatarURL = normalizeOptionalString(req.AvatarURL)
 	}
 	if req.BotType != nil {
 		bot.BotType = *req.BotType
@@ -161,6 +162,17 @@ func (s *BotService) Delete(ctx context.Context, botID, ownerID uuid.UUID, ip, u
 	return nil
 }
 
+func normalizeOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
 // --- Bot Keys ---
 
 // CreateKeyRequest represents key creation request
@@ -172,7 +184,7 @@ type CreateKeyRequest struct {
 // BotKeyResponse is returned when creating a key (plaintext shown once)
 type BotKeyResponse struct {
 	ID        uuid.UUID `json:"id"`
-	Key       string    `json:"key"`        // plaintext, only shown once
+	Key       string    `json:"key"` // plaintext, only shown once
 	KeyPrefix string    `json:"key_prefix"`
 	Name      *string   `json:"name,omitempty"`
 	ExpiresAt *int64    `json:"expires_at,omitempty"`

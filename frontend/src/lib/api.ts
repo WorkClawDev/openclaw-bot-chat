@@ -15,6 +15,13 @@ import type {
 } from './types'
 
 const RAW_API_BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '')
+const AUTH_SESSION_EXPIRED_EVENT = 'openclaw-auth-session-expired'
+
+type ApiRequestOptions = RequestInit & {
+  authRetry?: boolean
+}
+
+let refreshPromise: Promise<AuthTokens | null> | null = null
 
 function getApiBase(): string {
   if (typeof window === 'undefined') {
@@ -52,22 +59,98 @@ function getToken(): string | null {
   return localStorage.getItem('access_token')
 }
 
+function getRefreshToken(): string | null {
+  if (typeof window === 'undefined') return null
+  return localStorage.getItem('refresh_token')
+}
+
+function storeTokens(tokens: AuthTokens) {
+  if (typeof window === 'undefined') return
+  localStorage.setItem('access_token', tokens.access_token)
+  localStorage.setItem('refresh_token', tokens.refresh_token)
+}
+
+function clearStoredTokens() {
+  if (typeof window === 'undefined') return
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('refresh_token')
+  window.dispatchEvent(new Event(AUTH_SESSION_EXPIRED_EVENT))
+}
+
+async function refreshStoredTokens(): Promise<AuthTokens | null> {
+  const storedRefreshToken = getRefreshToken()
+  if (!storedRefreshToken) {
+    clearStoredTokens()
+    return null
+  }
+
+  if (!refreshPromise) {
+    refreshPromise = requestTokenRefresh(storedRefreshToken)
+      .then((tokens) => {
+        storeTokens(tokens)
+        return tokens
+      })
+      .catch(() => {
+        clearStoredTokens()
+        return null
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+
+  return refreshPromise
+}
+
+async function requestTokenRefresh(refreshToken: string): Promise<AuthTokens> {
+  const apiBase = getApiBase()
+  const response = await fetch(`${apiBase}/api/v1/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+
+  const payload = await response.json().catch(async () => {
+    const text = await response.text().catch(() => '')
+    return text ? { message: text } : {}
+  })
+
+  if (!response.ok) {
+    const error = payload as ApiResponse<unknown>
+    throw new Error(error.message || error.error || `HTTP ${response.status}`)
+  }
+
+  if (payload && typeof payload === 'object' && 'code' in payload) {
+    return (payload as ApiResponse<AuthTokens>).data as AuthTokens
+  }
+
+  return payload as AuthTokens
+}
+
 async function request<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: ApiRequestOptions = {}
 ): Promise<T> {
+  const { authRetry = true, ...fetchOptions } = options
   const token = getToken()
   const apiBase = getApiBase()
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...options.headers,
+    ...fetchOptions.headers,
   }
 
   const response = await fetch(`${apiBase}${endpoint}`, {
-    ...options,
+    ...fetchOptions,
     headers,
   })
+
+  if (response.status === 401 && authRetry) {
+    const refreshed = await refreshStoredTokens()
+    if (refreshed?.access_token) {
+      return request<T>(endpoint, { ...fetchOptions, authRetry: false })
+    }
+  }
 
   if (response.status === 204) {
     return undefined as T
@@ -95,12 +178,14 @@ export const authApi = {
   register: (data: { username: string; email: string; password: string }) =>
     request<AuthPayload>('/api/v1/auth/register', {
       method: 'POST',
+      authRetry: false,
       body: JSON.stringify(data),
     }).then((payload) => payload.tokens),
 
   login: (data: { identifier: string; password: string }) =>
     request<AuthPayload>('/api/v1/auth/login', {
       method: 'POST',
+      authRetry: false,
       body: JSON.stringify(
         data.identifier.includes('@')
           ? { email: data.identifier, password: data.password }
@@ -111,6 +196,7 @@ export const authApi = {
   refresh: (data: { refresh_token: string }) =>
     request<AuthTokens>('/api/v1/auth/refresh', {
       method: 'POST',
+      authRetry: false,
       body: JSON.stringify(data),
     }),
 
@@ -138,7 +224,7 @@ export const botsApi = {
 
   get: (id: string) => request<Bot>(`/api/v1/bots/${id}`),
 
-  create: (data: { name: string; description?: string; avatar?: string }) =>
+  create: (data: { name: string; description?: string; avatar?: string; avatar_url?: string | null }) =>
     request<Bot>('/api/v1/bots', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -237,4 +323,4 @@ export const healthApi = {
   check: () => request<{ status: string }>('/health'),
 }
 
-export { getToken }
+export { AUTH_SESSION_EXPIRED_EVENT, getApiBase, getToken }

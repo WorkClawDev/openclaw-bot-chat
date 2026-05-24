@@ -259,6 +259,9 @@ async function dispatchBotChatReply(params: {
       dispatchReplyWithBufferedBlockDispatcher?: (params: {
         ctx: Record<string, unknown>;
         cfg: Record<string, unknown>;
+        replyOptions?: {
+          sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
+        };
         dispatcherOptions: {
           deliver: (payload: { text?: string }, info?: { kind?: string }) => Promise<void>;
           onError?: (error: unknown, info?: { kind?: string }) => void;
@@ -293,6 +296,8 @@ async function dispatchBotChatReply(params: {
     userId: params.message.userId,
   });
   const replyChunks: string[] = [];
+  const botId = resolveBotChatRuntimeBotId(params.account);
+  const replyTarget = buildBotChatReplyTarget(params.message);
   const attachments = buildBotChatAttachments(params.message);
   const gatewayBody = buildBotChatGatewayBody(params.message.text, attachments);
   const attachmentContext =
@@ -324,11 +329,11 @@ async function dispatchBotChatReply(params: {
       BodyForCommands: gatewayBody.commandBody,
       ...attachmentContext,
       From: params.message.userId,
-      To: params.account.botId,
+      To: botId,
       SenderId: params.message.userId,
       MessageSid: String(params.message.metadata?.message_id ?? ""),
       SessionKey: `bot-chat:${params.message.channelId}`,
-      ChatType: "direct",
+      ChatType: replyTarget.chatType,
       Provider: "BotChat",
       Surface: "BotChat",
       OriginatingChannel: BOT_CHAT_CHANNEL_ID,
@@ -339,6 +344,13 @@ async function dispatchBotChatReply(params: {
       CommandAuthorized: true,
       Timestamp: Date.now(),
     },
+    ...(replyTarget.recipientType === "group"
+      ? {
+          replyOptions: {
+            sourceReplyDeliveryMode: "automatic" as const,
+          },
+        }
+      : {}),
     dispatcherOptions: {
       deliver: async (payload) => {
         const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -381,12 +393,12 @@ async function dispatchBotChatReply(params: {
     });
     await getBotChatRuntime().sendToChannel({
       channelId: params.message.channelId,
-      userId: params.message.userId,
+      userId: replyTarget.recipientId,
       text: preparedReply.text,
       metadata: {
         ...preparedReply.metadata,
-        botId: params.account.botId,
-        toType: "user",
+        botId,
+        toType: replyTarget.recipientType,
         publishTopic: params.message.metadata?.topic ?? params.message.channelId,
       },
     });
@@ -395,6 +407,37 @@ async function dispatchBotChatReply(params: {
     channelId: params.message.channelId,
     userId: params.message.userId,
   });
+}
+
+function resolveBotChatRuntimeBotId(account: ResolvedBotChatAccount): string {
+  return readString(account.config.botId) ?? account.botId;
+}
+
+function buildBotChatReplyTarget(message: {
+  channelId: string;
+  userId: string;
+}): { recipientId: string; recipientType: "user" | "group"; chatType: "direct" | "group" } {
+  const groupId = readBotChatGroupId(message.channelId);
+  if (groupId) {
+    return {
+      recipientId: groupId,
+      recipientType: "group",
+      chatType: "group",
+    };
+  }
+  return {
+    recipientId: message.userId,
+    recipientType: "user",
+    chatType: "direct",
+  };
+}
+
+function readBotChatGroupId(channelId: string): string | undefined {
+  const parts = channelId.split("/");
+  if (parts.length === 3 && parts[0] === "chat" && parts[1] === "group") {
+    return parts[2] || undefined;
+  }
+  return undefined;
 }
 
 function mergeBotChatReplyChunks(chunks: string[]): string {

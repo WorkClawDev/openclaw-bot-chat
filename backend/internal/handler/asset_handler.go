@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
@@ -78,4 +79,26 @@ func (h *AssetHandler) CompleteImageUpload(c *gin.Context) {
 	}
 
 	apiresponse.Success(c, responsedto.NewAssetResponse(asset))
+}
+
+func (h *AssetHandler) RedirectPublicImage(c *gin.Context) {
+	assetID := c.Param("id")
+	url, err := h.assetService.GetPublicImageURL(c.Request.Context(), assetID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAssetNotFound):
+			apiresponse.NotFound(c, err.Error())
+		case errors.Is(err, service.ErrAssetInvalid),
+			errors.Is(err, service.ErrAssetUnsupportedType),
+			errors.Is(err, service.ErrAssetNotReady),
+			errors.Is(err, service.ErrAssetProviderDisabled):
+			apiresponse.BadRequest(c, err.Error())
+		default:
+			apiresponse.InternalError(c, err.Error())
+		}
+		return
+	}
+
+	c.Header("Cache-Control", "private, max-age=300")
+	c.Redirect(http.StatusTemporaryRedirect, url)
 }

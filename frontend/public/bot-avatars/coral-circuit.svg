@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Coral circuit bot avatar">
+  <defs>
+    <linearGradient id="bg" x1="60" y1="68" x2="452" y2="444" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fb7185"/>
+      <stop offset="0.52" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(178 148) rotate(48) scale(312)">
+      <stop stop-color="#ffffff" stop-opacity="0.78"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="132" fill="url(#bg)"/>
+  <circle cx="164" cy="150" r="138" fill="url(#glow)"/>
+  <path d="M142 340h228M142 172h228M180 172v168M332 172v168" fill="none" stroke="#fff7ed" stroke-width="26" stroke-linecap="round"/>
+  <circle cx="180" cy="172" r="34" fill="#fff7ed"/>
+  <circle cx="332" cy="172" r="34" fill="#fff7ed"/>
+  <circle cx="180" cy="340" r="34" fill="#fff7ed"/>
+  <circle cx="332" cy="340" r="34" fill="#fff7ed"/>
+  <circle cx="256" cy="256" r="74" fill="#111827" fill-opacity="0.34"/>
+  <circle cx="256" cy="256" r="42" fill="#fff7ed"/>
+</svg>

@@ -169,6 +169,9 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
         dispatchReplyWithBufferedBlockDispatcher?: (params: {
           ctx: Record<string, unknown>;
           cfg: Record<string, unknown>;
+          replyOptions?: {
+            sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
+          };
           dispatcherOptions: {
             deliver: (payload: { text?: string }, info?: { kind?: string }) => Promise<void>;
             onError?: (error: unknown, info?: { kind?: string }) => void;

@@ -11,6 +11,7 @@ import type {
   MessageContent,
   MessageContent as ChatMessageContent,
   RealtimeMessagePayload,
+  User,
 } from './types'
 import { createClientId } from './id'
 
@@ -114,6 +115,21 @@ export function normalizeRealtimeMessage(payload: RealtimeMessagePayload, fallba
     seq: payload.seq,
     timestamp: payload.timestamp,
     created_at: payload.created_at || timestampToIso(payload.timestamp),
+  }
+}
+
+export function enrichMessagePeers(
+  message: Message,
+  options: {
+    currentUser?: User | null
+    bots?: Bot[]
+    groups?: Group[]
+  },
+): Message {
+  return {
+    ...message,
+    from: enrichPeer(message.from, options),
+    to: enrichPeer(message.to, options),
   }
 }
 
@@ -280,6 +296,60 @@ function buildConversationFromRoute(
     updated_at: bot?.updated_at,
     created_at: bot?.created_at,
   }
+}
+
+function enrichPeer(
+  peer: ChatPeer,
+  options: {
+    currentUser?: User | null
+    bots?: Bot[]
+    groups?: Group[]
+  },
+): ChatPeer {
+  const details = findPeerDetails(peer, options)
+  if (!details) {
+    return peer
+  }
+
+  return {
+    ...peer,
+    name: details.name || peer.name,
+    avatar: details.avatar ?? peer.avatar,
+  }
+}
+
+function findPeerDetails(
+  peer: ChatPeer,
+  options: {
+    currentUser?: User | null
+    bots?: Bot[]
+    groups?: Group[]
+  },
+): { name?: string; avatar?: string | null } | null {
+  if (peer.type === 'bot') {
+    const bot = options.bots?.find((item) => item.id === peer.id)
+    if (!bot) {
+      return null
+    }
+    return { name: bot.name, avatar: bot.avatar || bot.avatar_url || null }
+  }
+
+  if (peer.type === 'group') {
+    const group = options.groups?.find((item) => item.id === peer.id)
+    if (!group) {
+      return null
+    }
+    return { name: group.name, avatar: group.avatar || group.avatar_url || null }
+  }
+
+  if (peer.type === 'user' && options.currentUser?.id === peer.id) {
+    return {
+      name: options.currentUser.username,
+      avatar: options.currentUser.avatar || options.currentUser.avatar_url || null,
+    }
+  }
+
+  return null
 }
 
 function buildDirectTopic(
