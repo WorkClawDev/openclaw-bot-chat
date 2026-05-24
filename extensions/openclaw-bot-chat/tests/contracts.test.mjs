@@ -44,8 +44,14 @@ test('manifest matches top-level bundled channel shape', () => {
 
 test('package metadata advertises configured state and setup entry', () => {
   const pkg = readJson('package.json');
-  assert.equal(pkg.openclaw.setupEntry, './setup-entry.ts');
+  assert.equal(pkg.name, '@workclawdev/extension-bot-chat');
+  assert.equal(pkg.private, undefined);
+  assert.equal(pkg.openclaw.extensions[0], './dist/index.js');
+  assert.equal(pkg.openclaw.setupEntry, './dist/setup-entry.js');
   assert.equal(pkg.openclaw.channel.id, 'bot-chat');
-  assert.equal(pkg.openclaw.channel.configuredState.specifier, './configured-state');
+  assert.equal(pkg.openclaw.channel.configuredState.specifier, './dist/configured-state.js');
   assert.equal(pkg.openclaw.compat.pluginApi, '>=2026.4.20');
+  assert.equal(pkg.openclaw.install.npmSpec, '@workclawdev/extension-bot-chat');
+  assert.equal(pkg.publishConfig.access, 'public');
+  assert.equal(pkg.bin['openclaw-bot-chat'], 'dist/src/bin/setup.js');
 });

@@ -1,57 +1,70 @@
-# openclaw-bot-chat extension
+# OpenClaw BotChat Extension
 
-按 OpenClaw 官方插件规范实现的 **Channel Plugin** 骨架，入口与加载方式对齐 `extensions/discord` 的关键结构：
+OpenClaw channel extension for bridging OpenClaw to BotChat through the BotChat backend and MQTT broker.
 
-- `index.ts`：`defineBundledChannelEntry(...)`
-- `channel-plugin-api.ts`：窄导出 channel plugin 对象
-- `runtime-api.ts`：窄导出 runtime setter
-- `openclaw.plugin.json` 与 `package.json#openclaw`
+## Install
 
-## 功能
+```bash
+npm install @workclawdev/extension-bot-chat
+```
 
-- 对接 BotChat backend bootstrap + MQTT 通信
-- 入站消息解析后回调到 OpenClaw（`emitMessage`）
-- 出站消息发布到 BotChat 后端可持久化的 `chat/...` conversation topic
-- 权限审批扩展（本地 handler / HTTP）
-- 本地 checkpoint 持久化（`stateDir/botchat-<botId>-state.json`）
-- 启动后通过 bot-runtime history endpoint 按 checkpoint 进行历史补偿（`historyCatchupLimit`，默认 100）
-- MQTT 重连成功后自动再执行一次历史补偿
-- 权限审批拒绝时可自动回写 `permissionDeniedReply`
+This publishes under the WorkClawDev namespace. The npm scope is written as lowercase `@workclawdev` because npm package names must be lowercase.
 
-## BotChat 后端对齐
+The package prints a non-secret QR code during install when lifecycle script output is shown by npm. The same QR can be shown again at any time:
 
-运行时使用 BotChat 后端当前的 bot-runtime contract：
+```bash
+npx @workclawdev/extension-bot-chat
+```
 
-- `GET /api/v1/bot-runtime/bootstrap`
-  - Header: `X-Bot-Key: <bot key>`
-  - 返回 broker TCP URL、订阅 topics、可发布 topics、bot identity 等安全启动信息。
-- `GET /api/v1/bot-runtime/messages/<conversation_id>?limit=<n>&after_seq=<seq>`
-  - Header: `X-Bot-Key: <bot key>`
-  - 用于 extension 重启或 MQTT 重连后的历史补偿。
-- MQTT publish topic 必须是后端可持久化的 conversation topic，例如：
-  - DM: `chat/dm/user/<userId>/bot/<botId>`
-  - Group: `chat/group/<groupId>`
+Set `OPENCLAW_BOTCHAT_SKIP_POSTINSTALL_QR=1` to suppress install-time QR output.
 
-## Target 映射
+## iOS Binding QR
 
-OpenClaw outbound target 会被映射到 BotChat conversation topic：
+The install/setup QR never includes `BOT_CHAT_BOT_KEY` or other secrets.
 
-| OpenClaw target | BotChat publish topic | 说明 |
-| --- | --- | --- |
-| `dm:<userId>` / `user:<userId>` | `chat/dm/user/<userId>/bot/<botId>` | BotChat 用户与当前 bot 的 DM。 |
-| `group:<groupId>` | `chat/group/<groupId>` | BotChat 群聊。 |
-| `channel:<conversationId>` | `<conversationId>` | 原样使用已有 BotChat conversation topic。 |
-| raw target | `channel:<raw>` | 默认当作 channel/conversation topic。 |
+By default it encodes:
 
-`threadId` / `replyToId` 目前仅作为 metadata 透传，尚未声明完整 thread routing capability，因此 `capabilities.threads` 保持 `false`。
+```text
+openclaw://extensions/install?package=@workclawdev%2Fextension-bot-chat&channel=bot-chat
+```
 
-## 配置 handoff
+For a deployment-specific iOS binding URL, provide one of these before running install or setup:
 
-1. 在 BotChat 前端创建 bot。
-2. 在 bot 详情/密钥管理中创建 bot key，并立即保存返回的 one-time `key`。
-3. 将 bot ID、bot key、后端 URL、MQTT TCP URL 写入 OpenClaw 配置。
+```bash
+OPENCLAW_BOTCHAT_BIND_URL="https://clawchat.example.com/openclaw/bind?token=..." npx @workclawdev/extension-bot-chat
+```
 
-OpenClaw channel config 示例：
+or:
+
+```bash
+BOT_CHAT_BACKEND_URL="https://clawchat.example.com" \
+BOT_CHAT_BOT_ID="replace_with_bot_uuid" \
+npx @workclawdev/extension-bot-chat
+```
+
+The second form generates:
+
+```text
+https://clawchat.example.com/openclaw/bind?package=@workclawdev/extension-bot-chat&channel=bot-chat&botId=<bot UUID>
+```
+
+## Configuration
+
+Minimal OpenClaw channel config:
+
+```json
+{
+  "channels": {
+    "bot-chat": {
+      "backendUrl": "http://127.0.0.1:8080",
+      "botKey": "ocbk_replace_with_one_time_bot_key",
+      "botId": "replace_with_bot_uuid"
+    }
+  }
+}
+```
+
+Recommended config for local development:
 
 ```json
 {
@@ -70,7 +83,7 @@ OpenClaw channel config 示例：
 }
 ```
 
-也可以把 `botKey` 改为 OpenClaw secret ref：
+`botKey` can also be an OpenClaw secret reference:
 
 ```json
 {
@@ -80,22 +93,30 @@ OpenClaw channel config 示例：
 }
 ```
 
-## 入口与加载
+## BotChat Runtime Contract
 
-- `index.ts`
-  - 默认导出 `defineBundledChannelEntry(...)`
-  - 声明 plugin specifier 与 runtime specifier
-- `channel-plugin-api.ts`
-  - 导出 `botChatPlugin`
-- `runtime-api.ts`
-  - 导出 `setBotChatRuntime`
-- `src/channel.ts`
-  - channel plugin 对象与 initialize/shutdown/消息处理入口
-- `src/runtime.ts`
-  - runtime interface 与默认 runtime（bootstrap、mqtt、inbound/outbound、approval）
+The extension uses the BotChat bot-runtime contract:
 
-示例配置见 `config.example.json`。
+- `GET /api/v1/bot-runtime/bootstrap` with `X-Bot-Key`
+- `GET /api/v1/bot-runtime/messages/<conversation_id>?limit=<n>&after_seq=<seq>` with `X-Bot-Key`
+- MQTT publish topics that BotChat can persist:
+  - DM: `chat/dm/user/<userId>/bot/<botId>`
+  - Group: `chat/group/<groupId>`
 
-## Agent 拆分计划
+## Target Mapping
 
-见：`docs/EXTENSION_AGENT_BREAKDOWN.md`
+| OpenClaw target | BotChat publish topic |
+| --- | --- |
+| `dm:<userId>` / `user:<userId>` | `chat/dm/user/<userId>/bot/<botId>` |
+| `group:<groupId>` | `chat/group/<groupId>` |
+| `channel:<conversationId>` | `<conversationId>` |
+| raw target | `channel:<raw>` |
+
+## Development
+
+```bash
+npm run check
+npm test
+npm run build
+npm pack --dry-run
+```

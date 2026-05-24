@@ -1,11 +1,27 @@
 {
-  "name": "@openclaw/extension-bot-chat",
+  "name": "@workclawdev/extension-bot-chat",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "OpenClaw extension for BotChat bridge (MQTT + permission approval)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "openclaw-bot-chat": "dist/src/bin/setup.js",
+    "openclaw-bot-chat-setup": "dist/src/bin/setup.js"
+  },
+  "files": [
+    "dist/**",
+    "examples/**",
+    "README.md",
+    "config.example.json",
+    "openclaw.plugin.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "peerDependencies": {
     "openclaw": ">=2026.4.20"
   },
@@ -16,9 +32,9 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
-    "setupEntry": "./setup-entry.ts",
+    "setupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "bot-chat",
       "label": "BotChat",
@@ -29,12 +45,12 @@
       "blurb": "Bridge OpenClaw to BotChat backend and MQTT.",
       "markdownCapable": true,
       "configuredState": {
-        "specifier": "./configured-state",
+        "specifier": "./dist/configured-state.js",
         "exportName": "hasBotChatConfiguredState"
       }
     },
     "install": {
-      "npmSpec": "@openclaw/extension-bot-chat",
+      "npmSpec": "@workclawdev/extension-bot-chat",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.4.20"
     },
@@ -49,12 +65,16 @@
     }
   },
   "scripts": {
+    "prepack": "npm run build",
+    "postinstall": "node -e \"import('node:fs').then(fs=>fs.existsSync('./dist/src/bin/postinstall.js')&&import('./dist/src/bin/postinstall.js'))\"",
+    "setup": "node ./dist/src/bin/setup.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "mqtt": "^5.15.1"
+    "mqtt": "^5.15.1",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.2",

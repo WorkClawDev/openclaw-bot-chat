@@ -1,10 +1,9 @@
 {
   "backendUrl": "http://127.0.0.1:8080",
-  "botKey": "ocbk_replace_with_one_time_bot_key_from_botchat_frontend",
+  "botKey": "ocbk_replace_with_one_time_bot_key",
   "botId": "replace_with_bot_uuid",
   "mqttTcpUrl": "mqtt://127.0.0.1:1883",
-  "mqttWsUrl": "wss://example.com/mqtt",
-  "defaultTo": "group:replace_with_group_uuid_or_channel:chat/dm/user/<userId>/bot/<botId>",
+  "defaultTo": "group:replace_with_group_uuid",
   "allowFrom": ["*"],
   "stateDir": "./data",
   "historyCatchupLimit": 100,
