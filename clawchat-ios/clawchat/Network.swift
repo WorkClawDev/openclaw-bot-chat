@@ -322,6 +322,31 @@ class APIClient {
             throw APIError.serverError("Upload failed with status \(httpResponse.statusCode)")
         }
     }
+
+    func publicImageURL(assetID: String) -> URL {
+        baseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("assets")
+            .appendingPathComponent("image")
+            .appendingPathComponent(assetID)
+    }
+
+    func resolvedURL(from rawValue: String?) -> URL? {
+        guard let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+
+        if let absoluteURL = URL(string: trimmed), absoluteURL.scheme != nil {
+            return absoluteURL
+        }
+
+        if trimmed.hasPrefix("//") {
+            return URL(string: "\(baseURL.scheme ?? "https"):\(trimmed)")
+        }
+
+        return URL(string: trimmed, relativeTo: baseURL)?.absoluteURL
+    }
 }
 
 class AuthManager: ObservableObject {

@@ -1,5 +1,7 @@
 import SwiftUI
 import Combine
+import PhotosUI
+import UIKit
 
 class BotsViewModel: ObservableObject {
     @Published var bots: [Bot] = []
@@ -58,10 +60,11 @@ class BotsViewModel: ObservableObject {
         hasHydratedCache = true
     }
 
-    func createBot(name: String, description: String?, onDone: @escaping () -> Void) {
+    func createBot(name: String, description: String?, avatarURL: String?, onDone: @escaping () -> Void) {
         let payload: [String: Any?] = [
             "name": name,
-            "description": description?.isEmpty == true ? nil : description
+            "description": description?.isEmpty == true ? nil : description,
+            "avatar_url": avatarURL?.isEmpty == true ? nil : avatarURL
         ]
 
         let data = try? JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
@@ -86,6 +89,11 @@ struct BotsView: View {
     @State private var showingCreate = false
     @State private var newName = ""
     @State private var newDescription = ""
+    @State private var newAvatarURL = ""
+    @State private var newAvatarItem: PhotosPickerItem?
+    @State private var pendingNewAvatarImage: PendingAvatarImage?
+    @State private var isUploadingAvatar = false
+    @State private var createErrorMessage: String?
     @State private var searchText = ""
 
     private var filteredBots: [Bot] {
@@ -195,27 +203,145 @@ struct BotsView: View {
     private var createBotSheet: some View {
         NavigationStack {
             Form {
+                Section {
+                    HStack(spacing: 14) {
+                        AvatarBadge(
+                            name: newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Bot" : newName,
+                            imageURL: normalizedNewAvatarURL,
+                            systemImage: "cpu.fill",
+                            diameter: 58,
+                            statusColor: nil
+                        )
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("机器人头像")
+                                .font(.subheadline.weight(.semibold))
+                            Text(isUploadingAvatar ? "上传中" : "可拖动和缩放后上传")
+                                .font(.caption)
+                                .foregroundStyle(Color.rcmsTextSecondary)
+                        }
+
+                        Spacer()
+
+                        PhotosPicker(selection: newBotAvatarSelection, matching: .images) {
+                            if isUploadingAvatar {
+                                ProgressView()
+                                    .tint(Color.rcmsAccent)
+                                    .frame(width: 38, height: 38)
+                            } else {
+                                Image(systemName: "photo")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(Color.rcmsAccent)
+                                    .frame(width: 38, height: 38)
+                            }
+                        }
+                        .disabled(isUploadingAvatar)
+                    }
+
+                    TextField("头像 URL", text: $newAvatarURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+
+                    if let createErrorMessage {
+                        Text(createErrorMessage)
+                            .font(.caption)
+                            .foregroundStyle(Color.rcmsDanger)
+                    }
+                }
+
                 TextField("Bot name", text: $newName)
                 TextField("Description", text: $newDescription)
             }
             .navigationTitle("创建机器人")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showingCreate = false }
+                    Button("Cancel") {
+                        resetCreateForm()
+                        showingCreate = false
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
-                        viewModel.createBot(name: newName, description: newDescription) {
-                            newName = ""
-                            newDescription = ""
+                        viewModel.createBot(name: newName, description: newDescription, avatarURL: normalizedNewAvatarURL) {
+                            resetCreateForm()
                             showingCreate = false
                         }
                     }
-                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isUploadingAvatar)
                 }
+            }
+            .sheet(item: $pendingNewAvatarImage) { pending in
+                AvatarCropperView(
+                    image: pending.image,
+                    title: "调整机器人头像",
+                    onCancel: {
+                        pendingNewAvatarImage = nil
+                    },
+                    onConfirm: { croppedImage in
+                        pendingNewAvatarImage = nil
+                        Task { await uploadNewBotAvatarImage(croppedImage) }
+                    }
+                )
             }
         }
         .presentationDetents([.medium])
+    }
+
+    private var normalizedNewAvatarURL: String? {
+        let trimmed = newAvatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var newBotAvatarSelection: Binding<PhotosPickerItem?> {
+        Binding(
+            get: { newAvatarItem },
+            set: { item in
+                newAvatarItem = item
+                guard let item else { return }
+                Task { await prepareNewBotAvatarCrop(from: item) }
+            }
+        )
+    }
+
+    private func prepareNewBotAvatarCrop(from item: PhotosPickerItem) async {
+        guard !isUploadingAvatar else { return }
+        isUploadingAvatar = true
+        createErrorMessage = nil
+        defer {
+            isUploadingAvatar = false
+            newAvatarItem = nil
+        }
+
+        do {
+            pendingNewAvatarImage = PendingAvatarImage(image: try await AvatarUploadService.loadImage(from: item))
+        } catch {
+            createErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func uploadNewBotAvatarImage(_ image: UIImage) async {
+        guard !isUploadingAvatar else { return }
+        isUploadingAvatar = true
+        createErrorMessage = nil
+        defer {
+            isUploadingAvatar = false
+        }
+
+        do {
+            let prefix = newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "bot" : newName
+            newAvatarURL = try await AvatarUploadService.uploadAvatarImage(image, fileNamePrefix: prefix)
+        } catch {
+            createErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func resetCreateForm() {
+        newName = ""
+        newDescription = ""
+        newAvatarURL = ""
+        newAvatarItem = nil
+        pendingNewAvatarImage = nil
+        createErrorMessage = nil
     }
 }
 
@@ -225,16 +351,13 @@ struct BotRowCard: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(red: 224/255, green: 242/255, blue: 254/255), Color(red: 186/255, green: 230/255, blue: 253/255)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 52, height: 52)
-                    .overlay(Image(systemName: "cpu.fill").foregroundStyle(Color.rcmsAccent))
+                AvatarBadge(
+                    name: bot.name,
+                    imageURL: bot.avatarUrl ?? bot.avatar,
+                    systemImage: "cpu.fill",
+                    diameter: 52,
+                    statusColor: nil
+                )
 
                 Circle()
                     .fill((bot.status == "online") ? Color.rcmsOnline : Color.rcmsOffline)

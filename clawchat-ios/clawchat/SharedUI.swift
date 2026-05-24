@@ -1,4 +1,7 @@
+import Combine
 import SwiftUI
+import UIKit
+import WebKit
 
 struct PrimaryButton<Label: View>: View {
     let isLoading: Bool
@@ -240,16 +243,9 @@ struct AvatarBadge: View {
 
     @ViewBuilder
     private var avatarBody: some View {
-        if let imageURL, let url = URL(string: imageURL) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                default:
-                    fallbackAvatar
-                }
+        if let url = APIClient.shared.resolvedURL(from: imageURL) {
+            RemoteAvatarImage(url: url) {
+                fallbackAvatar
             }
         } else {
             fallbackAvatar
@@ -283,6 +279,267 @@ struct AvatarBadge: View {
         }
 
         return name.first.map { String($0).uppercased() } ?? "?"
+    }
+}
+
+struct RemoteAvatarImage<Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder let placeholder: () -> Placeholder
+    @StateObject private var loader = AvatarImageLoader()
+
+    var body: some View {
+        Group {
+            if let image = loader.visibleImage(for: url) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            await loader.load(url: url)
+        }
+    }
+}
+
+struct AvatarImagePrefetcher {
+    static func prefetch(_ urls: [URL]) {
+        Task { @MainActor in
+            AvatarImageLoader.prefetch(urls)
+        }
+    }
+}
+
+@MainActor
+final class AvatarImageLoader: ObservableObject {
+    @Published var image: UIImage?
+    @Published var displayedURL: URL?
+
+    private static let imageCache: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>()
+        cache.countLimit = 600
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
+
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .useProtocolCachePolicy
+        configuration.urlCache = URLCache(
+            memoryCapacity: 16 * 1024 * 1024,
+            diskCapacity: 96 * 1024 * 1024,
+            diskPath: "site.changer.clawchat.avatar-url-cache"
+        )
+        return URLSession(configuration: configuration)
+    }()
+
+    private static var inFlightLoads: [URL: Task<UIImage?, Never>] = [:]
+    private var currentURL: URL?
+
+    func visibleImage(for url: URL) -> UIImage? {
+        if displayedURL == url, let image {
+            return image
+        }
+        return Self.cachedImage(for: url)
+    }
+
+    static func prefetch(_ urls: [URL]) {
+        for url in Array(Set(urls)) {
+            guard imageCache.object(forKey: url as NSURL) == nil else { continue }
+            Task {
+                _ = await image(for: url)
+            }
+        }
+    }
+
+    func load(url: URL) async {
+        if currentURL != url {
+            if let cachedImage = Self.cachedImage(for: url) {
+                image = cachedImage
+                displayedURL = url
+            } else {
+                image = nil
+                displayedURL = nil
+            }
+        }
+        currentURL = url
+
+        if let loadedImage = await Self.image(for: url), currentURL == url {
+            image = loadedImage
+            displayedURL = url
+        }
+    }
+
+    private static func cachedImage(for url: URL) -> UIImage? {
+        imageCache.object(forKey: url as NSURL)
+    }
+
+    private static func image(for url: URL) async -> UIImage? {
+        if let cachedImage = imageCache.object(forKey: url as NSURL) {
+            return cachedImage
+        }
+
+        if let task = inFlightLoads[url] {
+            return await task.value
+        }
+
+        let task = Task { @MainActor in
+            let loadedImage: UIImage?
+            if url.pathExtension.caseInsensitiveCompare("svg") == .orderedSame {
+                loadedImage = await SVGAvatarSnapshotter.shared.image(for: url, session: session)
+            } else {
+                loadedImage = await loadBitmapImage(for: url)
+            }
+
+            if let loadedImage {
+                imageCache.setObject(
+                    loadedImage,
+                    forKey: url as NSURL,
+                    cost: max(1, Int(loadedImage.size.width * loadedImage.size.height * loadedImage.scale * loadedImage.scale * 4))
+                )
+            }
+            return loadedImage
+        }
+
+        inFlightLoads[url] = task
+        let loadedImage = await task.value
+        inFlightLoads[url] = nil
+        return loadedImage
+    }
+
+    private static func loadBitmapImage(for url: URL) async -> UIImage? {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .useProtocolCachePolicy
+        request.timeoutInterval = 20
+        request.addValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await Self.session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let loadedImage = UIImage(data: data)
+            else {
+                return nil
+            }
+            return loadedImage
+        } catch {
+            return nil
+        }
+    }
+}
+
+@MainActor
+private final class SVGAvatarSnapshotter: NSObject, WKNavigationDelegate {
+    static let shared = SVGAvatarSnapshotter()
+
+    private let renderSize = CGSize(width: 96, height: 96)
+    private var continuations: [ObjectIdentifier: CheckedContinuation<Void, Never>] = [:]
+
+    func image(for url: URL, session: URLSession) async -> UIImage? {
+        let svgMarkup = await fetchSVGMarkup(for: url, session: session)
+        let html = htmlDocument(for: url, svgMarkup: svgMarkup)
+        let webView = makeWebView()
+
+        await withCheckedContinuation { continuation in
+            continuations[ObjectIdentifier(webView)] = continuation
+            webView.loadHTMLString(html, baseURL: url.deletingLastPathComponent())
+        }
+
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = CGRect(origin: .zero, size: renderSize)
+        return await withCheckedContinuation { continuation in
+            webView.takeSnapshot(with: configuration) { image, _ in
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    private func makeWebView() -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.suppressesIncrementalRendering = true
+
+        let webView = WKWebView(frame: CGRect(origin: .zero, size: renderSize), configuration: configuration)
+        webView.navigationDelegate = self
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.backgroundColor = .clear
+        webView.isUserInteractionEnabled = false
+        return webView
+    }
+
+    private func fetchSVGMarkup(for url: URL, session: URLSession) async -> String? {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .useProtocolCachePolicy
+        request.timeoutInterval = 20
+        request.addValue("image/svg+xml,*/*;q=0.8", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode)
+            else {
+                return nil
+            }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    private func htmlDocument(for url: URL, svgMarkup: String?) -> String {
+        let body: String
+        if let svgMarkup {
+            body = svgMarkup
+        } else {
+            body = "<img src=\"\(escaped(url.absoluteString))\">"
+        }
+
+        return """
+        <!doctype html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+            body { display: flex; align-items: stretch; justify-content: stretch; }
+            svg, img { width: 100%; height: 100%; object-fit: cover; display: block; }
+          </style>
+        </head>
+        <body>\(body)</body>
+        </html>
+        """
+    }
+
+    private func escaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        finish(webView)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        finish(webView)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        finish(webView)
+    }
+
+    private func finish(_ webView: WKWebView) {
+        let key = ObjectIdentifier(webView)
+        guard let continuation = continuations.removeValue(forKey: key) else {
+            return
+        }
+        continuation.resume()
     }
 }
 

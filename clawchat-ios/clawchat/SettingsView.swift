@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UserNotifications
+import PhotosUI
 import UIKit
 
 @MainActor
@@ -104,6 +105,9 @@ struct SettingsView: View {
     @State private var isEditingProfile = false
     @State private var nicknameDraft = ""
     @State private var avatarURLDraft = ""
+    @State private var selectedAvatarItem: PhotosPickerItem?
+    @State private var pendingAvatarImage: PendingAvatarImage?
+    @State private var isUploadingAvatar = false
     @State private var profileErrorMessage: String?
 
     @State private var showPasswordEditor = false
@@ -188,6 +192,19 @@ struct SettingsView: View {
             }
             .onChange(of: resolvedUser?.id) { _, _ in
                 syncProfileDraftsIfNeeded()
+            }
+            .sheet(item: $pendingAvatarImage) { pending in
+                AvatarCropperView(
+                    image: pending.image,
+                    title: "调整头像",
+                    onCancel: {
+                        pendingAvatarImage = nil
+                    },
+                    onConfirm: { croppedImage in
+                        pendingAvatarImage = nil
+                        Task { await uploadProfileAvatarImage(croppedImage) }
+                    }
+                )
             }
             .alert(
                 "Profile failed to load",
@@ -291,6 +308,44 @@ struct SettingsView: View {
 
             if isEditingProfile {
                 VStack(spacing: 16) {
+                    HStack(spacing: 12) {
+                        ProfileAvatarView(
+                            name: effectiveDraftName(for: user),
+                            imageURL: normalizedAvatarDraft,
+                            diameter: 58
+                        )
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Profile photo")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.rcmsTextPrimary)
+                            Text(isUploadingAvatar ? "Uploading" : "Drag and zoom before uploading")
+                                .font(.caption)
+                                .foregroundStyle(Color.rcmsTextSecondary)
+                        }
+
+                        Spacer()
+
+                        PhotosPicker(selection: profileAvatarSelection, matching: .images) {
+                            if isUploadingAvatar {
+                                ProgressView()
+                                    .tint(Color.rcmsAccent)
+                                    .frame(width: 38, height: 38)
+                            } else {
+                                Image(systemName: "photo")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(Color.rcmsAccent)
+                                    .frame(width: 38, height: 38)
+                                    .background(Color.white.opacity(0.72))
+                                    .clipShape(Circle())
+                            }
+                        }
+                        .disabled(isUploadingAvatar || viewModel.isSavingProfile)
+                    }
+                    .padding(12)
+                    .background(Color.white.opacity(0.45))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
                     editField(title: "Display name", placeholder: "Add a display name", text: $nicknameDraft)
                         .focused($focusNicknameField)
                     
@@ -318,7 +373,7 @@ struct SettingsView: View {
                     .background(Color.rcmsAccent)
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .disabled(viewModel.isSavingProfile)
+                    .disabled(viewModel.isSavingProfile || isUploadingAvatar)
                 }
                 .padding(16)
                 .background(Color.white.opacity(0.4))
@@ -674,6 +729,8 @@ struct SettingsView: View {
     private func startProfileEditing(using user: User) {
         nicknameDraft = displayName(for: user)
         avatarURLDraft = avatarURL(for: user) ?? ""
+        selectedAvatarItem = nil
+        pendingAvatarImage = nil
         profileErrorMessage = nil
         isEditingProfile = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -683,8 +740,54 @@ struct SettingsView: View {
 
     private func cancelProfileEditing() {
         syncProfileDraftsIfNeeded()
+        selectedAvatarItem = nil
+        pendingAvatarImage = nil
         profileErrorMessage = nil
         isEditingProfile = false
+    }
+
+    private var profileAvatarSelection: Binding<PhotosPickerItem?> {
+        Binding(
+            get: { selectedAvatarItem },
+            set: { item in
+                selectedAvatarItem = item
+                guard let item else { return }
+                Task { await prepareProfileAvatarCrop(from: item) }
+            }
+        )
+    }
+
+    private func prepareProfileAvatarCrop(from item: PhotosPickerItem) async {
+        guard !isUploadingAvatar else { return }
+        isUploadingAvatar = true
+        profileErrorMessage = nil
+        defer {
+            isUploadingAvatar = false
+            selectedAvatarItem = nil
+        }
+
+        do {
+            pendingAvatarImage = PendingAvatarImage(image: try await AvatarUploadService.loadImage(from: item))
+        } catch {
+            profileErrorMessage = SettingsViewModel.message(from: error)
+        }
+    }
+
+    private func uploadProfileAvatarImage(_ image: UIImage) async {
+        guard !isUploadingAvatar else { return }
+        isUploadingAvatar = true
+        profileErrorMessage = nil
+        defer {
+            isUploadingAvatar = false
+        }
+
+        do {
+            let prefix = resolvedUser?.username ?? "profile"
+            avatarURLDraft = try await AvatarUploadService.uploadAvatarImage(image, fileNamePrefix: prefix)
+            presentToast("Avatar uploaded")
+        } catch {
+            profileErrorMessage = SettingsViewModel.message(from: error)
+        }
     }
 
     private func saveProfileChanges(for user: User) async {
@@ -889,21 +992,9 @@ private struct ProfileAvatarView: View {
                     )
                 )
 
-            if let imageURL, let url = URL(string: imageURL), !imageURL.isEmpty {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .failure:
-                        initials
-                    case .empty:
-                        ProgressView()
-                            .tint(Color.rcmsAccent)
-                    @unknown default:
-                        initials
-                    }
+            if let url = APIClient.shared.resolvedURL(from: imageURL) {
+                RemoteAvatarImage(url: url) {
+                    initials
                 }
             } else {
                 initials

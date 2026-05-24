@@ -82,8 +82,7 @@ final class LocalImageStore {
             return cached
         }
 
-        guard let remoteURLString = message.content.imageURLString,
-              let remoteURL = URL(string: remoteURLString)
+        guard let remoteURL = APIClient.shared.resolvedURL(from: message.content.imageURLString)
         else {
             return nil
         }

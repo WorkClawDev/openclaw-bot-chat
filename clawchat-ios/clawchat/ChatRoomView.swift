@@ -52,6 +52,7 @@ class ChatRoomViewModel: ObservableObject {
     private let pageSize = 50
     private var cancellables = Set<AnyCancellable>()
     private var syncTask: Task<Void, Never>?
+    private var botProfilesByID: [String: ChatPeerProfile] = [:]
 #if DEBUG
     private static let isMessageTraceLoggingEnabled = false
 #endif
@@ -97,7 +98,8 @@ class ChatRoomViewModel: ObservableObject {
 
     func fetchMessages() {
         errorMessage = nil
-        messages = sortMessages(LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: pageSize))
+        loadCachedBotProfiles()
+        messages = sortMessages(enrichMessages(LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: pageSize)))
         updateHistoryAvailability()
         isLoading = messages.isEmpty
 
@@ -149,7 +151,7 @@ class ChatRoomViewModel: ObservableObject {
         Self.logMessageTrace(
             "MQTT TRACE ui accepted message_id=\(message.id) conversation_id=\(message.conversationId) topic=\(message.topic) current_conversation=\(conversationId)"
         )
-        messages = mergeMessages(messages, with: [message])
+        messages = mergeMessages(messages, with: [enrichMessage(message)])
     }
 
     @MainActor
@@ -205,11 +207,123 @@ class ChatRoomViewModel: ObservableObject {
                     cancellable?.cancel()
                     cancellable = nil
                 } receiveValue: { (messages: [Message]) in
-                    continuation.resume(returning: self.sortMessages(messages))
+                    continuation.resume(returning: self.sortMessages(self.enrichMessages(messages)))
                     cancellable?.cancel()
                     cancellable = nil
                 }
         }
+    }
+
+    func seedBotProfile(_ bot: Bot?) {
+        guard let bot else { return }
+        applyBotProfiles([bot])
+    }
+
+    func refreshBotProfiles() {
+        loadCachedBotProfiles()
+
+        APIClient.shared.request("/api/v1/bots")
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+            } receiveValue: { [weak self] (bots: [Bot]) in
+                LocalMessageStore.shared.upsert(bots: bots)
+                self?.applyBotProfiles(bots)
+            }
+            .store(in: &cancellables)
+    }
+
+    func refreshGroupBotProfiles(groupId: String?) {
+        guard let groupId, !groupId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        APIClient.shared.request("/api/v1/groups/\(groupId)/members")
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+            } receiveValue: { [weak self] (payload: GroupMembersPayload) in
+                let bots = payload.bots.compactMap(\.bot)
+                LocalMessageStore.shared.upsert(bots: bots)
+                self?.applyBotProfiles(bots)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func loadCachedBotProfiles() {
+        applyBotProfiles(LocalMessageStore.shared.cachedBots())
+    }
+
+    private func applyBotProfiles(_ bots: [Bot]) {
+        var changedProfiles = false
+        prefetchBotAvatarImages(for: bots)
+
+        for bot in bots {
+            let id = Self.normalizedIdentifier(bot.id.uuidString)
+            let avatar = firstNonEmpty(bot.avatarUrl, bot.avatar)
+            let profile = ChatPeerProfile(name: bot.name, avatar: avatar)
+            if botProfilesByID[id] != profile {
+                botProfilesByID[id] = profile
+                changedProfiles = true
+            }
+        }
+
+        guard changedProfiles else { return }
+
+        let enriched = enrichMessages(messages)
+        if messagesNeedReplacement(messages, enriched) {
+            messages = sortMessages(enriched)
+        }
+    }
+
+    private func prefetchBotAvatarImages(for bots: [Bot]) {
+        let urls = bots.compactMap { bot -> URL? in
+            guard let avatar = firstNonEmpty(bot.avatarUrl, bot.avatar) else {
+                return nil
+            }
+            return APIClient.shared.resolvedURL(from: avatar)
+        }
+        AvatarImagePrefetcher.prefetch(urls)
+    }
+
+    private func enrichMessages(_ items: [Message]) -> [Message] {
+        items.map(enrichMessage)
+    }
+
+    private func enrichMessage(_ message: Message) -> Message {
+        var updated = message
+        updated.from = enrichPeer(updated.from)
+        updated.to = enrichPeer(updated.to)
+        return updated
+    }
+
+    private func enrichPeer(_ peer: ChatPeer) -> ChatPeer {
+        guard Self.normalizedIdentifier(peer.type) == "bot",
+              let profile = botProfilesByID[Self.normalizedIdentifier(peer.id)]
+        else {
+            return peer
+        }
+
+        var enriched = peer
+        if let name = firstNonEmpty(profile.name) {
+            enriched.name = name
+        }
+        if let avatar = firstNonEmpty(profile.avatar, peer.avatar) {
+            enriched.avatar = avatar
+        }
+        return enriched
+    }
+
+    private func messagesNeedReplacement(_ lhs: [Message], _ rhs: [Message]) -> Bool {
+        guard lhs.count == rhs.count else { return true }
+        return zip(lhs, rhs).contains { current, updated in
+            current.from.name != updated.from.name
+                || current.from.avatar != updated.from.avatar
+                || current.to.name != updated.to.name
+                || current.to.avatar != updated.to.avatar
+        }
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String? {
+        values
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
     }
 
     private func messageEndpoint(limit: Int, beforeSeq: Int? = nil, afterSeq: Int? = nil) -> String {
@@ -225,7 +339,7 @@ class ChatRoomViewModel: ObservableObject {
 
     private func mergeMessages(_ existing: [Message], with incoming: [Message]) -> [Message] {
         let merged = (existing + incoming).reduce(into: [String: Message]()) { result, message in
-            result[message.id] = message
+            result[message.id] = enrichMessage(message)
         }
         return sortMessages(Array(merged.values))
     }
@@ -304,6 +418,10 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     private static func normalizedConversationReference(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedIdentifier(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
@@ -547,6 +665,11 @@ class ChatRoomViewModel: ObservableObject {
     private static let compressedMaxPixelSize: CGFloat = 2000
 }
 
+private struct ChatPeerProfile: Equatable {
+    let name: String?
+    let avatar: String?
+}
+
 private struct UploadImagePayload {
     let data: Data
     let fileName: String
@@ -781,6 +904,7 @@ struct ChatRoomView: View {
                                     message: message,
                                     currentUserID: effectiveCurrentUserID,
                                     showsSenderInfo: context.isGroup,
+                                    fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString,
                                     onPreviewImage: { previewMessage = $0 }
                                 )
                                     .id(message.id)
@@ -790,7 +914,10 @@ struct ChatRoomView: View {
                                 .frame(height: bottomMessageClearance)
                                 .id(bottomAnchorID)
                                 .background(
-                                    ChatScrollBottomReader(coordinateSpaceName: scrollCoordinateSpaceName)
+                                    ChatScrollBottomReader(
+                                        coordinateSpaceName: scrollCoordinateSpaceName,
+                                        onChange: handleScrollBottomChange
+                                    )
                                 )
                         }
                         .padding(.horizontal, 12)
@@ -812,10 +939,6 @@ struct ChatRoomView: View {
                         guard shouldTrackScrollMetrics else { return }
                         guard abs(scrollViewportHeight - height) > 0.5 else { return }
                         scrollViewportHeight = height
-                    }
-                    .onPreferenceChange(ChatScrollBottomPreferenceKey.self) { bottomMaxY in
-                        guard shouldTrackScrollMetrics else { return }
-                        updateBottomDistance(bottomMaxY)
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         inputBar
@@ -864,6 +987,9 @@ struct ChatRoomView: View {
         .onAppear {
             guard loadsMessagesOnAppear else { return }
             RealtimeService.shared.setActiveConversation(context.id)
+            viewModel.seedBotProfile(context.bot)
+            viewModel.refreshBotProfiles()
+            viewModel.refreshGroupBotProfiles(groupId: context.groupId)
             viewModel.fetchMessages()
         }
         .onDisappear {
@@ -913,6 +1039,9 @@ struct ChatRoomView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
+        .task(id: avatarPrefetchKey) {
+            AvatarImagePrefetcher.prefetch(messageAvatarURLs)
+        }
         .simultaneousGesture(edgeBackGesture)
     }
 
@@ -925,6 +1054,46 @@ struct ChatRoomView: View {
                 settingsAffordance
             }
         )
+    }
+
+    private var messageAvatarURLs: [URL] {
+        let avatarStrings = viewModel.messages.compactMap { message -> String? in
+            guard normalizeIdentifier(message.senderId) != normalizeIdentifier(effectiveCurrentUserID) else {
+                return nil
+            }
+
+            if let avatar = message.from.avatar?.trimmingCharacters(in: .whitespacesAndNewlines), !avatar.isEmpty {
+                return avatar
+            }
+
+            if !context.isGroup,
+               normalizeIdentifier(message.from.type) == "bot",
+               let fallback = context.avatarURLString?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !fallback.isEmpty {
+                return fallback
+            }
+
+            return nil
+        }
+
+        var seen = Set<String>()
+        return avatarStrings.compactMap { rawValue in
+            guard let url = APIClient.shared.resolvedURL(from: rawValue) else {
+                return nil
+            }
+            let key = url.absoluteString
+            guard seen.insert(key).inserted else {
+                return nil
+            }
+            return url
+        }
+    }
+
+    private var avatarPrefetchKey: String {
+        messageAvatarURLs
+            .map(\.absoluteString)
+            .sorted()
+            .joined(separator: "|")
     }
 
     private var edgeBackGesture: some Gesture {
@@ -1491,6 +1660,11 @@ struct ChatRoomView: View {
         !isInputFocused || isUserInteractingWithMessages
     }
 
+    private func handleScrollBottomChange(_ bottomMaxY: CGFloat) {
+        guard shouldTrackScrollMetrics else { return }
+        updateBottomDistance(bottomMaxY)
+    }
+
     private func normalizeIdentifier(_ value: String?) -> String {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     }
@@ -1618,22 +1792,25 @@ private struct ChatComposerIconButton: View {
 
 private struct ChatScrollBottomReader: View {
     let coordinateSpaceName: String
+    let onChange: (CGFloat) -> Void
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
-            Color.clear.preference(
-                key: ChatScrollBottomPreferenceKey.self,
-                value: geometry.frame(in: .named(coordinateSpaceName)).maxY
-            )
+            let bottomMaxY = geometry.frame(in: .named(coordinateSpaceName)).maxY
+            let pixelAlignedBottomMaxY = pixelAligned(bottomMaxY)
+
+            Color.clear
+                .task(id: pixelAlignedBottomMaxY) {
+                    await Task.yield()
+                    onChange(pixelAlignedBottomMaxY)
+                }
         }
     }
-}
 
-private struct ChatScrollBottomPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    private func pixelAligned(_ value: CGFloat) -> CGFloat {
+        let scale = max(displayScale, 1)
+        return (value * scale).rounded() / scale
     }
 }
 
@@ -1724,6 +1901,7 @@ struct ChatBubbleRow: View {
     let message: Message
     let currentUserID: String?
     let showsSenderInfo: Bool
+    let fallbackBotAvatarURLString: String?
     let onPreviewImage: ((Message) -> Void)?
 
     private var messageTimestamp: String? {
@@ -1874,18 +2052,11 @@ struct ChatBubbleRow: View {
 
     private var senderAvatar: some View {
         Group {
-            if let avatar = message.from.avatar?.trimmingCharacters(in: .whitespacesAndNewlines),
-               let url = URL(string: avatar),
+            if let avatar = senderAvatarURLString,
+               let url = APIClient.shared.resolvedURL(from: avatar),
                !avatar.isEmpty {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        senderAvatarFallback
-                    }
+                RemoteAvatarImage(url: url) {
+                    senderAvatarFallback
                 }
             } else {
                 senderAvatarFallback
@@ -1895,6 +2066,21 @@ struct ChatBubbleRow: View {
         .clipShape(Circle())
         .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 3)
+    }
+
+    private var senderAvatarURLString: String? {
+        if let avatar = message.from.avatar?.trimmingCharacters(in: .whitespacesAndNewlines), !avatar.isEmpty {
+            return avatar
+        }
+
+        guard isBot,
+              let fallback = fallbackBotAvatarURLString?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !fallback.isEmpty
+        else {
+            return nil
+        }
+
+        return fallback
     }
 
     private var senderAvatarFallback: some View {

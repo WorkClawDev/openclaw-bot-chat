@@ -1,5 +1,7 @@
 import SwiftUI
 import Combine
+import PhotosUI
+import UIKit
 
 @MainActor
 class BotSettingsViewModel: ObservableObject {
@@ -30,9 +32,13 @@ class BotSettingsViewModel: ObservableObject {
             .store(in: &cancellables)
     }
     
-    func updateBot(name: String, description: String?, onDone: @escaping () -> Void) {
+    func updateBot(name: String, description: String?, avatarURL: String?, onDone: @escaping () -> Void) {
         isLoading = true
-        let payload = UpdateBotRequest(name: name, description: description?.isEmpty == true ? nil : description)
+        let payload = UpdateBotRequest(
+            name: name,
+            description: description?.isEmpty == true ? nil : description,
+            avatarUrl: avatarURL
+        )
         let data = try? JSONEncoder().encode(payload)
         
         APIClient.shared.request("/api/v1/bots/\(bot.id.uuidString.lowercased())", method: "PUT", body: data)
@@ -105,7 +111,11 @@ struct BotSettingsView: View {
     
     @State private var editName: String
     @State private var editDescription: String
+    @State private var editAvatarURL: String
     @State private var isEditing = false
+    @State private var isUploadingAvatar = false
+    @State private var selectedAvatarItem: PhotosPickerItem?
+    @State private var pendingAvatarImage: PendingAvatarImage?
     @State private var showDeleteConfirm = false
     @State private var showNewKeyAlert = false
     @State private var newKeyName = ""
@@ -116,6 +126,7 @@ struct BotSettingsView: View {
         _viewModel = StateObject(wrappedValue: BotSettingsViewModel(bot: bot))
         _editName = State(initialValue: bot.name)
         _editDescription = State(initialValue: bot.description ?? "")
+        _editAvatarURL = State(initialValue: bot.avatarUrl ?? bot.avatar ?? "")
         self.onBotUpdated = onBotUpdated
     }
     
@@ -138,6 +149,19 @@ struct BotSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             viewModel.fetchKeys()
+        }
+        .sheet(item: $pendingAvatarImage) { pending in
+            AvatarCropperView(
+                image: pending.image,
+                title: "调整机器人头像",
+                onCancel: {
+                    pendingAvatarImage = nil
+                },
+                onConfirm: { croppedImage in
+                    pendingAvatarImage = nil
+                    Task { await uploadBotAvatarImage(croppedImage) }
+                }
+            )
         }
         .alert("保存失败", isPresented: Binding(
             get: { viewModel.errorMessage != nil },
@@ -180,15 +204,20 @@ struct BotSettingsView: View {
                 Spacer()
                 if isEditing {
                     Button("保存") {
-                        viewModel.updateBot(name: editName, description: editDescription) {
+                        let trimmedAvatarURL = editAvatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                        viewModel.updateBot(name: editName, description: editDescription, avatarURL: trimmedAvatarURL) {
                             withAnimation { isEditing = false }
                             onBotUpdated()
                         }
                     }
                     .font(.subheadline.bold())
                     .foregroundStyle(Color.rcmsAccent)
+                    .disabled(isUploadingAvatar || editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } else {
                     Button("编辑") {
+                        editName = viewModel.bot.name
+                        editDescription = viewModel.bot.description ?? ""
+                        editAvatarURL = viewModel.bot.avatarUrl ?? viewModel.bot.avatar ?? ""
                         withAnimation { isEditing = true }
                     }
                     .font(.subheadline.bold())
@@ -199,6 +228,46 @@ struct BotSettingsView: View {
             VStack(spacing: 0) {
                 if isEditing {
                     VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            AvatarBadge(
+                                name: editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? viewModel.bot.name : editName,
+                                imageURL: normalizedEditAvatarURL,
+                                systemImage: "cpu.fill",
+                                diameter: 58,
+                                statusColor: nil
+                            )
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("机器人头像")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.rcmsTextPrimary)
+                                Text(isUploadingAvatar ? "上传中" : "可拖动和缩放后上传")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.rcmsTextSecondary)
+                            }
+
+                            Spacer()
+
+                            PhotosPicker(selection: botAvatarSelection, matching: .images) {
+                                if isUploadingAvatar {
+                                    ProgressView()
+                                        .tint(Color.rcmsAccent)
+                                        .frame(width: 38, height: 38)
+                                } else {
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(Color.rcmsAccent)
+                                        .frame(width: 38, height: 38)
+                                        .background(Color.white.opacity(0.72))
+                                        .clipShape(Circle())
+                                }
+                            }
+                            .disabled(isUploadingAvatar || viewModel.isLoading)
+                        }
+                        .padding(12)
+                        .background(Color.black.opacity(0.03))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
                         TextField("机器人名称", text: $editName)
                             .padding(12)
                             .background(Color.black.opacity(0.04))
@@ -207,9 +276,31 @@ struct BotSettingsView: View {
                             .padding(12)
                             .background(Color.black.opacity(0.04))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                        TextField("头像 URL", text: $editAvatarURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .padding(12)
+                            .background(Color.black.opacity(0.04))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     .padding(16)
                 } else {
+                    HStack {
+                        Text("头像")
+                            .foregroundStyle(Color.rcmsTextSecondary)
+                        Spacer()
+                        AvatarBadge(
+                            name: viewModel.bot.name,
+                            imageURL: viewModel.bot.avatarUrl ?? viewModel.bot.avatar,
+                            systemImage: "cpu.fill",
+                            diameter: 42,
+                            statusColor: nil
+                        )
+                    }
+                    .padding(16)
+
+                    Divider().padding(.horizontal, 16)
+
                     HStack {
                         Text("名称")
                             .foregroundStyle(Color.rcmsTextSecondary)
@@ -243,6 +334,54 @@ struct BotSettingsView: View {
                 }
             }
             .glassCardStyle()
+        }
+    }
+
+    private var normalizedEditAvatarURL: String? {
+        let trimmed = editAvatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var botAvatarSelection: Binding<PhotosPickerItem?> {
+        Binding(
+            get: { selectedAvatarItem },
+            set: { item in
+                selectedAvatarItem = item
+                guard let item else { return }
+                Task { await prepareBotAvatarCrop(from: item) }
+            }
+        )
+    }
+
+    private func prepareBotAvatarCrop(from item: PhotosPickerItem) async {
+        guard !isUploadingAvatar else { return }
+        isUploadingAvatar = true
+        viewModel.errorMessage = nil
+        defer {
+            isUploadingAvatar = false
+            selectedAvatarItem = nil
+        }
+
+        do {
+            pendingAvatarImage = PendingAvatarImage(image: try await AvatarUploadService.loadImage(from: item))
+        } catch {
+            viewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func uploadBotAvatarImage(_ image: UIImage) async {
+        guard !isUploadingAvatar else { return }
+        isUploadingAvatar = true
+        viewModel.errorMessage = nil
+        defer {
+            isUploadingAvatar = false
+        }
+
+        do {
+            let prefix = editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? viewModel.bot.name : editName
+            editAvatarURL = try await AvatarUploadService.uploadAvatarImage(image, fileNamePrefix: prefix)
+        } catch {
+            viewModel.errorMessage = error.localizedDescription
         }
     }
     

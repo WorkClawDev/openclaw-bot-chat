@@ -49,6 +49,12 @@ struct Bot: Codable, Identifiable {
 struct UpdateBotRequest: Codable {
     let name: String?
     let description: String?
+    let avatarUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, description
+        case avatarUrl = "avatar_url"
+    }
 }
 
 struct BotKeyResponse: Codable, Identifiable {
@@ -96,6 +102,7 @@ struct ChatGroup: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, avatar
+        case avatarUrl = "avatar_url"
         case ownerId = "owner_id"
         case memberCount = "member_count"
         case isActive = "is_active"
