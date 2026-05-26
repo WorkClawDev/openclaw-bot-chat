@@ -919,6 +919,8 @@ final class LocalMessageStore {
         let previewText: String
         if let content, !content.isEmpty {
             previewText = content
+        } else if message.content.isAudio {
+            previewText = "[语音]"
         } else {
             switch message.content.type.lowercased() {
             case "image":

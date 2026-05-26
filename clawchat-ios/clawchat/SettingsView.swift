@@ -23,7 +23,7 @@ final class SettingsViewModel: ObservableObject {
         defer { isLoading = false }
 
         do {
-            let user: User = try await APIClient.shared.requestValue("/api/v1/auth/me")
+            let user = try await APIClient.shared.fetchCurrentUserValue()
             currentUser = user
             AuthManager.shared.currentUser = user
             loadErrorMessage = nil
@@ -36,16 +36,7 @@ final class SettingsViewModel: ObservableObject {
         isSavingProfile = true
         defer { isSavingProfile = false }
 
-        let payload = UpdateProfileRequest(
-            nickname: nickname,
-            avatarUrl: avatarURL
-        )
-        let body = try JSONEncoder().encode(payload)
-        let user: User = try await APIClient.shared.requestValue(
-            "/api/v1/auth/me",
-            method: "PUT",
-            body: body
-        )
+        let user = try await APIClient.shared.updateProfile(nickname: nickname, avatarURL: avatarURL)
 
         currentUser = user
         AuthManager.shared.currentUser = user
@@ -57,16 +48,7 @@ final class SettingsViewModel: ObservableObject {
         isChangingPassword = true
         defer { isChangingPassword = false }
 
-        let payload = ChangePasswordRequest(
-            oldPassword: currentPassword,
-            newPassword: newPassword
-        )
-        let body = try JSONEncoder().encode(payload)
-        let _: APIClient.EmptyResponse = try await APIClient.shared.requestValue(
-            "/api/v1/auth/change-password",
-            method: "POST",
-            body: body
-        )
+        try await APIClient.shared.changePassword(currentPassword: currentPassword, newPassword: newPassword)
     }
 
     static func message(from error: Error) -> String {
@@ -100,6 +82,7 @@ struct SettingsView: View {
     @AppStorage("settings.botNotificationsEnabled") private var botNotificationsEnabled = false
     @AppStorage("settings.compactMessageMode") private var compactMessageMode = false
     @AppStorage("settings.imageUploadQuality") private var imageUploadQuality = "Compressed"
+    @AppStorage("settings.appearanceMode") private var appearanceModeRawValue = AppAppearanceMode.system.rawValue
 
     @State private var didInitialLoad = false
     @State private var isEditingProfile = false
@@ -135,6 +118,10 @@ struct SettingsView: View {
         notificationAuthorizationStatus == .authorized || notificationAuthorizationStatus == .provisional
     }
 
+    private var appearanceMode: AppAppearanceMode {
+        AppAppearanceMode(rawValue: appearanceModeRawValue) ?? .system
+    }
+
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
@@ -149,6 +136,9 @@ struct SettingsView: View {
 
                             sectionHeader(title: "Account")
                             accountCard(user: user)
+
+                            sectionHeader(title: "Appearance")
+                            appearanceCard
 
                             sectionHeader(title: "Messaging")
                             messagingCard
@@ -296,7 +286,7 @@ struct SettingsView: View {
                         .foregroundStyle(Color.rcmsAccent)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.7))
+                        .background(Color.rcmsControlSurface)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -336,14 +326,14 @@ struct SettingsView: View {
                                     .font(.system(size: 18, weight: .semibold))
                                     .foregroundStyle(Color.rcmsAccent)
                                     .frame(width: 38, height: 38)
-                                    .background(Color.white.opacity(0.72))
+                                    .background(Color.rcmsControlSurface)
                                     .clipShape(Circle())
                             }
                         }
                         .disabled(isUploadingAvatar || viewModel.isSavingProfile)
                     }
                     .padding(12)
-                    .background(Color.white.opacity(0.45))
+                    .background(Color.rcmsSubtleFill)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                     editField(title: "Display name", placeholder: "Add a display name", text: $nicknameDraft)
@@ -376,7 +366,7 @@ struct SettingsView: View {
                     .disabled(viewModel.isSavingProfile || isUploadingAvatar)
                 }
                 .padding(16)
-                .background(Color.white.opacity(0.4))
+                .background(Color.rcmsSubtleFill)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
             }
@@ -394,9 +384,9 @@ struct SettingsView: View {
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
                 .padding(12)
-                .background(Color.white.opacity(0.6))
+                .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.05), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UITheme.subtleStroke, lineWidth: 1))
         }
     }
 
@@ -441,17 +431,17 @@ struct SettingsView: View {
         VStack(spacing: 12) {
             SecureField("Current password", text: $currentPassword)
                 .padding(12)
-                .background(Color.white.opacity(0.6))
+                .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             
             SecureField("New password (at least 8 characters)", text: $newPassword)
                 .padding(12)
-                .background(Color.white.opacity(0.6))
+                .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             
             SecureField("Confirm new password", text: $confirmPassword)
                 .padding(12)
-                .background(Color.white.opacity(0.6))
+                .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
             if let passwordErrorMessage {
@@ -478,7 +468,7 @@ struct SettingsView: View {
             .disabled(viewModel.isChangingPassword)
         }
         .padding(12)
-        .background(Color.black.opacity(0.02))
+        .background(Color.rcmsSubtleFill)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
@@ -501,8 +491,35 @@ struct SettingsView: View {
             }
         }
         .padding(12)
-        .background(Color.black.opacity(0.02))
+        .background(Color.rcmsSubtleFill)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var appearanceCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                rowIcon(appearanceMode.systemImage)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Deep night mode")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(Color.rcmsTextPrimary)
+                    Text(appearanceMode.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Picker("Appearance", selection: $appearanceModeRawValue) {
+                ForEach(AppAppearanceMode.allCases) { mode in
+                    Text(mode.title).tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(16)
+        .glassCardStyle()
     }
 
     private var messagingCard: some View {
@@ -555,7 +572,7 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                        .stroke(Color.rcmsHairline, lineWidth: 1)
                 )
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1004,7 +1021,7 @@ private struct ProfileAvatarView: View {
         .clipShape(Circle())
         .overlay(
             Circle()
-                .stroke(Color.white.opacity(0.96), lineWidth: 3)
+                .stroke(Color.rcmsAvatarBorder, lineWidth: 3)
         )
         .shadow(color: Color.black.opacity(0.08), radius: 18, x: 0, y: 10)
     }

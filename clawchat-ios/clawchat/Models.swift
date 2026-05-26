@@ -252,9 +252,10 @@ struct Message: Codable, Identifiable {
     var seq: Int?
     var timestamp: Int64?
     var createdAt: Date?
+    var pending: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, from, to, content, seq, timestamp
+        case id, from, to, content, seq, timestamp, pending
         case conversationId = "conversation_id"
         case topic = "mqtt_topic"
         case senderId = "sender_id"
@@ -280,6 +281,7 @@ struct Message: Codable, Identifiable {
         seq = try container.decodeIfPresent(Int.self, forKey: .seq)
         timestamp = try container.decodeIfPresent(Int64.self, forKey: .timestamp)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        pending = try container.decodeIfPresent(Bool.self, forKey: .pending) ?? false
         
         if let sId = try? container.decodeIfPresent(String.self, forKey: .senderId) {
             senderId = sId
@@ -668,11 +670,15 @@ extension AnyCodable {
 }
 
 extension Asset {
-    var preferredImageURLString: String? {
+    var preferredMediaURLString: String? {
         let candidates = [downloadURL, externalURL, sourceURL]
         return candidates
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
+    }
+
+    var preferredImageURLString: String? {
+        preferredMediaURLString
     }
 
     var metaValue: AnyCodable {
@@ -790,21 +796,72 @@ extension MessageContent {
         Asset.from(meta: meta)
     }
 
-    var imageURLString: String? {
+    var mediaURLString: String? {
         let directURL = url?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let directURL, !directURL.isEmpty {
             return directURL
         }
-        return asset?.preferredImageURLString
+        return asset?.preferredMediaURLString
+    }
+
+    var imageURLString: String? {
+        mediaURLString
+    }
+
+    var audioURLString: String? {
+        mediaURLString
+    }
+
+    var isAudio: Bool {
+        let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedType == "audio" || normalizedType == "voice" {
+            return true
+        }
+
+        if let mimeType = asset?.mimeType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           mimeType.hasPrefix("audio/") {
+            return true
+        }
+
+        let metaContentType = meta?["content_type"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return metaContentType == "audio" || metaContentType == "voice"
+    }
+
+    var audioDurationSeconds: Int? {
+        let directDuration = Self.durationSeconds(from: meta)
+        if let directDuration {
+            return directDuration
+        }
+        return Self.durationSeconds(from: asset?.metadata)
     }
 
     var isSticker: Bool {
         meta?["is_sticker"]?.boolValue == true
     }
+
+    private static func durationSeconds(from metadata: [String: AnyCodable]?) -> Int? {
+        guard let metadata else { return nil }
+
+        let secondsKeys = ["duration", "duration_seconds", "durationSeconds", "audio_duration", "audioDuration"]
+        for key in secondsKeys {
+            if let value = metadata[key]?.intValue, value > 0 {
+                return value
+            }
+        }
+
+        let millisecondKeys = ["duration_ms", "durationMs", "audio_duration_ms", "audioDurationMs"]
+        for key in millisecondKeys {
+            if let value = metadata[key]?.intValue, value > 0 {
+                return max(1, Int((Double(value) / 1000.0).rounded()))
+            }
+        }
+
+        return nil
+    }
 }
 
 extension Message {
-    init(from payload: RealtimeMessagePayload) {
+    init(from payload: RealtimeMessagePayload, pending: Bool = false) {
         self.id = payload.id
         self.conversationId = payload.conversationId
         self.topic = payload.topic
@@ -816,6 +873,7 @@ extension Message {
         self.seq = payload.seq.map(Int.init)
         self.timestamp = payload.timestamp
         self.createdAt = Date(timeIntervalSince1970: Double(payload.timestamp))
+        self.pending = pending
     }
 }
 

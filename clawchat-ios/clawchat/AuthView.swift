@@ -35,14 +35,7 @@ class AuthViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
 
-        let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body: [String: String] = trimmedIdentifier.contains("@")
-            ? ["email": trimmedIdentifier, "password": password]
-            : ["username": trimmedIdentifier, "password": password]
-
-        let data = try? JSONEncoder().encode(body)
-
-        APIClient.shared.request("/api/v1/auth/login", method: "POST", body: data, requiresAuth: false)
+        APIClient.shared.login(identifier: identifier, password: password)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -97,10 +90,7 @@ class AuthViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
 
-        let body = ["username": username, "email": email, "password": password]
-        let data = try? JSONEncoder().encode(body)
-
-        APIClient.shared.request("/api/v1/auth/register", method: "POST", body: data, requiresAuth: false)
+        APIClient.shared.register(username: username, email: email, password: password)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -205,11 +195,11 @@ struct LoginView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(20)
-                        .background(Color.white.opacity(0.72))
+                        .background(Color.rcmsControlSurface)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                                .stroke(Color.rcmsHairline, lineWidth: 1)
                         )
                         .padding(.horizontal, 20)
                         .padding(.bottom, 28)
@@ -318,11 +308,11 @@ struct RegisterView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
-                    .background(Color.white.opacity(0.72))
+                    .background(Color.rcmsControlSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                            .stroke(Color.rcmsHairline, lineWidth: 1)
                     )
                     .padding(.horizontal, 20)
                     .padding(.bottom, 28)
@@ -353,11 +343,11 @@ private struct AuthTextInput: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
-            .background(Color.white.opacity(0.86))
+            .background(Color.rcmsFieldSurface)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(error == nil ? Color.black.opacity(0.08) : Color.rcmsDanger.opacity(0.55), lineWidth: 1)
+                    .stroke(error == nil ? Color.rcmsHairline : Color.rcmsDanger.opacity(0.55), lineWidth: 1)
             )
 
             if let error {
@@ -390,11 +380,11 @@ private struct AuthSecureInput: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
-            .background(Color.white.opacity(0.86))
+            .background(Color.rcmsFieldSurface)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(error == nil ? Color.black.opacity(0.08) : Color.rcmsDanger.opacity(0.55), lineWidth: 1)
+                    .stroke(error == nil ? Color.rcmsHairline : Color.rcmsDanger.opacity(0.55), lineWidth: 1)
             )
 
             if let error {
