@@ -35,3 +35,50 @@ Start from `scripts/dev.env.example`, `scripts/test-agent.env.example`, or compo
 ## Local Test Accounts
 
 Do not commit usernames, passwords, access tokens, refresh tokens, bot keys, or deployment-specific user IDs. Use local seed scripts or the ignored `AGENTS.local.md` file to obtain disposable test credentials when needed.
+
+## Cursor Cloud specific instructions
+
+### Docker in Cloud Agent VMs
+
+Docker is not preinstalled. Start the daemon once per VM session before Compose:
+
+```bash
+sudo dockerd > /tmp/dockerd.log 2>&1 &
+sleep 3
+sudo docker compose version
+```
+
+Use `sudo docker compose` unless your user is in the `docker` group. Storage driver `fuse-overlayfs` is required in this environment (see Docker install notes in the platform docs).
+
+### Recommended full-stack startup (localhost)
+
+From the repo root, set public URLs so the built frontend and bootstrap responses match local ports, then start the stack:
+
+```bash
+export NEXT_PUBLIC_API_URL=http://127.0.0.1:8080
+export MQTT_WS_PUBLIC_URL=ws://127.0.0.1:8083/mqtt
+export MQTT_TCP_PUBLIC_URL=mqtt://127.0.0.1:1883
+sudo -E docker compose up --build -d
+```
+
+- UI: `http://127.0.0.1:3000`
+- API health: `curl http://127.0.0.1:8080/health`
+- MQTT WebSocket: `ws://127.0.0.1:8083/mqtt`
+
+`./scripts/dev-up.sh` seeds `tester` / `test123456` but defaults `NEXT_PUBLIC_API_URL` and `MQTT_WS_PUBLIC_URL` to the bundled Nginx domain (`test.iotdevices.site`). In Cloud VMs without that proxy, prefer the Compose flow above or override those variables in `scripts/dev.env` to localhost before running `dev-up.sh` + `./scripts/dev-front.sh`.
+
+### Lint / test shortcuts
+
+| Area | Command |
+|------|---------|
+| Backend | `cd backend && go test ./...` |
+| Frontend typecheck/build | `cd frontend && npm run build` |
+| Extension contracts | `cd extensions/openclaw-bot-chat && npm test` |
+
+`npm run lint` in `frontend/` may prompt for interactive ESLint setup if no config exists; use `npm run build` for CI-style validation instead.
+
+The OpenClaw runtime plugin lives under `extensions/openclaw-bot-chat/` (and sample config under `test/openclaw-bot-chat/`); there is no top-level `plugins/` directory in this repo.
+
+### Bot test agent
+
+README mentions `docker compose --profile testagent`, but the current `docker-compose.yml` has no such profile. Use `cp scripts/test-agent.env.example scripts/test-agent.env` and `./scripts/test-agent.sh start` after the backend and EMQX are up.
