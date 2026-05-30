@@ -1732,6 +1732,13 @@ private struct ChatMessageListView: UIViewRepresentable {
         private var pendingScrollToBottom: PendingScrollToBottom?
         private var footerHeight: CGFloat = 0
         private var measuredRowHeights: [MessageHeightCacheKey: CGFloat] = [:]
+        /// Keyed by `message.id`. Entries are evicted when the message's render
+        /// signature changes so that `cachedRendered(for:)` recomputes stale blocks.
+        private var renderedCache: [String: RenderedMessage] = [:]
+
+        /// Set of message IDs for which a highlight `Task` has been submitted but
+        /// not yet applied. Prevents duplicate Tasks for the same message.
+        private var highlightInFlight: Set<String> = []
 
         init(parent: ChatMessageListView) {
             self.parent = parent
@@ -1756,6 +1763,9 @@ private struct ChatMessageListView: UIViewRepresentable {
             }
             drainPendingScrollIfReady(on: tableView)
             evaluateScrollState(on: tableView)
+            // History messages that were loaded while the table wasn't visible
+            // need highlights scheduled now that the window is ready.
+            scheduleHighlights(in: tableView)
         }
 
         func update(parent: ChatMessageListView, tableView: UITableView) {
@@ -1765,7 +1775,9 @@ private struct ChatMessageListView: UIViewRepresentable {
             let previousMessages = messages
             let previousIDs = previousMessages.map(\.id)
             let nextIDs = parent.messages.map(\.id)
-            let shouldReloadRows = renderSignatures(for: previousMessages) != renderSignatures(for: parent.messages)
+            let previousSigs = renderSignatures(for: previousMessages)
+            let nextSigs     = renderSignatures(for: parent.messages)
+            let shouldReloadRows = previousSigs != nextSigs
             let wasNearBottom = isNearBottom
             let prependCount = prependedRowCount(previousIDs: previousIDs, nextIDs: nextIDs)
             let appendStart = appendedRowStart(previousIDs: previousIDs, nextIDs: nextIDs)
@@ -1788,6 +1800,11 @@ private struct ChatMessageListView: UIViewRepresentable {
                 return
             }
 
+            // Schedule highlight pre-computation for any newly visible code blocks.
+            // Must run after `messages` is updated and layout is ready so that
+            // `cachedRendered(for:)` can populate the cache eagerly (req 4, 5, 6).
+            scheduleHighlights(in: tableView)
+
             if previousMessages.isEmpty || previousIDs.isEmpty || nextIDs.isEmpty {
                 tableView.reloadData()
                 layoutIfReady(tableView)
@@ -1803,7 +1820,7 @@ private struct ChatMessageListView: UIViewRepresentable {
             } else if shouldReloadRows {
                 let anchor = previousVisibleAnchor
                 UIView.performWithoutAnimation {
-                    tableView.reloadData()
+                    reloadChangedRows(previousSigs: previousSigs, nextSigs: nextSigs, in: tableView)
                     layoutIfReady(tableView)
                 }
                 if hasPositionedInitialMessages {
@@ -1898,12 +1915,14 @@ private struct ChatMessageListView: UIViewRepresentable {
             }
 
             let message = messages[indexPath.row]
+            let rendered = cachedRendered(for: message)
             cell.backgroundColor = .clear
             cell.contentView.backgroundColor = .clear
             cell.selectionStyle = .none
             cell.contentConfiguration = UIHostingConfiguration {
                 ChatBubbleRow(
                     message: message,
+                    rendered: rendered,
                     currentUserID: parent.currentUserID,
                     showsSenderInfo: parent.showsSenderInfo,
                     fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
@@ -1968,6 +1987,7 @@ private struct ChatMessageListView: UIViewRepresentable {
         private func measureRowHeight(for message: Message, width: CGFloat) -> CGFloat {
             let content = ChatBubbleRow(
                 message: message,
+                rendered: cachedRendered(for: message),
                 currentUserID: parent.currentUserID,
                 showsSenderInfo: parent.showsSenderInfo,
                 fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
@@ -2063,6 +2083,152 @@ private struct ChatMessageListView: UIViewRepresentable {
                     tableView.insertRows(at: indexPaths, with: .none)
                 }
                 layoutIfReady(tableView)
+            }
+        }
+
+        /// Reloads only the rows whose `MessageRenderSignature` changed between
+        /// `previousSigs` and `nextSigs`. When counts differ (structural change),
+        /// falls back to a full `reloadData()`.
+        ///
+        /// Evicts both the `renderedCache` and the `measuredRowHeights` entry for
+        /// each changed row so they are recomputed on the next layout pass.
+        private func reloadChangedRows(
+            previousSigs: [MessageRenderSignature],
+            nextSigs: [MessageRenderSignature],
+            in tableView: UITableView
+        ) {
+            guard previousSigs.count == nextSigs.count else {
+                tableView.reloadData()
+                return
+            }
+
+            var changedPaths: [IndexPath] = []
+            for i in previousSigs.indices {
+                guard previousSigs[i] != nextSigs[i] else { continue }
+                let msgID = messages[i].id
+                renderedCache.removeValue(forKey: msgID)
+                measuredRowHeights = measuredRowHeights.filter { $0.key.signature != previousSigs[i] }
+                changedPaths.append(IndexPath(row: i, section: 0))
+            }
+
+            guard !changedPaths.isEmpty else { return }
+            tableView.reloadRows(at: changedPaths, with: .none)
+        }
+
+        /// Returns a cached `RenderedMessage` for `message`, recomputing only when the
+        /// pipeline signature changes (i.e., when `content.body`, `content.type`, or
+        /// `content.url` differ from the cached version).
+        private func cachedRendered(for message: Message) -> RenderedMessage {
+            let sig = RenderedMessage.signature(for: message, currentUserID: parent.currentUserID)
+            if let cached = renderedCache[message.id], cached.renderSignature == sig {
+                return cached
+            }
+            let rendered = MessageRenderPipeline.render(message, currentUserID: parent.currentUserID)
+            renderedCache[message.id] = rendered
+            return rendered
+        }
+
+        // MARK: - Syntax Highlight Scheduling (req 4 – 7, 10 – 12)
+
+        /// Schedules async highlight Tasks for every message in the current list that
+        /// contains at least one un-highlighted `CodeBlock`.
+        ///
+        /// Rules enforced here:
+        /// - Only one Task per message at a time (`highlightInFlight` guard, req 10).
+        /// - `cachedRendered(for:)` is called to pre-populate the cache so history
+        ///   messages are ready before the first `cellForRowAt` (req 5).
+        /// - `scheduleHighlights` itself is synchronous; the async work happens inside
+        ///   the Task and is applied by `applyHighlights(from:in:)` on the main actor.
+        /// - prepend / append / scroll / restore logic is not touched (req 15).
+        private func scheduleHighlights(in tableView: UITableView) {
+            let isDark = tableView.traitCollection.userInterfaceStyle == .dark
+            let currentUserID = parent.currentUserID
+
+            for message in messages {
+                // Quick heuristic: only text-type messages with code fences need processing.
+                let msgType = message.content.type.lowercased()
+                guard msgType != "image", msgType != "audio", msgType != "voice" else { continue }
+                guard message.content.body?.contains("```") == true else { continue }
+
+                let jobKey = message.id
+                guard !highlightInFlight.contains(jobKey) else { continue }
+
+                // Eagerly populate renderedCache so cell rendering finds a cache hit.
+                let rendered = cachedRendered(for: message)
+
+                // Collect code blocks that still need highlights.
+                let pending = rendered.blocks.compactMap { block -> CodeBlock? in
+                    guard case .code(let cb) = block, !cb.source.isEmpty else { return nil }
+                    return rendered.codeHighlights[cb.id] == nil ? cb : nil
+                }
+                guard !pending.isEmpty else { continue }
+
+                highlightInFlight.insert(jobKey)
+
+                let isMe = rendered.isMe
+                let palette: CodeHighlightPalette = isMe ? .sent
+                    : (isDark ? .receivedDark : .receivedLight)
+
+                // Task captures message by value (Sendable) and tableView weakly.
+                // All async work runs off-main via CodeHighlightService actor;
+                // the UI update hops back to the main actor in applyHighlights.
+                Task { [weak self, weak tableView] in
+                    // renderWithHighlights calls CodeHighlightService actor internally.
+                    // No UIKit / SwiftUI interaction here.
+                    let withHighlights = await MessageRenderPipeline.renderWithHighlights(
+                        message,
+                        currentUserID: currentUserID,
+                        palette: palette
+                    )
+
+                    await MainActor.run { [weak self, weak tableView] in
+                        guard let self, let tableView else { return }
+                        self.applyHighlights(from: withHighlights, in: tableView)
+                    }
+                }
+            }
+        }
+
+        /// Merges newly computed `codeHighlights` into the cached `RenderedMessage` and
+        /// reloads only the affected row.
+        ///
+        /// Requirements specifically enforced here:
+        /// - req 10: only the target message's `RenderedMessage` is updated.
+        /// - req 11: `tableView.reloadData()` is never called.
+        /// - req 12: `measuredRowHeights` is NOT touched — height is stable because font,
+        ///            size, lineSpacing, and padding are identical before/after highlight.
+        private func applyHighlights(from withHighlights: RenderedMessage, in tableView: UITableView) {
+            let messageID = withHighlights.messageID
+            highlightInFlight.remove(messageID)
+
+            guard !withHighlights.codeHighlights.isEmpty else { return }
+
+            // Merge into the existing cache entry if the message content hasn't changed.
+            if var existing = renderedCache[messageID],
+               existing.renderSignature == withHighlights.renderSignature {
+                for (blockID, text) in withHighlights.codeHighlights {
+                    existing.codeHighlights[blockID] = text
+                }
+                renderedCache[messageID] = existing
+            } else if renderedCache[messageID] == nil {
+                // Cache was evicted (e.g., by reloadChangedRows) but the message is
+                // still present; restore with highlights so the next cellForRowAt is fast.
+                renderedCache[messageID] = withHighlights
+            } else {
+                // renderSignature changed → the message content was edited while the
+                // Task was in flight; the normal reloadChangedRows path handles this.
+                return
+            }
+
+            guard let idx = messages.firstIndex(where: { $0.id == messageID }),
+                  tableView.window != nil else { return }
+
+            // Reload only this row with no animation so there is no scroll jump or
+            // height change (req 11, 12). UIKit calls heightForRowAt which hits the
+            // measuredRowHeights cache (same MessageRenderSignature → same key → same
+            // cached CGFloat) so the table geometry is unchanged.
+            UIView.performWithoutAnimation {
+                tableView.reloadRows(at: [IndexPath(row: idx, section: 0)], with: .none)
             }
         }
 
@@ -2486,6 +2652,9 @@ extension Theme {
 
 struct ChatBubbleRow: View {
     let message: Message
+    /// Pre-computed by `MessageRenderPipeline`; cached in `Coordinator` so the view
+    /// body never calls the pipeline or re-parses markdown/code-fences.
+    let rendered: RenderedMessage
     let currentUserID: String?
     let showsSenderInfo: Bool
     let fallbackBotAvatarURLString: String?
@@ -2613,13 +2782,11 @@ struct ChatBubbleRow: View {
                     .padding(.horizontal, 4)
                 }
 
-                if isImageMessage {
-                    imageMessageView
-                } else if isAudioMessage {
-                    ChatAudioMessageBubble(message: message, isMe: isMe)
-                } else if let body = message.content.body {
-                    messageTextBubble(body)
-                }
+                RenderedMessageBubble(
+                    rendered: rendered,
+                    isMe: isMe,
+                    onPreviewImage: onPreviewImage.map { callback in { callback(message) } }
+                )
 
                 if messageTimestamp != nil || message.pending {
                     deliveryStatusRow
@@ -2871,7 +3038,7 @@ private struct ChatAudioMessageBubble: View {
     }
 }
 
-private struct ChatAudioWaveform: View {
+struct ChatAudioWaveform: View {
     let isPlaying: Bool
     let isMe: Bool
 
@@ -2900,7 +3067,7 @@ private struct ChatAudioWaveform: View {
     }
 }
 
-private final class ChatAudioPlaybackController: ObservableObject {
+final class ChatAudioPlaybackController: ObservableObject {
     @Published var isPlaying = false
     @Published var isLoading = false
     @Published var didFail = false
