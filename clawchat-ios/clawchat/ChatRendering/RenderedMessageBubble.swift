@@ -126,7 +126,23 @@ struct RenderedMessageBubble: View {
     let onPreviewImage: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: isMe ? .trailing : .leading, spacing: 6) {
+        // 音频和图片消息只有单个自包含 block，它们已有完整的气泡样式，
+        // 直接渲染，不包外层气泡，避免双重背景/阴影导致高度异常。
+        if rendered.blocks.count == 1, isSelfStyledBlock(rendered.blocks[0]) {
+            RenderedBlockView(
+                block: rendered.blocks[0],
+                isMe: isMe,
+                onPreviewImage: onPreviewImage,
+                codeHighlights: rendered.codeHighlights
+            )
+        } else {
+            combinedBubble
+        }
+    }
+
+    private var combinedBubble: some View {
+        let shape = BubbleShape(isMe: isMe)
+        return VStack(alignment: isMe ? .trailing : .leading, spacing: 6) {
             ForEach(Array(rendered.blocks.enumerated()), id: \.offset) { _, block in
                 RenderedBlockView(
                     block: block,
@@ -135,6 +151,18 @@ struct RenderedMessageBubble: View {
                     codeHighlights: rendered.codeHighlights
                 )
             }
+        }
+        .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
+        .clipShape(shape)
+        .contentShape(shape)
+        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+    }
+
+    /// 音频、图片自带完整气泡样式，无需外层包裹。
+    private func isSelfStyledBlock(_ block: MessageBlock) -> Bool {
+        switch block {
+        case .audio, .image: return true
+        default: return false
         }
     }
 }
@@ -183,30 +211,44 @@ private struct RenderedBlockView: View {
     }
 
     private func textBubble(_ text: String) -> some View {
-        let shape = BubbleShape(isMe: isMe)
-        return Text(text)
+        Text(text)
             .font(.system(size: 15))
             .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
-            .clipShape(shape)
-            .contentShape(shape)
-            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
     }
 
     private func markdownBubble(_ block: MarkdownBlock) -> some View {
-        let shape = BubbleShape(isMe: isMe)
-        return Markdown(block.raw)
-            .markdownTheme(.renderedChatTheme(isMe: isMe))
-            .tint(isMe ? .white : Color.rcmsAccent)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
-            .clipShape(shape)
-            .contentShape(shape)
-            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+        Group {
+            if hasComplexMarkdown(block.raw) {
+                Markdown(block.raw)
+                    .markdownTheme(.renderedChatTheme(isMe: isMe))
+                    .tint(isMe ? .white : Color.rcmsAccent)
+            } else {
+                // 对于纯文字 / 行内格式，用原生 Text：尺寸精准，无额外垂直内边距。
+                let attrStr = (try? AttributedString(
+                    markdown: block.raw,
+                    options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                )) ?? AttributedString(block.raw)
+                Text(attrStr)
+                    .font(.system(size: 15))
+                    .foregroundStyle(isMe ? Color.white : Color.rcmsTextPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    /// 检测是否包含块级 Markdown（标题、列表、引用、表格）。
+    /// 仅行内格式（加粗、斜体、行内代码、链接）用原生 Text 即可处理。
+    private func hasComplexMarkdown(_ text: String) -> Bool {
+        text.contains("\n#")  ||
+        text.hasPrefix("#")   ||
+        text.contains("\n- ") || text.contains("\n* ") ||
+        text.hasPrefix("- ")  || text.hasPrefix("* ")  ||
+        text.contains("\n> ") || text.hasPrefix("> ")  ||
+        text.contains("\n| ") || text.hasPrefix("| ")
     }
 }
 
@@ -298,7 +340,7 @@ struct RenderedCodeBlockView: View {
                 }
                 .font(ChatCodeTypography.codeFont(size: 13))
                 .textSelection(.enabled)
-                .fixedSize(horizontal: true, vertical: false)
+                .fixedSize(horizontal: true, vertical: true)
                 .lineSpacing(3)
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
@@ -306,9 +348,8 @@ struct RenderedCodeBlockView: View {
             }
             .background(bodyBg)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
-        .padding(.vertical, 2)
+        .clipShape(RoundedRectangle(cornerRadius: 0))
+        .padding(.vertical, 4)
     }
 }
 

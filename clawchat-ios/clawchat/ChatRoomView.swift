@@ -1903,10 +1903,6 @@ private struct ChatMessageListView: UIViewRepresentable {
             rowHeight(for: indexPath, in: tableView)
         }
 
-        func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-            rowHeight(for: indexPath, in: tableView)
-        }
-
         func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
             let cell = tableView.dequeueReusableCell(withIdentifier: Self.cellReuseIdentifier, for: indexPath)
             guard messages.indices.contains(indexPath.row) else {
@@ -3107,6 +3103,11 @@ final class ChatAudioPlaybackController: ObservableObject {
     private func prepare(url: URL) {
         cleanupObservers()
         currentURL = url
+
+        // 切换到 .playback 类别：走扬声器外放，不受静音键影响。
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+
         let item = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: item)
         self.player = player
