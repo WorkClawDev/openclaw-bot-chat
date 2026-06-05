@@ -169,7 +169,6 @@ struct LoginView: View {
                         }
                         .padding(.horizontal, 20)
 
-                        NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }.hidden()
                         Button {
                             isRegistering = true
                         } label: {
@@ -207,6 +206,9 @@ struct LoginView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $isRegistering) {
+                RegisterView()
+            }
         }
     }
 }

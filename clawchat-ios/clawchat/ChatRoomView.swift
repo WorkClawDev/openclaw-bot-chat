@@ -2,10 +2,21 @@ import SwiftUI
 import AVFoundation
 import Combine
 import MarkdownUI
+import OSLog
 import Photos
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
+
+#if DEBUG
+private let chatScrollLogger = Logger(subsystem: "site.iotdevices.clawchat", category: "ChatScroll")
+
+private func chatScrollDebug(_ message: String) {
+    chatScrollLogger.debug("\(message, privacy: .public)")
+}
+#else
+private func chatScrollDebug(_ message: String) {}
+#endif
 
 struct ChatContext {
     let id: String
@@ -854,7 +865,6 @@ struct ChatRoomView: View {
     private let currentUserIDOverride: String?
     private let bottomAutoScrollThreshold: CGFloat = 96
     private let bottomMessageClearance: CGFloat = 24
-    private let historyPreloadDistance: CGFloat = 1200
     @FocusState private var isInputFocused: Bool
 
     init(context: ChatContext) {
@@ -898,9 +908,10 @@ struct ChatRoomView: View {
                     currentUserID: effectiveCurrentUserID,
                     showsSenderInfo: context.isGroup,
                     fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString,
+                    isLoadingOlder: viewModel.isLoadingOlder,
+                    hasMoreHistory: viewModel.hasMoreHistory,
                     bottomMessageClearance: bottomMessageClearance,
                     bottomAutoScrollThreshold: bottomAutoScrollThreshold,
-                    historyPreloadDistance: historyPreloadDistance,
                     scrollCommand: listScrollCommand,
                     onPreviewImage: { previewMessage = $0 },
                     onSaveImage: saveImage,
@@ -918,11 +929,16 @@ struct ChatRoomView: View {
                 .onAppear {
                     scheduleInitialMessagePositionIfNeeded()
                 }
-                .onChange(of: hasPositionedInitialMessages) { _, isPositioned in
-                    guard isPositioned else { return }
-                    triggerHistoryPreloadIfNeeded()
-                }
                 .onChange(of: viewModel.visibleWindowReplacementVersion) { _, _ in
+                    guard !isUserInteractingWithMessages else {
+                        chatScrollDebug("visibleWindowReplacement skip: userInteracting=true")
+                        return
+                    }
+                    guard !hasPositionedInitialMessages || isNearBottom || latestMessageWasSentByCurrentUser else {
+                        chatScrollDebug("visibleWindowReplacement skip: positioned=true nearBottom=false latestMine=false")
+                        return
+                    }
+                    chatScrollDebug("visibleWindowReplacement scheduleBottom positioned=\(hasPositionedInitialMessages) nearBottom=\(isNearBottom) latestMine=\(latestMessageWasSentByCurrentUser)")
                     scheduleBottomPosition(revealMessages: true)
                 }
                 .onChange(of: viewModel.messages.last?.id) { oldID, newID in
@@ -1100,196 +1116,29 @@ struct ChatRoomView: View {
     }
 
     private var inputBar: some View {
-        VStack(spacing: 6) {
-            slashCommandSuggestions
-
-            HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                    ChatComposerIconButton(systemName: "plus", isUploading: false)
-                }
-                .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
-
-                PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                    ChatComposerIconButton(systemName: "photo", isUploading: viewModel.isUploadingImage)
-                }
-                .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
-
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField(composerPlaceholder, text: $viewModel.inputText, axis: .vertical)
-                        .focused($isInputFocused)
-                        .lineLimit(1...5)
-                        .textInputAutocapitalization(activeSlashQuery == nil ? .sentences : .never)
-                        .autocorrectionDisabled(activeSlashQuery != nil)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 10)
-                        .foregroundStyle(Color.rcmsTextPrimary)
-                        .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
-                        .onChange(of: slashSuggestionIdentity) { _, _ in
-                            selectedSlashCommandIndex = 0
-                            scheduleSlashAutocompleteIfNeeded()
-                        }
-                }
-                .background(Color.rcmsFieldSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.rcmsHairline, lineWidth: 1)
-                )
-
-                Button(action: {
-                    viewModel.sendMessage(slashCommands: realtimeService.slashCommands)
-                }) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.rcmsAccent)
-                            .frame(width: 44, height: 44)
-
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .offset(x: -1, y: 1)
-                    }
-                }
-                .disabled(isSendDisabled)
-                .opacity(isSendDisabled ? 0.45 : 1)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
-        .background(Color.rcmsToolbarSurface)
-        .background(.ultraThinMaterial)
-    }
-
-    @ViewBuilder
-    private var slashCommandSuggestions: some View {
-        if let argContext = activeSlashArgumentContext, shouldShowSlashChoices {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 22, height: 22)
-
-                            Text("Loading options")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Color.rcmsTextSecondary)
-
-                            Spacer(minLength: 8)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 10)
-                    }
-
-                    ForEach(Array(filteredSlashChoices.enumerated()), id: \.element.id) { index, choice in
-                        Button {
-                            insertSlashChoice(choice, context: argContext)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "checkmark.circle")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.rcmsAccent)
-                                    .frame(width: 22, height: 22)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(choice.label)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(Color.rcmsTextPrimary)
-                                        .lineLimit(1)
-                                    Text(choiceDetailText(choice, arg: argContext.arg))
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Color.rcmsTextSecondary)
-                                        .lineLimit(1)
-                                }
-
-                                Spacer(minLength: 8)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(index == selectedSlashCommandIndex ? Color.rcmsAccent.opacity(0.08) : Color.clear)
-                        }
-                        .buttonStyle(.plain)
-
-                        if index < filteredSlashChoices.count - 1 {
-                            Divider()
-                                .padding(.leading, 42)
-                        }
-                    }
-                }
-            }
-            .frame(maxHeight: slashSuggestionPanelHeight(
-                itemCount: filteredSlashChoices.count,
-                isLoading: filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending
-            ))
-            .background(Color.rcmsSurfaceElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.rcmsHairline, lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
-        } else if shouldShowSlashCommands {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(filteredSlashCommands.enumerated()), id: \.element.id) { index, command in
-                        Button {
-                            insertSlashCommand(command)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "command")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.rcmsAccent)
-                                    .frame(width: 22, height: 22)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("/\(command.name)")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(Color.rcmsTextPrimary)
-                                        .lineLimit(1)
-                                    if let description = command.description, !description.isEmpty {
-                                        Text(description)
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(Color.rcmsTextSecondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-
-                                Spacer(minLength: 8)
-
-                                if command.acceptsArgs {
-                                    Image(systemName: "ellipsis.curlybraces")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(Color.rcmsTextSecondary)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(index == selectedSlashCommandIndex ? Color.rcmsAccent.opacity(0.08) : Color.clear)
-                        }
-                        .buttonStyle(.plain)
-
-                        if index < filteredSlashCommands.count - 1 {
-                            Divider()
-                                .padding(.leading, 42)
-                        }
-                    }
-                }
-            }
-            .frame(maxHeight: slashSuggestionPanelHeight(itemCount: filteredSlashCommands.count))
-            .background(Color.rcmsSurfaceElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.rcmsHairline, lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
-        }
-    }
-
-    private func slashSuggestionPanelHeight(itemCount: Int, isLoading: Bool = false) -> CGFloat {
-        let visibleRows = max(itemCount, isLoading ? 1 : 0)
-        return min(CGFloat(max(visibleRows, 1)) * 50, 300)
+        ChatComposerBar(
+            photoPickerSelection: photoPickerSelection,
+            inputText: $viewModel.inputText,
+            isInputFocused: $isInputFocused,
+            placeholder: composerPlaceholder,
+            isComposerDisabled: viewModel.connectionState != .connected || viewModel.isUploadingImage,
+            isUploadingImage: viewModel.isUploadingImage,
+            isSendDisabled: isSendDisabled,
+            activeSlashQuery: activeSlashQuery,
+            slashSuggestionIdentity: slashSuggestionIdentity,
+            activeSlashArgumentContext: activeSlashArgumentContext,
+            shouldShowSlashChoices: shouldShowSlashChoices,
+            shouldShowSlashCommands: shouldShowSlashCommands,
+            isActiveSlashAutocompletePending: isActiveSlashAutocompletePending,
+            filteredSlashChoices: filteredSlashChoices,
+            filteredSlashCommands: filteredSlashCommands,
+            selectedSlashCommandIndex: selectedSlashCommandIndex,
+            choiceDetailText: choiceDetailText,
+            onSlashSuggestionIdentityChange: resetSlashSelectionAndAutocomplete,
+            onSelectSlashChoice: insertSlashChoice,
+            onSelectSlashCommand: insertSlashCommand,
+            onSend: sendCurrentMessage
+        )
     }
 
     private var composerPlaceholder: String {
@@ -1492,6 +1341,15 @@ struct ChatRoomView: View {
         }
     }
 
+    private func resetSlashSelectionAndAutocomplete() {
+        selectedSlashCommandIndex = 0
+        scheduleSlashAutocompleteIfNeeded()
+    }
+
+    private func sendCurrentMessage() {
+        viewModel.sendMessage(slashCommands: realtimeService.slashCommands)
+    }
+
     private func insertSlashCommand(_ command: SlashCommand) {
         guard let range = activeSlashTokenRange(in: viewModel.inputText) else {
             return
@@ -1559,6 +1417,7 @@ struct ChatRoomView: View {
         guard !viewModel.isLoadingOlder else { return }
         guard !isHistoryPreloadScheduled else { return }
 
+        chatScrollDebug("historyLoad request messageCount=\(viewModel.messages.count)")
         isHistoryPreloadScheduled = true
         Task { @MainActor in
             defer { isHistoryPreloadScheduled = false }
@@ -1581,13 +1440,20 @@ struct ChatRoomView: View {
             return
         }
 
+        chatScrollDebug("scheduleBottom queued reveal=\(revealMessages) positioned=\(hasPositionedInitialMessages) userInteracting=\(isUserInteractingWithMessages)")
         Task { @MainActor in
             await Task.yield()
+            guard !isUserInteractingWithMessages || !hasPositionedInitialMessages else {
+                chatScrollDebug("scheduleBottom cancelled after yield: userInteracting=true positioned=true")
+                return
+            }
+            chatScrollDebug("scheduleBottom fire reveal=\(revealMessages) positioned=\(hasPositionedInitialMessages)")
             requestListScrollToBottom(animated: false)
         }
     }
 
     private func requestListScrollToBottom(animated: Bool) {
+        chatScrollDebug("requestScrollToBottom animated=\(animated)")
         listScrollCommand = ChatListScrollCommand.scrollToBottom(animated: animated)
     }
 
@@ -1596,6 +1462,7 @@ struct ChatRoomView: View {
         guard !viewModel.messages.isEmpty else { return }
         guard keyboardOverlapsScreen(notification) else { return }
 
+        chatScrollDebug("keyboardTransition scrollToBottom")
         requestListScrollToBottom(animated: true)
         isNearBottom = true
     }
@@ -1667,9 +1534,10 @@ private struct ChatMessageListView: UIViewRepresentable {
     let currentUserID: String?
     let showsSenderInfo: Bool
     let fallbackBotAvatarURLString: String?
+    let isLoadingOlder: Bool
+    let hasMoreHistory: Bool
     let bottomMessageClearance: CGFloat
     let bottomAutoScrollThreshold: CGFloat
-    let historyPreloadDistance: CGFloat
     let scrollCommand: ChatListScrollCommand
     let onPreviewImage: (Message) -> Void
     let onSaveImage: (Message) -> Void
@@ -1689,8 +1557,9 @@ private struct ChatMessageListView: UIViewRepresentable {
         tableView.showsVerticalScrollIndicator = false
         tableView.keyboardDismissMode = .interactive
         tableView.contentInsetAdjustmentBehavior = .never
-        tableView.estimatedRowHeight = 0
+        tableView.estimatedRowHeight = Coordinator.defaultEstimatedRowHeight
         tableView.rowHeight = UITableView.automaticDimension
+        tableView.refreshControl = context.coordinator.makeRefreshControl()
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: Coordinator.cellReuseIdentifier)
@@ -1704,6 +1573,9 @@ private struct ChatMessageListView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate {
         static let cellReuseIdentifier = "chat-message-cell"
+        static let defaultEstimatedRowHeight: CGFloat = 120
+        private static let minimumEstimatedRowHeight: CGFloat = 72
+        private static let maximumEstimatedRowHeight: CGFloat = 220
 
         private struct PendingScrollToBottom {
             let animated: Bool
@@ -1725,16 +1597,229 @@ private struct ChatMessageListView: UIViewRepresentable {
         private var lastScrollCommand = ChatListScrollCommand.none
         private var hasPositionedInitialMessages = false
         private var isNearBottom = true
-        private var hasScheduledNearTopRequest = false
         private var isRestoringPosition = false
         private var pendingInitialBottomPosition = false
         private var deferredNeedsReload = false
         private var pendingScrollToBottom: PendingScrollToBottom?
         private var footerHeight: CGFloat = 0
         private var measuredRowHeights: [MessageHeightCacheKey: CGFloat] = [:]
+        private var estimatedUnmeasuredRowHeight: CGFloat = Coordinator.defaultEstimatedRowHeight
+        private var lastObservedContentHeight: CGFloat?
+        private var lastObservedContentOffsetY: CGFloat?
+        private var lastObservedVisibleAnchor: VisibleMessageAnchor?
+        private var isCompensatingContentHeightChange = false
+        private var deferredChangedMessageIDs: Set<String> = []
+        private var deferredMessagesAfterInteraction: [Message]?
+        private var refreshControlSettleDeadline: TimeInterval?
+        /// Keyed by `message.id`. Entries are evicted when the message's render
+        /// signature changes so that `cachedRendered(for:)` recomputes stale blocks.
+        private var renderedCache: [String: RenderedMessage] = [:]
+
+        /// Set of message IDs for which a highlight `Task` has been submitted but
+        /// not yet applied. Prevents duplicate Tasks for the same message.
+        private var highlightInFlight: Set<String> = []
+        private var highlightPalettesByMessageID: [String: CodeHighlightPalette] = [:]
 
         init(parent: ChatMessageListView) {
             self.parent = parent
+        }
+
+        private func logScroll(_ event: String, on tableView: UITableView? = nil, details: String = "") {
+            #if DEBUG
+            let state: String
+            if let tableView {
+                state = " offsetY=\(format(tableView.contentOffset.y)) contentH=\(format(tableView.contentSize.height)) boundsH=\(format(tableView.bounds.height)) dragging=\(tableView.isDragging) decel=\(tableView.isDecelerating) tracking=\(tableView.isTracking)"
+            } else {
+                state = ""
+            }
+            let suffix = details.isEmpty ? "" : " \(details)"
+            chatScrollDebug("coord.\(event)\(state)\(suffix)")
+            #endif
+        }
+
+        private func format(_ value: CGFloat) -> String {
+            String(format: "%.1f", Double(value))
+        }
+
+        private func reconcileContentHeightChangeIfNeeded(on tableView: UITableView, event: String) {
+            let currentHeight = tableView.contentSize.height
+            let currentOffsetY = tableView.contentOffset.y
+            guard currentHeight > 0 else { return }
+            if isCompensatingContentHeightChange {
+                lastObservedContentHeight = currentHeight
+                lastObservedContentOffsetY = currentOffsetY
+                lastObservedVisibleAnchor = visibleAnchor(in: tableView)
+                return
+            }
+            let previousVisibleAnchor = lastObservedVisibleAnchor
+            defer {
+                lastObservedContentHeight = currentHeight
+                lastObservedContentOffsetY = tableView.contentOffset.y
+                lastObservedVisibleAnchor = visibleAnchor(in: tableView)
+            }
+
+            guard let previousHeight = lastObservedContentHeight,
+                  let previousOffsetY = lastObservedContentOffsetY
+            else { return }
+
+            let heightDelta = currentHeight - previousHeight
+            guard abs(heightDelta) >= 1 else { return }
+            let offsetDelta = currentOffsetY - previousOffsetY
+            logScroll(
+                "contentHeight.changed",
+                on: tableView,
+                details: "event=\(event) delta=\(format(heightDelta)) previous=\(format(previousHeight)) offsetDelta=\(format(offsetDelta))"
+            )
+
+            if maintainBottomAfterContentHeightChangeIfNeeded(
+                previousHeight: previousHeight,
+                previousOffsetY: previousOffsetY,
+                event: event,
+                on: tableView
+            ) {
+                return
+            }
+
+            compensateContentHeightChangeIfNeeded(
+                previousAnchor: previousVisibleAnchor,
+                heightDelta: heightDelta,
+                offsetDelta: offsetDelta,
+                event: event,
+                on: tableView
+            )
+        }
+
+        private func maintainBottomAfterContentHeightChangeIfNeeded(
+            previousHeight: CGFloat,
+            previousOffsetY: CGFloat,
+            event: String,
+            on tableView: UITableView
+        ) -> Bool {
+            guard !isUserInteracting(with: tableView) else { return false }
+            guard !isRestoringPosition else { return false }
+
+            let previousVisibleBottom = previousOffsetY
+                + tableView.bounds.height
+                - tableView.adjustedContentInset.bottom
+            let previousDistanceFromBottom = previousHeight - previousVisibleBottom
+            let wasPinnedToBottom = pendingInitialBottomPosition
+                || isNearBottom
+                || previousDistanceFromBottom <= parent.bottomAutoScrollThreshold
+            guard wasPinnedToBottom else { return false }
+
+            let targetOffsetY = clampedOffsetY(
+                tableView.contentSize.height
+                    - tableView.bounds.height
+                    + tableView.adjustedContentInset.bottom,
+                in: tableView
+            )
+            guard abs(targetOffsetY - tableView.contentOffset.y) >= 0.5 else { return false }
+
+            logScroll(
+                "contentHeight.maintainBottom",
+                on: tableView,
+                details: "event=\(event) previousDistance=\(format(previousDistanceFromBottom)) targetY=\(format(targetOffsetY))"
+            )
+            isRestoringPosition = true
+            tableView.setContentOffset(
+                CGPoint(x: tableView.contentOffset.x, y: targetOffsetY),
+                animated: false
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.isRestoringPosition = false
+            }
+            return true
+        }
+
+        private func compensateContentHeightChangeIfNeeded(
+            previousAnchor: VisibleMessageAnchor?,
+            heightDelta: CGFloat,
+            offsetDelta: CGFloat,
+            event: String,
+            on tableView: UITableView
+        ) {
+            if compensateContentHeightChangeUsingAnchorIfNeeded(
+                previousAnchor: previousAnchor,
+                heightDelta: heightDelta,
+                offsetDelta: offsetDelta,
+                event: event,
+                on: tableView
+            ) {
+                return
+            }
+
+            guard shouldCompensateAutomaticOffsetChange(
+                heightDelta: heightDelta,
+                offsetDelta: offsetDelta,
+                on: tableView
+            ) else { return }
+
+            let targetOffsetY = clampedOffsetY(tableView.contentOffset.y + heightDelta - offsetDelta, in: tableView)
+            guard abs(targetOffsetY - tableView.contentOffset.y) >= 0.5 else { return }
+            logScroll(
+                "contentHeight.compensate",
+                on: tableView,
+                details: "event=\(event) heightDelta=\(format(heightDelta)) offsetDelta=\(format(offsetDelta)) targetY=\(format(targetOffsetY))"
+            )
+            isCompensatingContentHeightChange = true
+            tableView.setContentOffset(
+                CGPoint(x: tableView.contentOffset.x, y: targetOffsetY),
+                animated: false
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.isCompensatingContentHeightChange = false
+            }
+        }
+
+        private func compensateContentHeightChangeUsingAnchorIfNeeded(
+            previousAnchor: VisibleMessageAnchor?,
+            heightDelta: CGFloat,
+            offsetDelta: CGFloat,
+            event: String,
+            on tableView: UITableView
+        ) -> Bool {
+            guard isUserInteracting(with: tableView) else { return false }
+            guard !isRestoringPosition else { return false }
+            guard abs(heightDelta) >= 80 else { return false }
+            guard let previousAnchor else { return false }
+            guard let row = messages.firstIndex(where: { $0.id == previousAnchor.messageID }) else { return false }
+
+            tableView.layoutIfNeeded()
+            let indexPath = IndexPath(row: row, section: 0)
+            let rect = tableView.rectForRow(at: indexPath)
+            let targetOffsetY = targetOffsetY(for: previousAnchor, rowRect: rect, in: tableView)
+            let correction = targetOffsetY - tableView.contentOffset.y
+            guard abs(correction) >= 16 else { return false }
+            guard abs(correction) <= abs(heightDelta) + 120 else { return false }
+
+            logScroll(
+                "contentHeight.anchorCompensate",
+                on: tableView,
+                details: "event=\(event) message=\(previousAnchor.messageID) heightDelta=\(format(heightDelta)) offsetDelta=\(format(offsetDelta)) correction=\(format(correction)) targetY=\(format(targetOffsetY))"
+            )
+            isCompensatingContentHeightChange = true
+            tableView.setContentOffset(
+                CGPoint(x: tableView.contentOffset.x, y: targetOffsetY),
+                animated: false
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.isCompensatingContentHeightChange = false
+            }
+            return true
+        }
+
+        private func shouldCompensateAutomaticOffsetChange(
+            heightDelta: CGFloat,
+            offsetDelta: CGFloat,
+            on tableView: UITableView
+        ) -> Bool {
+            guard isUserInteracting(with: tableView) else { return false }
+            guard !isRestoringPosition else { return false }
+            guard abs(heightDelta) >= 24 else { return false }
+
+            let missingHeightAdjustment = heightDelta - offsetDelta
+            return abs(missingHeightAdjustment) >= 24
+                && abs(missingHeightAdjustment) <= abs(heightDelta) + 80
         }
 
         func installChrome(on tableView: UITableView) {
@@ -1752,25 +1837,33 @@ private struct ChatMessageListView: UIViewRepresentable {
             guard deferredNeedsReload || pendingScrollToBottom != nil else { return }
             if deferredNeedsReload {
                 deferredNeedsReload = false
+                logScroll("tableEnter.reloadData", on: tableView)
                 tableView.reloadData()
             }
             drainPendingScrollIfReady(on: tableView)
             evaluateScrollState(on: tableView)
+            // History messages that were loaded while the table wasn't visible
+            // need highlights scheduled now that the window is ready.
+            scheduleHighlights(in: tableView)
         }
 
         func update(parent: ChatMessageListView, tableView: UITableView) {
             self.parent = parent
+            updateRefreshControl(on: tableView)
             updateFooter(on: tableView)
 
             let previousMessages = messages
             let previousIDs = previousMessages.map(\.id)
             let nextIDs = parent.messages.map(\.id)
-            let shouldReloadRows = renderSignatures(for: previousMessages) != renderSignatures(for: parent.messages)
+            let previousSigs = renderSignatures(for: previousMessages)
+            let nextSigs     = renderSignatures(for: parent.messages)
+            let shouldReloadRows = previousSigs != nextSigs
             let wasNearBottom = isNearBottom
             let prependCount = prependedRowCount(previousIDs: previousIDs, nextIDs: nextIDs)
             let appendStart = appendedRowStart(previousIDs: previousIDs, nextIDs: nextIDs)
             let canLayout = isReadyForLayout(tableView)
-            if canLayout {
+            let userIsInteracting = canLayout && isUserInteracting(with: tableView)
+            if canLayout, !userIsInteracting {
                 layoutIfReady(tableView)
             }
             let previousVisibleAnchor = canLayout ? visibleAnchor(in: tableView) : nil
@@ -1778,6 +1871,39 @@ private struct ChatMessageListView: UIViewRepresentable {
                 contentOffsetY: tableView.contentOffset.y,
                 contentHeight: tableView.contentSize.height
             ) : nil
+
+            if shouldDeferPrependedRows(prependCount: prependCount, on: tableView, canLayout: canLayout) {
+                deferredMessagesAfterInteraction = parent.messages
+                logScroll(
+                    "update.prepend.deferred",
+                    on: tableView,
+                    details: "count=\(prependCount) refresh=\(isRefreshControlActive(on: tableView))"
+                )
+                evaluateScrollState(on: tableView)
+                scheduleDeferredChangedRowsFlush(on: tableView)
+                return
+            }
+
+            if canLayout,
+               userIsInteracting,
+               previousIDs == nextIDs,
+               shouldReloadRows {
+                let changedIDs = changedMessageIDs(
+                    previousSigs: previousSigs,
+                    nextSigs: nextSigs,
+                    nextMessages: parent.messages
+                )
+                deferredMessagesAfterInteraction = parent.messages
+                deferredChangedMessageIDs.formUnion(changedIDs)
+                logScroll("update.reloadRows.deferred", on: tableView, details: "count=\(changedIDs.count)")
+                evaluateScrollState(on: tableView)
+                return
+            }
+
+            if !userIsInteracting {
+                deferredMessagesAfterInteraction = nil
+                deferredChangedMessageIDs.removeAll()
+            }
 
             messages = parent.messages
 
@@ -1788,22 +1914,31 @@ private struct ChatMessageListView: UIViewRepresentable {
                 return
             }
 
+            // Schedule highlight pre-computation for any newly visible code blocks.
+            // Must run after `messages` is updated and layout is ready so that
+            // `cachedRendered(for:)` can populate the cache eagerly (req 4, 5, 6).
+            scheduleHighlights(in: tableView)
+
             if previousMessages.isEmpty || previousIDs.isEmpty || nextIDs.isEmpty {
+                logScroll("update.reloadData", on: tableView, details: "previous=\(previousMessages.count) next=\(nextIDs.count)")
                 tableView.reloadData()
                 layoutIfReady(tableView)
             } else if prependCount > 0 {
+                logScroll("update.prepend", on: tableView, details: "count=\(prependCount)")
                 insertPrependedRows(count: prependCount, preserving: prependSnapshot, in: tableView)
-                evaluateScrollState(on: tableView, allowHistoryRequest: false)
+                evaluateScrollState(on: tableView)
                 return
             } else if let appendStart {
+                logScroll("update.append", on: tableView, details: "start=\(appendStart) count=\(nextIDs.count - appendStart) wasNearBottom=\(wasNearBottom)")
                 insertAppendedRows(start: appendStart, count: nextIDs.count - appendStart, in: tableView)
-                if wasNearBottom {
+                if wasNearBottom, !isUserInteracting(with: tableView) {
                     scrollToBottomAfterLayout(on: tableView, animated: false, notifyInitialPosition: false)
                 }
             } else if shouldReloadRows {
                 let anchor = previousVisibleAnchor
+                logScroll("update.reloadRows", on: tableView, details: "wasNearBottom=\(wasNearBottom) anchor=\(anchor?.messageID ?? "nil")")
                 UIView.performWithoutAnimation {
-                    tableView.reloadData()
+                    reloadChangedRows(previousSigs: previousSigs, nextSigs: nextSigs, in: tableView)
                     layoutIfReady(tableView)
                 }
                 if hasPositionedInitialMessages {
@@ -1835,6 +1970,7 @@ private struct ChatMessageListView: UIViewRepresentable {
         private func layoutIfReady(_ tableView: UITableView) {
             guard isReadyForLayout(tableView) else { return }
             tableView.layoutIfNeeded()
+            reconcileContentHeightChangeIfNeeded(on: tableView, event: "layoutIfReady")
         }
 
         @discardableResult
@@ -1871,6 +2007,11 @@ private struct ChatMessageListView: UIViewRepresentable {
         private func drainPendingScrollIfReady(on tableView: UITableView) {
             guard isReadyForLayout(tableView), let pendingScrollToBottom else { return }
             self.pendingScrollToBottom = nil
+            guard pendingScrollToBottom.notifyInitialPosition || !isUserInteracting(with: tableView) else {
+                logScroll("drainPendingScroll.skipInteracting", on: tableView)
+                return
+            }
+            logScroll("drainPendingScroll.fire", on: tableView, details: "animated=\(pendingScrollToBottom.animated) notifyInitial=\(pendingScrollToBottom.notifyInitialPosition)")
             scrollToBottomAfterLayout(
                 on: tableView,
                 animated: pendingScrollToBottom.animated,
@@ -1882,12 +2023,31 @@ private struct ChatMessageListView: UIViewRepresentable {
             messages.count
         }
 
-        func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
-            rowHeight(for: indexPath, in: tableView)
+        func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+            UITableView.automaticDimension
         }
 
-        func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-            rowHeight(for: indexPath, in: tableView)
+        func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
+            guard messages.indices.contains(indexPath.row) else {
+                return 0
+            }
+
+            let message = messages[indexPath.row]
+            if let key = heightCacheKey(for: message, in: tableView),
+               let cachedHeight = measuredRowHeights[key] {
+                return cachedHeight
+            }
+
+            return estimatedUnmeasuredRowHeight
+        }
+
+        func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+            guard messages.indices.contains(indexPath.row) else { return }
+            let displayedHeight = ceil(cell.bounds.height)
+            guard displayedHeight > 1 else { return }
+            guard let key = heightCacheKey(for: messages[indexPath.row], in: tableView) else { return }
+            measuredRowHeights[key] = displayedHeight
+            updateEstimatedUnmeasuredRowHeight()
         }
 
         func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1897,13 +2057,25 @@ private struct ChatMessageListView: UIViewRepresentable {
                 return cell
             }
 
+            configureCell(cell, at: indexPath)
+            return cell
+        }
+
+        private func configureCell(_ cell: UITableViewCell, at indexPath: IndexPath) {
+            guard messages.indices.contains(indexPath.row) else {
+                cell.contentConfiguration = nil
+                return
+            }
+
             let message = messages[indexPath.row]
+            let rendered = cachedRendered(for: message)
             cell.backgroundColor = .clear
             cell.contentView.backgroundColor = .clear
             cell.selectionStyle = .none
             cell.contentConfiguration = UIHostingConfiguration {
                 ChatBubbleRow(
                     message: message,
+                    rendered: rendered,
                     currentUserID: parent.currentUserID,
                     showsSenderInfo: parent.showsSenderInfo,
                     fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
@@ -1913,7 +2085,6 @@ private struct ChatMessageListView: UIViewRepresentable {
                 .padding(.vertical, 5)
             }
             .margins(.all, 0)
-            return cell
         }
 
         func tableView(
@@ -1944,63 +2115,84 @@ private struct ChatMessageListView: UIViewRepresentable {
             }
         }
 
-        private func rowHeight(for indexPath: IndexPath, in tableView: UITableView) -> CGFloat {
-            guard messages.indices.contains(indexPath.row), tableView.bounds.width > 0 else {
-                return 84
-            }
-
-            let message = messages[indexPath.row]
+        private func heightCacheKey(for message: Message, in tableView: UITableView) -> MessageHeightCacheKey? {
             let width = tableView.bounds.width
+            guard width > 0 else { return nil }
             let displayScale = max(tableView.traitCollection.displayScale, 1)
-            let key = MessageHeightCacheKey(
+            return MessageHeightCacheKey(
                 signature: MessageRenderSignature(message: message),
                 width: Int((width * displayScale).rounded())
             )
-            if let cachedHeight = measuredRowHeights[key] {
-                return cachedHeight
-            }
-
-            let measuredHeight = measureRowHeight(for: message, width: width)
-            measuredRowHeights[key] = measuredHeight
-            return measuredHeight
         }
 
-        private func measureRowHeight(for message: Message, width: CGFloat) -> CGFloat {
-            let content = ChatBubbleRow(
-                message: message,
-                currentUserID: parent.currentUserID,
-                showsSenderInfo: parent.showsSenderInfo,
-                fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
-                onPreviewImage: nil
+        private func updateEstimatedUnmeasuredRowHeight() {
+            let samples = measuredRowHeights.values.sorted()
+            guard !samples.isEmpty else {
+                estimatedUnmeasuredRowHeight = Self.defaultEstimatedRowHeight
+                return
+            }
+            let median = samples[samples.count / 2]
+            estimatedUnmeasuredRowHeight = min(
+                Self.maximumEstimatedRowHeight,
+                max(Self.minimumEstimatedRowHeight, median)
             )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .frame(width: width)
-
-            let host = UIHostingController(rootView: AnyView(content))
-            host.view.backgroundColor = .clear
-            let targetSize = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-            let measuredSize = host.sizeThatFits(in: targetSize)
-            return max(1, ceil(measuredSize.height))
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if let tableView = scrollView as? UITableView {
+                reconcileContentHeightChangeIfNeeded(on: tableView, event: "didScroll")
+            }
             guard !isRestoringPosition else { return }
             evaluateScrollState(on: scrollView)
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            logScroll("drag.begin", on: scrollView as? UITableView)
             emit { [parent] in parent.onUserScrollChange(true) }
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            logScroll("drag.end", on: scrollView as? UITableView, details: "decelerate=\(decelerate)")
             if !decelerate {
+                if let tableView = scrollView as? UITableView {
+                    scheduleDeferredChangedRowsFlush(on: tableView)
+                }
                 emit { [parent] in parent.onUserScrollChange(false) }
             }
         }
 
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            logScroll("decelerate.end", on: scrollView as? UITableView)
+            if let tableView = scrollView as? UITableView {
+                scheduleDeferredChangedRowsFlush(on: tableView)
+            }
             emit { [parent] in parent.onUserScrollChange(false) }
+        }
+
+        func makeRefreshControl() -> UIRefreshControl {
+            let refreshControl = UIRefreshControl()
+            refreshControl.addTarget(self, action: #selector(refreshControlPulled(_:)), for: .valueChanged)
+            return refreshControl
+        }
+
+        @objc private func refreshControlPulled(_ refreshControl: UIRefreshControl) {
+            guard parent.hasMoreHistory, !parent.isLoadingOlder else {
+                logScroll("refresh.skip", details: "hasMore=\(parent.hasMoreHistory) loading=\(parent.isLoadingOlder)")
+                refreshControl.endRefreshing()
+                return
+            }
+            logScroll("refresh.loadOlder")
+            parent.onLoadOlder()
+        }
+
+        private func updateRefreshControl(on tableView: UITableView) {
+            guard let refreshControl = tableView.refreshControl else { return }
+            refreshControl.isEnabled = parent.hasMoreHistory
+            if !parent.isLoadingOlder, refreshControl.isRefreshing {
+                refreshControlSettleDeadline = Date().timeIntervalSinceReferenceDate + 0.4
+                logScroll("refresh.end", on: tableView)
+                refreshControl.endRefreshing()
+            }
         }
 
         private func updateFooter(on tableView: UITableView) {
@@ -2014,6 +2206,22 @@ private struct ChatMessageListView: UIViewRepresentable {
             messages.map(MessageRenderSignature.init)
         }
 
+        private func changedMessageIDs(
+            previousSigs: [MessageRenderSignature],
+            nextSigs: [MessageRenderSignature],
+            nextMessages: [Message]
+        ) -> Set<String> {
+            guard previousSigs.count == nextSigs.count,
+                  nextSigs.count == nextMessages.count
+            else { return [] }
+
+            var changedIDs: Set<String> = []
+            for i in previousSigs.indices where previousSigs[i] != nextSigs[i] {
+                changedIDs.insert(nextMessages[i].id)
+            }
+            return changedIDs
+        }
+
         private func prependedRowCount(previousIDs: [String], nextIDs: [String]) -> Int {
             guard let previousFirstID = previousIDs.first,
                   let previousStart = nextIDs.firstIndex(of: previousFirstID),
@@ -2024,6 +2232,15 @@ private struct ChatMessageListView: UIViewRepresentable {
                 return 0
             }
             return previousStart
+        }
+
+        private func shouldDeferPrependedRows(
+            prependCount: Int,
+            on tableView: UITableView,
+            canLayout: Bool
+        ) -> Bool {
+            guard canLayout, prependCount > 0 else { return false }
+            return isUserInteracting(with: tableView) || isRefreshControlActive(on: tableView)
         }
 
         private func appendedRowStart(previousIDs: [String], nextIDs: [String]) -> Int? {
@@ -2041,11 +2258,13 @@ private struct ChatMessageListView: UIViewRepresentable {
             in tableView: UITableView
         ) {
             let indexPaths = (0..<count).map { IndexPath(row: $0, section: 0) }
+            logScroll("insert.prepend.begin", on: tableView, details: "count=\(count) snapshotOffset=\(snapshot.map { format($0.contentOffsetY) } ?? "nil") snapshotHeight=\(snapshot.map { format($0.contentHeight) } ?? "nil")")
             UIView.performWithoutAnimation {
                 tableView.performBatchUpdates {
                     tableView.insertRows(at: indexPaths, with: .none)
                 } completion: { [weak self, weak tableView] _ in
                     guard let self, let tableView, let snapshot else { return }
+                    self.logScroll("insert.prepend.completion", on: tableView)
                     self.restoreAfterPrepending(snapshot, in: tableView)
                 }
                 layoutIfReady(tableView)
@@ -2058,6 +2277,7 @@ private struct ChatMessageListView: UIViewRepresentable {
         private func insertAppendedRows(start: Int, count: Int, in tableView: UITableView) {
             guard count > 0 else { return }
             let indexPaths = (start..<(start + count)).map { IndexPath(row: $0, section: 0) }
+            logScroll("insert.append.begin", on: tableView, details: "start=\(start) count=\(count)")
             UIView.performWithoutAnimation {
                 tableView.performBatchUpdates {
                     tableView.insertRows(at: indexPaths, with: .none)
@@ -2066,25 +2286,308 @@ private struct ChatMessageListView: UIViewRepresentable {
             }
         }
 
+        /// Reloads only the rows whose `MessageRenderSignature` changed between
+        /// `previousSigs` and `nextSigs`. When counts differ (structural change),
+        /// falls back to a full `reloadData()`.
+        ///
+        /// Evicts the render cache entries for each changed row so they are
+        /// recomputed from the same source signature on the next layout pass.
+        @discardableResult
+        private func reloadChangedRows(
+            previousSigs: [MessageRenderSignature],
+            nextSigs: [MessageRenderSignature],
+            in tableView: UITableView,
+            reconfigureVisible: Bool = true
+        ) -> Set<String> {
+            guard previousSigs.count == nextSigs.count else {
+                tableView.reloadData()
+                return []
+            }
+
+            var changedPaths: [IndexPath] = []
+            var changedIDs: Set<String> = []
+            for i in previousSigs.indices {
+                guard previousSigs[i] != nextSigs[i] else { continue }
+                let msgID = messages[i].id
+                changedIDs.insert(msgID)
+                renderedCache.removeValue(forKey: msgID)
+                highlightPalettesByMessageID.removeValue(forKey: msgID)
+                changedPaths.append(IndexPath(row: i, section: 0))
+            }
+
+            guard !changedPaths.isEmpty else { return [] }
+            measuredRowHeights = measuredRowHeights.filter { !changedIDs.contains($0.key.signature.id) }
+            let visiblePaths = Set(tableView.indexPathsForVisibleRows ?? [])
+            let visibleChangedPaths = changedPaths.filter { visiblePaths.contains($0) }
+            logScroll(
+                "reloadRows.suppressed",
+                on: tableView,
+                details: "count=\(changedPaths.count) visible=\(visibleChangedPaths.count)"
+            )
+
+            guard reconfigureVisible else { return changedIDs }
+            for indexPath in visibleChangedPaths {
+                guard let cell = tableView.cellForRow(at: indexPath) else { continue }
+                configureCell(cell, at: indexPath)
+            }
+            return changedIDs
+        }
+
+        private func scheduleDeferredChangedRowsFlush(on tableView: UITableView, attempt: Int = 0) {
+            let schedule: (@escaping () -> Void) -> Void = { work in
+                if attempt == 0 {
+                    DispatchQueue.main.async(execute: work)
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+                }
+            }
+
+            schedule { [weak self, weak tableView] in
+                guard let self, let tableView else { return }
+                if (self.isUserInteracting(with: tableView) || self.isRefreshControlActive(on: tableView)),
+                   attempt < 12 {
+                    self.scheduleDeferredChangedRowsFlush(on: tableView, attempt: attempt + 1)
+                    return
+                }
+                self.flushDeferredChangedRows(on: tableView)
+            }
+        }
+
+        private func flushDeferredChangedRows(on tableView: UITableView) {
+            guard !deferredChangedMessageIDs.isEmpty || deferredMessagesAfterInteraction != nil else { return }
+            guard !isUserInteracting(with: tableView) else {
+                logScroll("reloadRows.flush.skipInteracting", on: tableView, details: "count=\(deferredChangedMessageIDs.count)")
+                return
+            }
+            guard !isRefreshControlActive(on: tableView) else {
+                logScroll("reloadRows.flush.skipRefresh", on: tableView, details: "count=\(deferredChangedMessageIDs.count)")
+                return
+            }
+
+            if let deferredMessages = deferredMessagesAfterInteraction {
+                let anchor = visibleAnchor(in: tableView)
+                let previousSigs = renderSignatures(for: messages)
+                let nextSigs = renderSignatures(for: deferredMessages)
+                deferredMessagesAfterInteraction = nil
+                messages = deferredMessages
+
+                let pendingIDs = deferredChangedMessageIDs
+                deferredChangedMessageIDs.removeAll()
+                let appliedIDs = reloadChangedRows(previousSigs: previousSigs, nextSigs: nextSigs, in: tableView)
+                logScroll(
+                    "reloadRows.flush",
+                    on: tableView,
+                    details: "count=\(pendingIDs.union(appliedIDs).count) visible=\((tableView.indexPathsForVisibleRows ?? []).count)"
+                )
+                layoutIfReady(tableView)
+                if let anchor {
+                    restoreAfterLayout(anchor, in: tableView)
+                }
+                return
+            }
+
+            let pendingIDs = deferredChangedMessageIDs
+            deferredChangedMessageIDs.removeAll()
+            let visiblePaths = tableView.indexPathsForVisibleRows ?? []
+            let visibleChangedPaths = visiblePaths.filter { indexPath in
+                messages.indices.contains(indexPath.row) && pendingIDs.contains(messages[indexPath.row].id)
+            }
+
+            logScroll("reloadRows.flush", on: tableView, details: "count=\(pendingIDs.count) visible=\(visibleChangedPaths.count)")
+            for indexPath in visibleChangedPaths {
+                guard let cell = tableView.cellForRow(at: indexPath) else { continue }
+                configureCell(cell, at: indexPath)
+            }
+        }
+
+        /// Returns a cached `RenderedMessage` for `message`, recomputing only when the
+        /// pipeline signature changes (i.e., when `content.body`, `content.type`, or
+        /// `content.url` differ from the cached version).
+        private func cachedRendered(for message: Message) -> RenderedMessage {
+            let sig = RenderedMessage.signature(for: message, currentUserID: parent.currentUserID)
+            if let cached = renderedCache[message.id], cached.renderSignature == sig {
+                return cached
+            }
+            let rendered = MessageRenderPipeline.render(message, currentUserID: parent.currentUserID)
+            renderedCache[message.id] = rendered
+            return rendered
+        }
+
+        // MARK: - Syntax Highlight Scheduling (req 4 – 7, 10 – 12)
+
+        /// Schedules async highlight Tasks for every message in the current list that
+        /// contains at least one un-highlighted `CodeBlock`.
+        ///
+        /// Rules enforced here:
+        /// - Only one Task per message at a time (`highlightInFlight` guard, req 10).
+        /// - `cachedRendered(for:)` is called to pre-populate the cache so history
+        ///   messages are ready before the first `cellForRowAt` (req 5).
+        /// - `scheduleHighlights` itself is synchronous; the async work happens inside
+        ///   the Task and is merged into `renderedCache` on the main actor.
+        /// - prepend / append / scroll / restore logic is not touched (req 15).
+        private func scheduleHighlights(in tableView: UITableView) {
+            let isDark = tableView.traitCollection.userInterfaceStyle == .dark
+            let currentUserID = parent.currentUserID
+
+            for message in messages {
+                // Quick heuristic: only text-type messages with code fences need processing.
+                let msgType = message.content.type.lowercased()
+                guard msgType != "image", msgType != "audio", msgType != "voice" else { continue }
+                guard message.content.body?.contains("```") == true else { continue }
+
+                let jobKey = message.id
+                guard !highlightInFlight.contains(jobKey) else { continue }
+
+                // Eagerly populate renderedCache so cell rendering finds a cache hit.
+                let rendered = cachedRendered(for: message)
+                let isMe = rendered.isMe
+                let palette: CodeHighlightPalette = isMe ? .sent
+                    : (isDark ? .receivedDark : .receivedLight)
+                let cachedPalette = highlightPalettesByMessageID[jobKey]
+                let needsPaletteRefresh = cachedPalette != nil && cachedPalette != palette
+
+                // Collect code blocks that still need highlights.
+                let pending = rendered.blocks.compactMap { block -> CodeBlock? in
+                    guard case .code(let cb) = block, !cb.source.isEmpty else { return nil }
+                    return (needsPaletteRefresh || rendered.codeHighlights[cb.id] == nil) ? cb : nil
+                }
+                guard !pending.isEmpty else { continue }
+
+                highlightInFlight.insert(jobKey)
+
+                // Task captures message by value (Sendable). All async work runs
+                // off-main via CodeHighlightService actor; the result is merged into
+                // cache on the main actor without reloading table rows.
+                Task { [weak self] in
+                    // renderWithHighlights calls CodeHighlightService actor internally.
+                    // No UIKit / SwiftUI interaction here.
+                    let withHighlights = await MessageRenderPipeline.renderWithHighlights(
+                        message,
+                        currentUserID: currentUserID,
+                        palette: palette
+                    )
+
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        self.applyHighlights(from: withHighlights, palette: palette)
+                    }
+                }
+            }
+        }
+
+        /// Merges newly computed `codeHighlights` into the cached `RenderedMessage` and
+        /// does not touch the table view.
+        ///
+        /// Requirements specifically enforced here:
+        /// - req 10: only the target message's `RenderedMessage` is updated.
+        /// - req 11/12: no row reload is triggered by async highlight completion.
+        ///   With self-sizing table rows, even a no-op reload can perturb offset while
+        ///   the user is scrolling.
+        private func applyHighlights(
+            from withHighlights: RenderedMessage,
+            palette: CodeHighlightPalette
+        ) {
+            let messageID = withHighlights.messageID
+            highlightInFlight.remove(messageID)
+
+            guard !withHighlights.codeHighlights.isEmpty else { return }
+
+            // Merge into the existing cache entry if the message content hasn't changed.
+            if var existing = renderedCache[messageID],
+               existing.renderSignature == withHighlights.renderSignature {
+                for (blockID, text) in withHighlights.codeHighlights {
+                    existing.codeHighlights[blockID] = text
+                }
+                renderedCache[messageID] = existing
+                highlightPalettesByMessageID[messageID] = palette
+                logScroll("highlight.cacheMerge", details: "message=\(messageID) blocks=\(withHighlights.codeHighlights.count)")
+            } else if renderedCache[messageID] == nil {
+                // Cache was evicted (e.g., by reloadChangedRows) but the message is
+                // still present; restore with highlights so the next cellForRowAt is fast.
+                renderedCache[messageID] = withHighlights
+                highlightPalettesByMessageID[messageID] = palette
+                logScroll("highlight.cacheRestore", details: "message=\(messageID) blocks=\(withHighlights.codeHighlights.count)")
+            } else {
+                // renderSignature changed → the message content was edited while the
+                // Task was in flight; the normal reloadChangedRows path handles this.
+                return
+            }
+        }
+
         private func visibleAnchor(in tableView: UITableView) -> VisibleMessageAnchor? {
             guard isReadyForLayout(tableView) else { return nil }
             let visibleTop = tableView.contentOffset.y + tableView.adjustedContentInset.top
-            let indexPaths = (tableView.indexPathsForVisibleRows ?? []).sorted()
-            for indexPath in indexPaths where messages.indices.contains(indexPath.row) {
-                let rect = tableView.rectForRow(at: indexPath)
-                guard rect.maxY > visibleTop + 1 else { continue }
-                return VisibleMessageAnchor(
-                    messageID: messages[indexPath.row].id,
-                    offsetFromVisibleTop: rect.minY - visibleTop
-                )
+            let visibleHeight = visibleHeight(in: tableView)
+            let referenceFraction: CGFloat = 0.45
+            let referenceY = visibleTop + visibleHeight * referenceFraction
+            let visibleBottom = visibleTop + visibleHeight
+            let candidates = (tableView.indexPathsForVisibleRows ?? [])
+                .sorted()
+                .compactMap { indexPath -> (indexPath: IndexPath, rect: CGRect, score: CGFloat)? in
+                    guard messages.indices.contains(indexPath.row) else { return nil }
+                    let rect = tableView.rectForRow(at: indexPath)
+                    guard rect.maxY > visibleTop + 1, rect.minY < visibleBottom - 1 else { return nil }
+                    let score: CGFloat
+                    if rect.minY <= referenceY, rect.maxY >= referenceY {
+                        score = 0
+                    } else {
+                        score = min(abs(rect.minY - referenceY), abs(rect.maxY - referenceY))
+                    }
+                    return (indexPath, rect, score)
+                }
+            guard let best = candidates.min(by: { left, right in
+                if left.score == right.score {
+                    return left.indexPath.row < right.indexPath.row
+                }
+                return left.score < right.score
+            }) else {
+                return nil
             }
-            return nil
+            return VisibleMessageAnchor(
+                messageID: messages[best.indexPath.row].id,
+                offsetFromReferenceY: best.rect.minY - referenceY,
+                referenceFraction: referenceFraction
+            )
+        }
+
+        private func visibleHeight(in tableView: UITableView) -> CGFloat {
+            max(
+                1,
+                tableView.bounds.height
+                    - tableView.adjustedContentInset.top
+                    - tableView.adjustedContentInset.bottom
+            )
+        }
+
+        private func targetOffsetY(
+            for anchor: VisibleMessageAnchor,
+            rowRect rect: CGRect,
+            in tableView: UITableView
+        ) -> CGFloat {
+            let referenceOffset = visibleHeight(in: tableView) * anchor.referenceFraction
+            return clampedOffsetY(
+                rect.minY
+                    - anchor.offsetFromReferenceY
+                    - tableView.adjustedContentInset.top
+                    - referenceOffset,
+                in: tableView
+            )
         }
 
         private func restoreAfterLayout(_ anchor: VisibleMessageAnchor, in tableView: UITableView) {
+            guard !isUserInteracting(with: tableView) else {
+                logScroll("restoreAnchor.skipInteracting", on: tableView, details: "message=\(anchor.messageID)")
+                return
+            }
+            logScroll("restoreAnchor.begin", on: tableView, details: "message=\(anchor.messageID)")
             restore(anchor, in: tableView)
             DispatchQueue.main.async { [weak self, weak tableView] in
                 guard let self, let tableView else { return }
+                guard !self.isUserInteracting(with: tableView) else {
+                    self.logScroll("restoreAnchor.secondPass.skipInteracting", on: tableView, details: "message=\(anchor.messageID)")
+                    return
+                }
+                self.logScroll("restoreAnchor.secondPass", on: tableView, details: "message=\(anchor.messageID)")
                 self.restore(anchor, in: tableView)
             }
         }
@@ -2097,6 +2600,27 @@ private struct ChatMessageListView: UIViewRepresentable {
             }
         }
 
+        private func isUserInteracting(with tableView: UITableView) -> Bool {
+            tableView.isDragging || tableView.isDecelerating || tableView.isTracking
+        }
+
+        private func isRefreshControlActive(on tableView: UITableView) -> Bool {
+            if tableView.refreshControl?.isRefreshing == true {
+                return true
+            }
+
+            guard let deadline = refreshControlSettleDeadline else {
+                return false
+            }
+
+            if Date().timeIntervalSinceReferenceDate < deadline {
+                return true
+            }
+
+            refreshControlSettleDeadline = nil
+            return false
+        }
+
         private func restorePrependOffset(_ snapshot: PrependPositionSnapshot, in tableView: UITableView) {
             guard isReadyForLayout(tableView) else { return }
             layoutIfReady(tableView)
@@ -2106,7 +2630,8 @@ private struct ChatMessageListView: UIViewRepresentable {
             setContentOffset(
                 CGPoint(x: tableView.contentOffset.x, y: clampedOffsetY(targetOffsetY, in: tableView)),
                 on: tableView,
-                animated: false
+                animated: false,
+                reason: "restorePrepend insertedHeight=\(format(insertedHeight)) snapshotOffset=\(format(snapshot.contentOffsetY))"
             )
         }
 
@@ -2116,19 +2641,18 @@ private struct ChatMessageListView: UIViewRepresentable {
             let indexPath = IndexPath(row: row, section: 0)
             layoutIfReady(tableView)
             let rect = tableView.rectForRow(at: indexPath)
-            let targetOffsetY = rect.minY - anchor.offsetFromVisibleTop - tableView.adjustedContentInset.top
+            let targetOffsetY = targetOffsetY(for: anchor, rowRect: rect, in: tableView)
             setContentOffset(
                 CGPoint(x: tableView.contentOffset.x, y: clampedOffsetY(targetOffsetY, in: tableView)),
                 on: tableView,
-                animated: false
+                animated: false,
+                reason: "restoreAnchor message=\(anchor.messageID)"
             )
         }
 
-        private func evaluateScrollState(on scrollView: UIScrollView, allowHistoryRequest: Bool = true) {
+        private func evaluateScrollState(on scrollView: UIScrollView) {
             guard scrollView.window != nil, scrollView.bounds.height > 0 else { return }
             updateNearBottom(on: scrollView)
-            guard allowHistoryRequest else { return }
-            maybeRequestOlderHistory(from: scrollView)
         }
 
         private func updateNearBottom(on scrollView: UIScrollView) {
@@ -2138,24 +2662,6 @@ private struct ChatMessageListView: UIViewRepresentable {
             guard nextIsNearBottom != isNearBottom else { return }
             isNearBottom = nextIsNearBottom
             emit { [parent] in parent.onNearBottomChange(nextIsNearBottom) }
-        }
-
-        private func maybeRequestOlderHistory(from scrollView: UIScrollView) {
-            guard hasPositionedInitialMessages else { return }
-            guard !messages.isEmpty else { return }
-            guard !hasScheduledNearTopRequest else { return }
-
-            let distanceFromTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
-            let preloadDistance = max(parent.historyPreloadDistance, scrollView.bounds.height * 2.2)
-            let contentUnderfillsViewport = scrollView.contentSize.height <= scrollView.bounds.height + preloadDistance
-            guard distanceFromTop <= preloadDistance || contentUnderfillsViewport else { return }
-
-            hasScheduledNearTopRequest = true
-            emit { [weak self] in
-                guard let self else { return }
-                self.hasScheduledNearTopRequest = false
-                self.parent.onLoadOlder()
-            }
         }
 
         private func scrollToBottomAfterLayout(
@@ -2179,15 +2685,22 @@ private struct ChatMessageListView: UIViewRepresentable {
         ) {
             DispatchQueue.main.async { [weak self, weak tableView] in
                 guard let self, let tableView else { return }
+                guard notifyInitialPosition || !self.isUserInteracting(with: tableView) else {
+                    self.logScroll("scrollBottom.skipInteracting", on: tableView, details: "attempt=\(attempt)")
+                    return
+                }
                 guard tableView.window != nil else {
+                    self.logScroll("scrollBottom.queueNoWindow", on: tableView, details: "attempt=\(attempt)")
                     self.queueScrollToBottom(animated: animated, notifyInitialPosition: notifyInitialPosition)
                     return
                 }
                 guard tableView.bounds.height > 0 else {
                     guard attempt < 5 else {
+                        self.logScroll("scrollBottom.queueNoBounds", on: tableView, details: "attempt=\(attempt)")
                         self.queueScrollToBottom(animated: animated, notifyInitialPosition: notifyInitialPosition)
                         return
                     }
+                    self.logScroll("scrollBottom.retryNoBounds", on: tableView, details: "attempt=\(attempt)")
                     self.scrollToBottomAfterLayout(
                         on: tableView,
                         animated: animated,
@@ -2196,23 +2709,54 @@ private struct ChatMessageListView: UIViewRepresentable {
                     )
                     return
                 }
+                self.logScroll("scrollBottom.fire", on: tableView, details: "animated=\(animated) notifyInitial=\(notifyInitialPosition) attempt=\(attempt)")
                 guard self.scrollToBottom(on: tableView, animated: animated) else {
+                    self.logScroll("scrollBottom.queueFailed", on: tableView)
                     self.queueScrollToBottom(animated: animated, notifyInitialPosition: notifyInitialPosition)
                     return
                 }
-                DispatchQueue.main.async { [weak self, weak tableView] in
+                let heightAfterFirstPass = tableView.contentSize.height
+                let settlePass = { [weak self, weak tableView] in
                     guard let self, let tableView else { return }
+                    guard notifyInitialPosition || !self.isUserInteracting(with: tableView) else {
+                        self.logScroll("scrollBottom.secondPass.skipInteracting", on: tableView)
+                        return
+                    }
+                    self.logScroll("scrollBottom.secondPass", on: tableView, details: "notifyInitial=\(notifyInitialPosition)")
                     guard self.scrollToBottom(on: tableView, animated: false) else {
+                        self.logScroll("scrollBottom.secondPass.queueFailed", on: tableView)
                         self.queueScrollToBottom(animated: false, notifyInitialPosition: notifyInitialPosition)
                         return
                     }
                     if notifyInitialPosition {
+                        let heightDelta = abs(tableView.contentSize.height - heightAfterFirstPass)
+                        let distanceFromBottom = self.distanceFromBottom(in: tableView)
+                        let lastRowVisible = self.isLastMessageRowVisible(in: tableView)
+                        if attempt < 40, (heightDelta > 1 || distanceFromBottom > 1 || !lastRowVisible) {
+                            self.logScroll(
+                                "scrollBottom.settleRetry",
+                                on: tableView,
+                                details: "attempt=\(attempt) heightDelta=\(self.format(heightDelta)) distance=\(self.format(distanceFromBottom)) lastVisible=\(lastRowVisible)"
+                            )
+                            self.scrollToBottomAfterLayout(
+                                on: tableView,
+                                animated: false,
+                                notifyInitialPosition: true,
+                                attempt: attempt + 1
+                            )
+                            return
+                        }
                         self.pendingInitialBottomPosition = false
                         self.hasPositionedInitialMessages = true
                         self.emit { [parent = self.parent] in
                             parent.onInitialPositioned()
                         }
                     }
+                }
+                if notifyInitialPosition {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: settlePass)
+                } else {
+                    DispatchQueue.main.async(execute: settlePass)
                 }
             }
         }
@@ -2221,18 +2765,57 @@ private struct ChatMessageListView: UIViewRepresentable {
         private func scrollToBottom(on tableView: UITableView, animated: Bool) -> Bool {
             guard isReadyForLayout(tableView) else { return false }
             layoutIfReady(tableView)
+            if !messages.isEmpty {
+                let lastRow = IndexPath(row: messages.count - 1, section: 0)
+                tableView.scrollToRow(at: lastRow, at: .bottom, animated: animated)
+                if !animated {
+                    layoutIfReady(tableView)
+                }
+            }
+            if !messages.isEmpty, !isLastMessageRowVisible(in: tableView) {
+                logScroll("scrollToBottom.waitLastRow", on: tableView)
+            }
             let minimumOffsetY = -tableView.adjustedContentInset.top
             let maximumOffsetY = max(
                 minimumOffsetY,
                 tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
             )
-            setContentOffset(CGPoint(x: 0, y: maximumOffsetY), on: tableView, animated: animated)
+            setContentOffset(
+                CGPoint(x: 0, y: maximumOffsetY),
+                on: tableView,
+                animated: animated,
+                reason: "scrollToBottom"
+            )
             return true
         }
 
-        private func setContentOffset(_ offset: CGPoint, on tableView: UITableView, animated: Bool) {
+        private func distanceFromBottom(in tableView: UITableView) -> CGFloat {
+            let visibleBottom = tableView.contentOffset.y
+                + tableView.bounds.height
+                - tableView.adjustedContentInset.bottom
+            return max(0, tableView.contentSize.height - visibleBottom)
+        }
+
+        private func isLastMessageRowVisible(in tableView: UITableView) -> Bool {
+            guard !messages.isEmpty else { return true }
+            let lastRow = IndexPath(row: messages.count - 1, section: 0)
+            return tableView.indexPathsForVisibleRows?.contains(lastRow) == true
+        }
+
+        private func setContentOffset(_ offset: CGPoint, on tableView: UITableView, animated: Bool, reason: String) {
+            let before = tableView.contentOffset.y
+            logScroll(
+                "setContentOffset.begin",
+                on: tableView,
+                details: "reason=\(reason) targetY=\(format(offset.y)) beforeY=\(format(before)) animated=\(animated)"
+            )
             isRestoringPosition = true
             tableView.setContentOffset(offset, animated: animated)
+            logScroll(
+                "setContentOffset.end",
+                on: tableView,
+                details: "reason=\(reason) afterY=\(format(tableView.contentOffset.y))"
+            )
             DispatchQueue.main.async { [weak self] in
                 self?.isRestoringPosition = false
             }
@@ -2278,7 +2861,8 @@ private final class ChatTableView: UITableView {
 
 private struct VisibleMessageAnchor {
     let messageID: String
-    let offsetFromVisibleTop: CGFloat
+    let offsetFromReferenceY: CGFloat
+    let referenceFraction: CGFloat
 }
 
 private struct MessageRenderSignature: Hashable {
@@ -2294,9 +2878,7 @@ private struct MessageRenderSignature: Hashable {
     let contentURL: String?
     let contentName: String?
     let contentSize: Int?
-    let seq: Int?
-    let timestamp: Int64?
-    let pending: Bool
+    let contentMetaSignature: String
 
     nonisolated init(message: Message) {
         self.id = message.id
@@ -2311,9 +2893,7 @@ private struct MessageRenderSignature: Hashable {
         self.contentURL = message.content.url
         self.contentName = message.content.name
         self.contentSize = message.content.size
-        self.seq = message.seq
-        self.timestamp = message.timestamp
-        self.pending = message.pending
+        self.contentMetaSignature = message.content.renderMetadataSignature
     }
 }
 
@@ -2402,6 +2982,299 @@ private struct ChatComposerIconButton: View {
     }
 }
 
+private struct ChatComposerBar: View {
+    let photoPickerSelection: Binding<PhotosPickerItem?>
+    @Binding var inputText: String
+    let isInputFocused: FocusState<Bool>.Binding
+    let placeholder: String
+    let isComposerDisabled: Bool
+    let isUploadingImage: Bool
+    let isSendDisabled: Bool
+    let activeSlashQuery: String?
+    let slashSuggestionIdentity: String
+    let activeSlashArgumentContext: SlashArgumentContext?
+    let shouldShowSlashChoices: Bool
+    let shouldShowSlashCommands: Bool
+    let isActiveSlashAutocompletePending: Bool
+    let filteredSlashChoices: [SlashCommandChoice]
+    let filteredSlashCommands: [SlashCommand]
+    let selectedSlashCommandIndex: Int
+    let choiceDetailText: (SlashCommandChoice, SlashCommandArg) -> String
+    let onSlashSuggestionIdentityChange: () -> Void
+    let onSelectSlashChoice: (SlashCommandChoice, SlashArgumentContext) -> Void
+    let onSelectSlashCommand: (SlashCommand) -> Void
+    let onSend: () -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            SlashSuggestionsPanel(
+                activeSlashArgumentContext: activeSlashArgumentContext,
+                shouldShowSlashChoices: shouldShowSlashChoices,
+                shouldShowSlashCommands: shouldShowSlashCommands,
+                isActiveSlashAutocompletePending: isActiveSlashAutocompletePending,
+                filteredSlashChoices: filteredSlashChoices,
+                filteredSlashCommands: filteredSlashCommands,
+                selectedSlashCommandIndex: selectedSlashCommandIndex,
+                choiceDetailText: choiceDetailText,
+                onSelectSlashChoice: onSelectSlashChoice,
+                onSelectSlashCommand: onSelectSlashCommand
+            )
+
+            HStack(alignment: .bottom, spacing: 8) {
+                imagePickerButton(systemName: "plus", isUploading: false)
+                imagePickerButton(systemName: "photo", isUploading: isUploadingImage)
+
+                composerTextField
+
+                ChatSendButton(isDisabled: isSendDisabled, action: onSend)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(Color.rcmsToolbarSurface)
+        .background(.ultraThinMaterial)
+    }
+
+    private var composerTextField: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField(placeholder, text: $inputText, axis: .vertical)
+                .focused(isInputFocused)
+                .lineLimit(1...5)
+                .textInputAutocapitalization(activeSlashQuery == nil ? .sentences : .never)
+                .autocorrectionDisabled(activeSlashQuery != nil)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 10)
+                .foregroundStyle(Color.rcmsTextPrimary)
+                .disabled(isComposerDisabled)
+                .onChange(of: slashSuggestionIdentity) { _, _ in
+                    onSlashSuggestionIdentityChange()
+                }
+        }
+        .background(Color.rcmsFieldSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.rcmsHairline, lineWidth: 1)
+        )
+    }
+
+    private func imagePickerButton(systemName: String, isUploading: Bool) -> some View {
+        PhotosPicker(selection: photoPickerSelection, matching: .images) {
+            ChatComposerIconButton(systemName: systemName, isUploading: isUploading)
+        }
+        .disabled(isComposerDisabled)
+    }
+}
+
+private struct SlashSuggestionsPanel: View {
+    let activeSlashArgumentContext: SlashArgumentContext?
+    let shouldShowSlashChoices: Bool
+    let shouldShowSlashCommands: Bool
+    let isActiveSlashAutocompletePending: Bool
+    let filteredSlashChoices: [SlashCommandChoice]
+    let filteredSlashCommands: [SlashCommand]
+    let selectedSlashCommandIndex: Int
+    let choiceDetailText: (SlashCommandChoice, SlashCommandArg) -> String
+    let onSelectSlashChoice: (SlashCommandChoice, SlashArgumentContext) -> Void
+    let onSelectSlashCommand: (SlashCommand) -> Void
+
+    var body: some View {
+        if let argContext = activeSlashArgumentContext, shouldShowSlashChoices {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending {
+                        SlashLoadingSuggestionRow()
+                    }
+
+                    ForEach(Array(filteredSlashChoices.enumerated()), id: \.element.id) { index, choice in
+                        SlashChoiceSuggestionRow(
+                            choice: choice,
+                            detailText: choiceDetailText(choice, argContext.arg),
+                            isSelected: index == selectedSlashCommandIndex,
+                            action: {
+                                onSelectSlashChoice(choice, argContext)
+                            }
+                        )
+
+                        if index < filteredSlashChoices.count - 1 {
+                            suggestionDivider
+                        }
+                    }
+                }
+            }
+            .modifier(SlashSuggestionPanelChrome(
+                maxHeight: panelHeight(
+                    itemCount: filteredSlashChoices.count,
+                    isLoading: filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending
+                )
+            ))
+        } else if shouldShowSlashCommands {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(filteredSlashCommands.enumerated()), id: \.element.id) { index, command in
+                        SlashCommandSuggestionRow(
+                            command: command,
+                            isSelected: index == selectedSlashCommandIndex,
+                            action: {
+                                onSelectSlashCommand(command)
+                            }
+                        )
+
+                        if index < filteredSlashCommands.count - 1 {
+                            suggestionDivider
+                        }
+                    }
+                }
+            }
+            .modifier(SlashSuggestionPanelChrome(maxHeight: panelHeight(itemCount: filteredSlashCommands.count)))
+        }
+    }
+
+    private var suggestionDivider: some View {
+        Divider()
+            .padding(.leading, 42)
+    }
+
+    private func panelHeight(itemCount: Int, isLoading: Bool = false) -> CGFloat {
+        let visibleRows = max(itemCount, isLoading ? 1 : 0)
+        return min(CGFloat(max(visibleRows, 1)) * 50, 300)
+    }
+}
+
+private struct SlashLoadingSuggestionRow: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 22, height: 22)
+
+            Text("Loading options")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.rcmsTextSecondary)
+
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct SlashChoiceSuggestionRow: View {
+    let choice: SlashCommandChoice
+    let detailText: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.rcmsAccent)
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(choice.label)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.rcmsTextPrimary)
+                        .lineLimit(1)
+                    Text(detailText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isSelected ? Color.rcmsAccent.opacity(0.08) : Color.clear)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SlashCommandSuggestionRow: View {
+    let command: SlashCommand
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "command")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.rcmsAccent)
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("/\(command.name)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.rcmsTextPrimary)
+                        .lineLimit(1)
+                    if let description = command.description, !description.isEmpty {
+                        Text(description)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.rcmsTextSecondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if command.acceptsArgs {
+                    Image(systemName: "ellipsis.curlybraces")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isSelected ? Color.rcmsAccent.opacity(0.08) : Color.clear)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SlashSuggestionPanelChrome: ViewModifier {
+    let maxHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxHeight: maxHeight)
+            .background(Color.rcmsSurfaceElevated)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.rcmsHairline, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
+    }
+}
+
+private struct ChatSendButton: View {
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(Color.rcmsAccent)
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .offset(x: -1, y: 1)
+            }
+        }
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.45 : 1)
+    }
+}
+
 struct MessageMarkdownView: View {
     let text: String
     let isMe: Bool
@@ -2486,6 +3359,9 @@ extension Theme {
 
 struct ChatBubbleRow: View {
     let message: Message
+    /// Pre-computed by `MessageRenderPipeline`; cached in `Coordinator` so the view
+    /// body never calls the pipeline or re-parses markdown/code-fences.
+    let rendered: RenderedMessage
     let currentUserID: String?
     let showsSenderInfo: Bool
     let fallbackBotAvatarURLString: String?
@@ -2613,13 +3489,11 @@ struct ChatBubbleRow: View {
                     .padding(.horizontal, 4)
                 }
 
-                if isImageMessage {
-                    imageMessageView
-                } else if isAudioMessage {
-                    ChatAudioMessageBubble(message: message, isMe: isMe)
-                } else if let body = message.content.body {
-                    messageTextBubble(body)
-                }
+                RenderedMessageBubble(
+                    rendered: rendered,
+                    isMe: isMe,
+                    onPreviewImage: onPreviewImage.map { callback in { callback(message) } }
+                )
 
                 if messageTimestamp != nil || message.pending {
                     deliveryStatusRow
@@ -2820,9 +3694,9 @@ private struct ChatAudioMessageBubble: View {
                 }
             }
             .frame(width: bubbleWidth, alignment: isMe ? .trailing : .leading)
-            .frame(minHeight: 42)
+            .frame(minHeight: 32)
             .padding(.horizontal, 13)
-            .padding(.vertical, 9)
+            .padding(.vertical, 5)
             .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
             .clipShape(BubbleShape(isMe: isMe))
             .contentShape(BubbleShape(isMe: isMe))
@@ -2871,7 +3745,7 @@ private struct ChatAudioMessageBubble: View {
     }
 }
 
-private struct ChatAudioWaveform: View {
+struct ChatAudioWaveform: View {
     let isPlaying: Bool
     let isMe: Bool
 
@@ -2900,7 +3774,7 @@ private struct ChatAudioWaveform: View {
     }
 }
 
-private final class ChatAudioPlaybackController: ObservableObject {
+final class ChatAudioPlaybackController: ObservableObject {
     @Published var isPlaying = false
     @Published var isLoading = false
     @Published var didFail = false
@@ -2940,6 +3814,11 @@ private final class ChatAudioPlaybackController: ObservableObject {
     private func prepare(url: URL) {
         cleanupObservers()
         currentURL = url
+
+        // 切换到 .playback 类别：走扬声器外放，不受静音键影响。
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+
         let item = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: item)
         self.player = player
@@ -3677,7 +4556,36 @@ struct GroupMaintenanceSheet: View {
     .preferredColorScheme(.light)
 }
 
+#if DEBUG
+struct ChatRoomUITestHarness: View {
+    init() {
+        ChatPreviewData.prepareScrollProbeFixtureIfNeeded()
+    }
+
+    var body: some View {
+        ChatRoomView(
+            previewContext: ChatContext(
+                id: ChatPreviewData.scrollProbeConversationID,
+                title: "Chat Scroll Test",
+                subtitle: "UI test fixture",
+                isGroup: true,
+                groupId: "chat-scroll-test",
+                memberCount: 12
+            ),
+            messages: ChatPreviewData.scrollProbeInitialMessages,
+            connectionState: .connected,
+            currentUserID: "preview-user"
+        )
+        .accessibilityIdentifier("chat-room-scroll-test")
+    }
+}
+#endif
+
 private enum ChatPreviewData {
+    static let scrollProbeConversationID = "chat/group/chat-scroll-test"
+    private static let scrollProbeMessageCount = 180
+    private static var didPrepareScrollProbeFixture = false
+
     static let botMessages: [Message] = [
         message(
             id: "bot-1",
@@ -3744,6 +4652,57 @@ private enum ChatPreviewData {
         )
     ]
 
+    static let scrollProbeMessages: [Message] = (1...scrollProbeMessageCount).map { index in
+        let isCurrentUser = index % 4 == 0
+        let senderID = isCurrentUser ? "preview-user" : "scroll-bot-\(index % 5)"
+        let senderName = isCurrentUser ? "You" : "Scroll Bot \(index % 5)"
+        let senderType = isCurrentUser ? "user" : "bot"
+
+        if index % 10 == 6 {
+            return imageMessage(
+                id: String(format: "scroll-%03d", index),
+                conversationID: scrollProbeConversationID,
+                senderType: senderType,
+                senderID: senderID,
+                senderName: senderName,
+                caption: scrollProbeImageCaption(for: index),
+                seq: index,
+                timestamp: 1_779_070_000 + Int64(index * 60)
+            )
+        }
+
+        return message(
+            id: String(format: "scroll-%03d", index),
+            conversationID: scrollProbeConversationID,
+            senderType: senderType,
+            senderID: senderID,
+            senderName: senderName,
+            body: scrollProbeBody(for: index),
+            seq: index,
+            timestamp: 1_779_070_000 + Int64(index * 60)
+        )
+    }
+
+    static let scrollProbeInitialMessages = Array(scrollProbeMessages.suffix(50))
+
+    @MainActor
+    static func prepareScrollProbeFixtureIfNeeded() {
+        guard !didPrepareScrollProbeFixture else { return }
+        didPrepareScrollProbeFixture = true
+
+        for message in scrollProbeMessages where message.content.type.lowercased() == "image" {
+            guard let width = message.content.meta?["width"]?.intValue,
+                  let height = message.content.meta?["height"]?.intValue,
+                  let data = scrollProbeImageData(width: width, height: height, seed: message.seq ?? 0)
+            else {
+                continue
+            }
+            LocalImageStore.shared.cacheImageData(data, for: message)
+        }
+
+        LocalMessageStore.shared.upsert(messages: scrollProbeMessages)
+    }
+
     private static func message(
         id: String,
         conversationID: String,
@@ -3767,6 +4726,109 @@ private enum ChatPreviewData {
             timestamp: timestamp,
             createdAt: Date(timeIntervalSince1970: TimeInterval(timestamp))
         )
+    }
+
+    private static func imageMessage(
+        id: String,
+        conversationID: String,
+        senderType: String,
+        senderID: String,
+        senderName: String,
+        caption: String,
+        seq: Int,
+        timestamp: Int64
+    ) -> Message {
+        let dimensions = scrollProbeImageDimensions(for: seq)
+        return Message(
+            id: id,
+            conversationId: conversationID,
+            topic: conversationID,
+            senderId: senderID,
+            senderType: senderType,
+            from: ChatPeer(type: senderType, id: senderID, name: senderName, avatar: nil),
+            to: ChatPeer(type: "user", id: "preview-user", name: "You", avatar: nil),
+            content: MessageContent(
+                type: "image",
+                body: caption,
+                url: nil,
+                name: "scroll-probe-\(seq).png",
+                size: nil,
+                meta: [
+                    "width": AnyCodable(dimensions.width),
+                    "height": AnyCodable(dimensions.height)
+                ]
+            ),
+            seq: seq,
+            timestamp: timestamp,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(timestamp))
+        )
+    }
+
+    private static func scrollProbeBody(for index: Int) -> String {
+        let label = String(format: "Scroll probe %03d", index)
+
+        switch index % 9 {
+        case 0:
+            return "\(label)\n\n```swift\nlet row = \(index)\nprint(\"stable height\")\n```"
+        case 1:
+            return "\(label): short status update."
+        case 2:
+            return "\(label)\n\n- first bullet wraps on narrow screens\n- second bullet keeps the row self-sizing honest\n- third bullet checks markdown spacing"
+        case 3:
+            return "\(label) " + String(repeating: "This is a deliberately long chat message used to exercise wrapping and measured row height. ", count: 3)
+        case 4:
+            return "\(label)\nLine one\nLine two\nLine three\nLine four"
+        case 5:
+            return "\(label)\n\n> Quoted markdown should keep a compact bubble height.\n\nA follow-up paragraph keeps the row from being too small."
+        case 6:
+            return "\(label)\n\n| Item | State |\n| --- | --- |\n| Images | ready |\n| Markdown | stable |\n| Scroll | smooth |"
+        case 7:
+            return "\(label)\n\n### Markdown section\n\n1. Numbered item with wrapping text\n2. Another item with `inline code`\n3. Final item after a blank line"
+        default:
+            return "\(label): final confirmation with inline `code`, **bold text**, _emphasis_, and enough content to avoid identical rows."
+        }
+    }
+
+    private static func scrollProbeImageCaption(for index: Int) -> String {
+        let label = String(format: "Image probe %03d", index)
+        return "\(label)\n\n**Markdown caption** with `inline code`, a [link](https://example.com), and enough wrapped text to test image-plus-markdown row sizing."
+    }
+
+    private static func scrollProbeImageDimensions(for index: Int) -> (width: Int, height: Int) {
+        switch index % 4 {
+        case 0:
+            return (width: 1200, height: 800)
+        case 1:
+            return (width: 900, height: 1200)
+        case 2:
+            return (width: 640, height: 640)
+        default:
+            return (width: 1400, height: 700)
+        }
+    }
+
+    @MainActor
+    private static func scrollProbeImageData(width: Int, height: Int, seed: Int) -> Data? {
+        let size = CGSize(width: width, height: height)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            let rect = CGRect(origin: .zero, size: size)
+            let hue = CGFloat(seed % 17) / 17.0
+            UIColor(hue: hue, saturation: 0.55, brightness: 0.94, alpha: 1).setFill()
+            context.fill(rect)
+
+            UIColor(white: 1, alpha: 0.82).setFill()
+            context.fill(CGRect(x: 0, y: size.height * 0.62, width: size.width, height: size.height * 0.38))
+
+            let text = "Image probe \(String(format: "%03d", seed))"
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: max(32, min(size.width, size.height) * 0.08), weight: .bold),
+                .foregroundColor: UIColor(white: 0.12, alpha: 1)
+            ]
+            let textRect = CGRect(x: size.width * 0.08, y: size.height * 0.68, width: size.width * 0.84, height: size.height * 0.2)
+            text.draw(in: textRect, withAttributes: attributes)
+        }
+        return image.pngData()
     }
 }
 

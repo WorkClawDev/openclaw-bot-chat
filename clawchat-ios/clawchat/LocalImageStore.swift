@@ -170,3 +170,85 @@ final class LocalImageStore {
         return hash.map { String(format: "%02x", $0) }.joined()
     }
 }
+
+// MARK: - ImageLoadConfig overloads
+
+extension LocalImageStore {
+
+    /// Returns the on-disk URL for a cached image identified by an `ImageLoadConfig`,
+    /// or `nil` when the image has not been cached yet.
+    func cachedFileURL(for config: ImageLoadConfig) -> URL? {
+        guard let key = cacheKey(for: config) else { return nil }
+        let ext = fileExtension(for: config)
+        let fileURL = directoryURL.appendingPathComponent("\(key).\(ext)", isDirectory: false)
+        return fileManager.fileExists(atPath: fileURL.path) ? fileURL : nil
+    }
+
+    /// Downloads the image identified by `config` if it is not already on disk,
+    /// caches it, and returns the local file URL. Returns `nil` on failure.
+    func ensureCachedImage(for config: ImageLoadConfig) async -> URL? {
+        if let cached = cachedFileURL(for: config) { return cached }
+
+        guard let urlString = normalized(config.imageURLString),
+              let remoteURL = APIClient.shared.resolvedURL(from: urlString)
+        else { return nil }
+
+        do {
+            let data = try await APIClient.shared.fetchRemoteData(
+                from: remoteURL, acceptHeader: "image/*,*/*;q=0.8"
+            )
+            return cacheImageData(data, for: config)
+        } catch {
+            print("LocalImageStore: failed to cache image for \(config.messageID): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    @discardableResult
+    private func cacheImageData(_ data: Data, for config: ImageLoadConfig) -> URL? {
+        guard !data.isEmpty,
+              let key = cacheKey(for: config)
+        else { return nil }
+
+        let ext = fileExtension(for: config)
+        let fileURL = directoryURL.appendingPathComponent("\(key).\(ext)", isDirectory: false)
+
+        queue.sync {
+            guard !fileManager.fileExists(atPath: fileURL.path) else { return }
+            try? data.write(to: fileURL, options: [.atomic])
+        }
+
+        return fileManager.fileExists(atPath: fileURL.path) ? fileURL : nil
+    }
+
+    private func cacheKey(for config: ImageLoadConfig) -> String? {
+        if let id = normalized(config.assetID) { return digest(id) }
+        if let key = normalized(config.assetObjectKey) { return digest(key) }
+        if let url = normalized(config.imageURLString) { return digest(url) }
+        let fb = config.messageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fb.isEmpty ? nil : digest(fb)
+    }
+
+    private func fileExtension(for config: ImageLoadConfig) -> String {
+        if let mime = normalized(config.mimeType) {
+            switch mime {
+            case "image/png":  return "png"
+            case "image/webp": return "webp"
+            case "image/gif":  return "gif"
+            default:           return "jpg"
+            }
+        }
+        let name = normalized(config.assetFileName) ?? normalized(config.contentName)
+        if let name {
+            let ext = URL(fileURLWithPath: name).pathExtension
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ext.isEmpty { return ext.lowercased() }
+        }
+        if let urlStr = normalized(config.imageURLString),
+           let url = URL(string: urlStr) {
+            let ext = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ext.isEmpty { return ext.lowercased() }
+        }
+        return "jpg"
+    }
+}

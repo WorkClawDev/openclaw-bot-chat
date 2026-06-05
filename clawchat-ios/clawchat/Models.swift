@@ -591,7 +591,7 @@ struct RealtimeMessagePayload: Codable {
     }
 }
 
-struct AnyCodable: Codable {
+nonisolated struct AnyCodable: Codable {
     let value: Any
 
     init(_ value: Any) {
@@ -627,15 +627,15 @@ struct AnyCodable: Codable {
 }
 
 extension AnyCodable {
-    var stringValue: String? {
+    nonisolated var stringValue: String? {
         value as? String
     }
 
-    var boolValue: Bool? {
+    nonisolated var boolValue: Bool? {
         value as? Bool
     }
 
-    var intValue: Int? {
+    nonisolated var intValue: Int? {
         if let int = value as? Int {
             return int
         }
@@ -648,21 +648,34 @@ extension AnyCodable {
         return nil
     }
 
-    var dictionaryValue: [String: AnyCodable]? {
+    nonisolated var doubleValue: Double? {
+        if let double = value as? Double {
+            return double
+        }
+        if let int = value as? Int {
+            return Double(int)
+        }
+        if let string = value as? String {
+            return Double(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    nonisolated var dictionaryValue: [String: AnyCodable]? {
         value as? [String: AnyCodable]
     }
 
-    var arrayValue: [AnyCodable]? {
+    nonisolated var arrayValue: [AnyCodable]? {
         value as? [AnyCodable]
     }
 
-    var jsonObject: Any {
+    nonisolated var jsonObject: Any {
         if let dictionaryValue {
-            return dictionaryValue.mapValues(\.jsonObject)
+            return dictionaryValue.mapValues { $0.jsonObject }
         }
 
         if let array = arrayValue {
-            return array.map(\.jsonObject)
+            return array.map { $0.jsonObject }
         }
 
         return value
@@ -670,14 +683,14 @@ extension AnyCodable {
 }
 
 extension Asset {
-    var preferredMediaURLString: String? {
+    nonisolated var preferredMediaURLString: String? {
         let candidates = [downloadURL, externalURL, sourceURL]
         return candidates
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
     }
 
-    var preferredImageURLString: String? {
+    nonisolated var preferredImageURLString: String? {
         preferredMediaURLString
     }
 
@@ -744,7 +757,7 @@ extension Asset {
             return nil
         }
 
-        let jsonObject = assetMeta.mapValues(\.jsonObject)
+        let jsonObject = assetMeta.mapValues { $0.jsonObject }
         guard JSONSerialization.isValidJSONObject(jsonObject) else {
             return nil
         }
@@ -792,11 +805,11 @@ extension Asset {
 }
 
 extension MessageContent {
-    var asset: Asset? {
+    nonisolated var asset: Asset? {
         Asset.from(meta: meta)
     }
 
-    var mediaURLString: String? {
+    nonisolated var mediaURLString: String? {
         let directURL = url?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let directURL, !directURL.isEmpty {
             return directURL
@@ -804,15 +817,15 @@ extension MessageContent {
         return asset?.preferredMediaURLString
     }
 
-    var imageURLString: String? {
+    nonisolated var imageURLString: String? {
         mediaURLString
     }
 
-    var audioURLString: String? {
+    nonisolated var audioURLString: String? {
         mediaURLString
     }
 
-    var isAudio: Bool {
+    nonisolated var isAudio: Bool {
         let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalizedType == "audio" || normalizedType == "voice" {
             return true
@@ -827,7 +840,7 @@ extension MessageContent {
         return metaContentType == "audio" || metaContentType == "voice"
     }
 
-    var audioDurationSeconds: Int? {
+    nonisolated var audioDurationSeconds: Int? {
         let directDuration = Self.durationSeconds(from: meta)
         if let directDuration {
             return directDuration
@@ -835,11 +848,45 @@ extension MessageContent {
         return Self.durationSeconds(from: asset?.metadata)
     }
 
-    var isSticker: Bool {
+    nonisolated var isSticker: Bool {
         meta?["is_sticker"]?.boolValue == true
     }
 
-    private static func durationSeconds(from metadata: [String: AnyCodable]?) -> Int? {
+    nonisolated var renderMetadataSignature: String {
+        let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedType == "image" {
+            let asset = asset
+            var parts: [String] = []
+            parts.append(meta?["is_sticker"]?.boolValue.map(String.init) ?? "")
+            parts.append(meta?["width"]?.intValue.map(String.init) ?? "")
+            parts.append(meta?["height"]?.intValue.map(String.init) ?? "")
+            parts.append(asset?.id ?? "")
+            parts.append(asset?.objectKey ?? "")
+            parts.append(asset?.mimeType ?? "")
+            parts.append(asset?.fileName ?? "")
+            parts.append(asset?.width.map(String.init) ?? "")
+            parts.append(asset?.height.map(String.init) ?? "")
+            parts.append(asset?.preferredMediaURLString ?? "")
+            return parts.joined(separator: "\u{1E}")
+        }
+
+        if isAudio {
+            let asset = asset
+            var parts: [String] = []
+            parts.append(meta?["content_type"]?.stringValue ?? "")
+            parts.append(audioDurationSeconds.map(String.init) ?? "")
+            parts.append(asset?.id ?? "")
+            parts.append(asset?.objectKey ?? "")
+            parts.append(asset?.mimeType ?? "")
+            parts.append(asset?.size.map(String.init) ?? "")
+            parts.append(asset?.preferredMediaURLString ?? "")
+            return parts.joined(separator: "\u{1E}")
+        }
+
+        return ""
+    }
+
+    nonisolated private static func durationSeconds(from metadata: [String: AnyCodable]?) -> Int? {
         guard let metadata else { return nil }
 
         let secondsKeys = ["duration", "duration_seconds", "durationSeconds", "audio_duration", "audioDuration"]
