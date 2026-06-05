@@ -11,22 +11,36 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if authManager.isAuthenticated {
-                HomeView()
-                    .onAppear {
-                        authManager.refreshCurrentUserIfNeeded()
-                        RealtimeService.shared.start()
-                    }
-                    .onChange(of: scenePhase) { _, newPhase in
-                        guard newPhase == .active else { return }
-                        authManager.refreshCurrentUserIfNeeded()
-                        RealtimeService.shared.start()
-                    }
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-ui-test-chat-room") {
+                ChatRoomUITestHarness()
+            } else if authManager.isAuthenticated {
+                authenticatedHome
             } else {
                 LoginView()
             }
+            #else
+            if authManager.isAuthenticated {
+                authenticatedHome
+            } else {
+                LoginView()
+            }
+            #endif
         }
         .preferredColorScheme(appearanceMode.colorScheme)
+    }
+
+    private var authenticatedHome: some View {
+        HomeView()
+            .onAppear {
+                authManager.refreshCurrentUserIfNeeded()
+                RealtimeService.shared.start()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase == .active else { return }
+                authManager.refreshCurrentUserIfNeeded()
+                RealtimeService.shared.start()
+            }
     }
 }
 

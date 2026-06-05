@@ -55,6 +55,9 @@ extension RenderedMessage {
             message.content.type,
             message.content.body ?? "",
             message.content.url ?? "",
+            message.content.name ?? "",
+            message.content.size.map(String.init) ?? "",
+            message.content.renderMetadataSignature,
         ].joined(separator: "\u{1F}")
     }
 }

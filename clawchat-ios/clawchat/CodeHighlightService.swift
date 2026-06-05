@@ -10,7 +10,7 @@ import HighlightSwift
 /// - `receivedDark`: for incoming bubbles in dark mode.
 ///
 /// Cache key requirement (req 13): cache key must include code, language, AND palette.
-enum CodeHighlightPalette: String, Sendable {
+nonisolated enum CodeHighlightPalette: String, Sendable {
     case sent
     case receivedLight
     case receivedDark
@@ -94,7 +94,7 @@ actor CodeHighlightService {
 
     /// Returns a syntax-highlighted `AttributedString` for the given code.
     ///
-    /// The result only contains `foregroundColor` attributes; font, size, and spacing
+    /// The result only contains foreground color attributes; font, size, and spacing
     /// are left to the caller's SwiftUI modifiers (req 9).
     func highlight(
         code: String,
@@ -104,7 +104,10 @@ actor CodeHighlightService {
         guard !code.isEmpty else { return nil }
 
         let key = cacheKey(code: code, language: language, palette: palette)
-        if let cached = cache[key] { return cached }
+        if let cached = cache[key] {
+            markRecentlyUsed(key)
+            return cached
+        }
 
         let colors = HighlightColors.custom(css: palette.css)
         let result: AttributedString
@@ -140,5 +143,11 @@ actor CodeHighlightService {
         while cacheOrder.count > Self.cacheLimit {
             cache.removeValue(forKey: cacheOrder.removeFirst())
         }
+    }
+
+    private func markRecentlyUsed(_ key: String) {
+        guard let index = cacheOrder.firstIndex(of: key) else { return }
+        cacheOrder.remove(at: index)
+        cacheOrder.append(key)
     }
 }

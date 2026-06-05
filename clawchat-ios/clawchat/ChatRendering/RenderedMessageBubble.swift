@@ -126,23 +126,7 @@ struct RenderedMessageBubble: View {
     let onPreviewImage: (() -> Void)?
 
     var body: some View {
-        // 音频和图片消息只有单个自包含 block，它们已有完整的气泡样式，
-        // 直接渲染，不包外层气泡，避免双重背景/阴影导致高度异常。
-        if rendered.blocks.count == 1, isSelfStyledBlock(rendered.blocks[0]) {
-            RenderedBlockView(
-                block: rendered.blocks[0],
-                isMe: isMe,
-                onPreviewImage: onPreviewImage,
-                codeHighlights: rendered.codeHighlights
-            )
-        } else {
-            combinedBubble
-        }
-    }
-
-    private var combinedBubble: some View {
-        let shape = BubbleShape(isMe: isMe)
-        return VStack(alignment: isMe ? .trailing : .leading, spacing: 6) {
+        VStack(alignment: isMe ? .trailing : .leading, spacing: 6) {
             ForEach(Array(rendered.blocks.enumerated()), id: \.offset) { _, block in
                 RenderedBlockView(
                     block: block,
@@ -151,18 +135,6 @@ struct RenderedMessageBubble: View {
                     codeHighlights: rendered.codeHighlights
                 )
             }
-        }
-        .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
-        .clipShape(shape)
-        .contentShape(shape)
-        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
-    }
-
-    /// 音频、图片自带完整气泡样式，无需外层包裹。
-    private func isSelfStyledBlock(_ block: MessageBlock) -> Bool {
-        switch block {
-        case .audio, .image: return true
-        default: return false
         }
     }
 }
@@ -211,15 +183,21 @@ private struct RenderedBlockView: View {
     }
 
     private func textBubble(_ text: String) -> some View {
-        Text(text)
+        let shape = BubbleShape(isMe: isMe)
+        return Text(text)
             .font(.system(size: 15))
             .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
+            .clipShape(shape)
+            .contentShape(shape)
+            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
     }
 
     private func markdownBubble(_ block: MarkdownBlock) -> some View {
-        Group {
+        let shape = BubbleShape(isMe: isMe)
+        return Group {
             if hasComplexMarkdown(block.raw) {
                 Markdown(block.raw)
                     .markdownTheme(.renderedChatTheme(isMe: isMe))
@@ -238,17 +216,37 @@ private struct RenderedBlockView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
+        .clipShape(shape)
+        .contentShape(shape)
+        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
     }
 
     /// 检测是否包含块级 Markdown（标题、列表、引用、表格）。
     /// 仅行内格式（加粗、斜体、行内代码、链接）用原生 Text 即可处理。
     private func hasComplexMarkdown(_ text: String) -> Bool {
-        text.contains("\n#")  ||
-        text.hasPrefix("#")   ||
-        text.contains("\n- ") || text.contains("\n* ") ||
-        text.hasPrefix("- ")  || text.hasPrefix("* ")  ||
-        text.contains("\n> ") || text.hasPrefix("> ")  ||
-        text.contains("\n| ") || text.hasPrefix("| ")
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return trimmed.hasPrefix("#") ||
+                    trimmed.hasPrefix("- ") ||
+                    trimmed.hasPrefix("* ") ||
+                    trimmed.hasPrefix("> ") ||
+                    trimmed.hasPrefix("| ") ||
+                    isOrderedListLine(trimmed)
+            }
+    }
+
+    private func isOrderedListLine(_ line: String) -> Bool {
+        guard let dotIndex = line.firstIndex(of: "."),
+              dotIndex > line.startIndex,
+              line.index(after: dotIndex) < line.endIndex,
+              line[line.index(after: dotIndex)] == " "
+        else {
+            return false
+        }
+        return line[..<dotIndex].allSatisfy(\.isNumber)
     }
 }
 
@@ -330,7 +328,7 @@ struct RenderedCodeBlockView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 Group {
                     if let highlighted = highlightedText {
-                        // HighlightSwift only adds foregroundColor attributes; the
+                        // HighlightSwift only adds foreground color attributes; the
                         // .font() modifier below is the sole authority on typeface (req 9).
                         Text(highlighted)
                     } else {
@@ -340,7 +338,7 @@ struct RenderedCodeBlockView: View {
                 }
                 .font(ChatCodeTypography.codeFont(size: 13))
                 .textSelection(.enabled)
-                .fixedSize(horizontal: true, vertical: true)
+                .fixedSize(horizontal: true, vertical: false)
                 .lineSpacing(3)
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
@@ -348,8 +346,13 @@ struct RenderedCodeBlockView: View {
             }
             .background(bodyBg)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 0))
-        .padding(.vertical, 4)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isMe ? Color.white.opacity(0.12) : Color.rcmsHairline, lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+        .padding(.vertical, 2)
     }
 }
 
@@ -378,14 +381,6 @@ struct RenderedImageBlockView: View {
         let thumbnail = imageContent
             .sizedForDisplay(block: block)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(
-                        isMe ? Color.white.opacity(0.2) : Color.rcmsImageBorder,
-                        lineWidth: block.isSticker ? 0 : 1
-                    )
-            )
-            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
             .task(id: block.loadConfig.imageURLString ?? block.loadConfig.messageID) {
                 await loadImage()
             }
@@ -515,9 +510,9 @@ struct RenderedAudioBlockView: View {
                 }
             }
             .frame(width: block.bubbleWidth, alignment: isMe ? .trailing : .leading)
-            .frame(minHeight: 42)
+            .frame(minHeight: 32)
             .padding(.horizontal, 13)
-            .padding(.vertical, 9)
+            .padding(.vertical, 5)
             .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
             .clipShape(BubbleShape(isMe: isMe))
             .contentShape(BubbleShape(isMe: isMe))

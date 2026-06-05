@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import clawchat
 
 struct CodeHighlightServiceTests {
@@ -17,7 +18,7 @@ struct CodeHighlightServiceTests {
 
         // HighlightSwift should attach at least one foreground color attribute.
         let hasColor = result?.runs.contains { run in
-            run.foregroundColor != nil
+            run.foregroundColor != nil || run.uiKit.foregroundColor != nil
         } ?? false
         #expect(hasColor)
     }
@@ -84,5 +85,111 @@ struct CodeHighlightServiceTests {
             }
         }
         #expect(kinds == ["markdown", "code", "markdown"])
+    }
+
+    @Test func renderSignatureChangesWhenImageMetadataChanges() async throws {
+        let basePayload = """
+        {
+          "id": "m-image-1",
+          "conversation_id": "c1",
+          "mqtt_topic": "c1",
+          "sender_id": "bot1",
+          "sender_type": "bot",
+          "from": { "type": "bot", "id": "bot1" },
+          "to": { "type": "user", "id": "u1" },
+          "content": {
+            "type": "image",
+            "url": "https://example.com/image.png",
+            "meta": {
+              "asset": {
+                "id": "asset-1",
+                "width": 320,
+                "height": 180
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let updatedPayload = """
+        {
+          "id": "m-image-1",
+          "conversation_id": "c1",
+          "mqtt_topic": "c1",
+          "sender_id": "bot1",
+          "sender_type": "bot",
+          "from": { "type": "bot", "id": "bot1" },
+          "to": { "type": "user", "id": "u1" },
+          "content": {
+            "type": "image",
+            "url": "https://example.com/image.png",
+            "meta": {
+              "asset": {
+                "id": "asset-1",
+                "width": 640,
+                "height": 360
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let baseMessage = try JSONDecoder().decode(Message.self, from: basePayload)
+        let updatedMessage = try JSONDecoder().decode(Message.self, from: updatedPayload)
+
+        let base = MessageRenderPipeline.render(baseMessage, currentUserID: "u1")
+        let updated = MessageRenderPipeline.render(updatedMessage, currentUserID: "u1")
+
+        #expect(base.renderSignature != updated.renderSignature)
+    }
+
+    @Test func renderSignatureIgnoresTextRenderMetadataChanges() async throws {
+        let basePayload = """
+        {
+          "id": "m-text-1",
+          "conversation_id": "c1",
+          "mqtt_topic": "c1",
+          "sender_id": "bot1",
+          "sender_type": "bot",
+          "from": { "type": "bot", "id": "bot1" },
+          "to": { "type": "user", "id": "u1" },
+          "content": {
+            "type": "text",
+            "body": "```swift\\nprint(1)\\n```",
+            "meta": {
+              "render_height": 120,
+              "highlight_version": 1
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let updatedPayload = """
+        {
+          "id": "m-text-1",
+          "conversation_id": "c1",
+          "mqtt_topic": "c1",
+          "sender_id": "bot1",
+          "sender_type": "bot",
+          "from": { "type": "bot", "id": "bot1" },
+          "to": { "type": "user", "id": "u1" },
+          "content": {
+            "type": "text",
+            "body": "```swift\\nprint(1)\\n```",
+            "meta": {
+              "render_height": 148,
+              "highlight_version": 2
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let baseMessage = try JSONDecoder().decode(Message.self, from: basePayload)
+        let updatedMessage = try JSONDecoder().decode(Message.self, from: updatedPayload)
+
+        let base = MessageRenderPipeline.render(baseMessage, currentUserID: "u1")
+        let updated = MessageRenderPipeline.render(updatedMessage, currentUserID: "u1")
+
+        #expect(base.renderSignature == updated.renderSignature)
     }
 }

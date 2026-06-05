@@ -108,12 +108,19 @@ enum MessageRenderPipeline {
         return blocks
     }
 
-    /// Constrain a natural image size to the maximum display bounds, preserving aspect ratio.
+    /// Constrain an image to the maximum display bounds, preserving aspect ratio.
+    /// When natural dimensions are missing, return a deterministic placeholder size
+    /// so the row height is stable before the image finishes loading.
     private static func computeDisplaySize(w: Int?, h: Int?, isSticker: Bool) -> CGSize? {
-        guard let w, let h, w > 0, h > 0 else { return nil }
         let maxW: CGFloat = isSticker ? 160 : 280
         let maxH: CGFloat = isSticker ? 160 : 320
-        let ratio = CGFloat(w) / CGFloat(h)
+        let ratio: CGFloat
+        if let w, let h, w > 0, h > 0 {
+            ratio = CGFloat(w) / CGFloat(h)
+        } else {
+            ratio = computeAspectRatio(w: w, h: h, isSticker: isSticker)
+        }
+
         if ratio > maxW / maxH {
             return CGSize(width: maxW, height: (maxW / ratio).rounded())
         } else {
