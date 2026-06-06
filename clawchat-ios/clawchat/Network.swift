@@ -11,12 +11,22 @@ class APIClient {
     private let session: URLSession
     private let remoteDataSession: URLSession
 
-    init(session: URLSession = .shared,
+    init(session: URLSession = APIClient.makeAPISession(),
          baseURL: URL = URL(string: "https://clawchat.changer.site")!,
          remoteDataSession: URLSession = APIClient.makeRemoteDataSession()) {
         self.session = session
         self.baseURL = baseURL
         self.remoteDataSession = remoteDataSession
+    }
+
+    private static func makeAPISession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 60
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpMaximumConnectionsPerHost = 4
+        return URLSession(configuration: configuration)
     }
 
     private static func makeRemoteDataSession() -> URLSession {
@@ -52,7 +62,7 @@ class APIClient {
             email: trimmedIdentifier.contains("@") ? trimmedIdentifier : nil,
             password: password
         )
-        return encodedRequest("/api/v1/auth/login", method: "POST", body: payload, requiresAuth: false)
+        return encodedRequestWithTransportRetry("/api/v1/auth/login", method: "POST", body: payload, requiresAuth: false)
     }
 
     func register(username: String, email: String, password: String) -> AnyPublisher<AuthPayload, Error> {
@@ -293,6 +303,36 @@ class APIClient {
         }
     }
 
+    private func encodedRequestWithTransportRetry<T: Codable, Body: Encodable>(_ endpoint: String,
+                                                                               method: String = "GET",
+                                                                               body: Body,
+                                                                               requiresAuth: Bool = true) -> AnyPublisher<T, Error> {
+        do {
+            let encodedBody = try JSONEncoder().encode(body)
+            return request(
+                endpoint,
+                method: method,
+                body: encodedBody,
+                requiresAuth: requiresAuth
+            )
+            .catch { [weak self] error -> AnyPublisher<T, Error> in
+                guard let self, Self.isRetryableTransportError(error) else {
+                    return Fail(error: error).eraseToAnyPublisher()
+                }
+
+                return self.request(
+                    endpoint,
+                    method: method,
+                    body: encodedBody,
+                    requiresAuth: requiresAuth
+                )
+            }
+            .eraseToAnyPublisher()
+        } catch {
+            return Fail(error: error).eraseToAnyPublisher()
+        }
+    }
+
     private func request<T: Codable>(_ endpoint: String,
                                      method: String = "GET",
                                      body: Data? = nil,
@@ -340,6 +380,10 @@ class APIClient {
         request.httpMethod = method
         request.timeoutInterval = 15
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("application/json", forHTTPHeaderField: "Accept")
+        if #available(iOS 14.5, *) {
+            request.assumesHTTP3Capable = false
+        }
         request.httpBody = body
 
         if requiresAuth, let token = AuthManager.shared.accessToken {
@@ -436,6 +480,10 @@ class APIClient {
         request.httpMethod = method
         request.timeoutInterval = 15
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("application/json", forHTTPHeaderField: "Accept")
+        if #available(iOS 14.5, *) {
+            request.assumesHTTP3Capable = false
+        }
         request.httpBody = body
 
         if requiresAuth, let token = AuthManager.shared.accessToken {
@@ -487,6 +535,21 @@ class APIClient {
             return true
         }
         return false
+    }
+
+    private static func isRetryableTransportError(_ error: Error) -> Bool {
+        guard case APIError.networkError(let underlying) = error,
+              let urlError = underlying as? URLError
+        else {
+            return false
+        }
+
+        switch urlError.code {
+        case .networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     private func messageEndpoint(conversationID: String,

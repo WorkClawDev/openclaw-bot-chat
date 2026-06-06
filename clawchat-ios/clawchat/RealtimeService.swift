@@ -50,6 +50,7 @@ class RealtimeService: NSObject, ObservableObject {
         }
 
         cancelRetry()
+        connectionState = .connecting
         log("bootstrap request started")
 
         fetchBootstrap()

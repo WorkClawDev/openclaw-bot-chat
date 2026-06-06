@@ -480,52 +480,76 @@ class ChatRoomViewModel: ObservableObject {
 
         do {
             let preparedImage = try await normalizedUploadImage(from: item, mode: mode)
-            let preparedUpload = try await APIClient.shared.prepareImageUpload(
-                fileName: preparedImage.fileName,
-                contentType: preparedImage.mimeType,
-                size: preparedImage.data.count,
-                conversationID: conversationId
-            )
-
-            try await APIClient.shared.uploadImageData(preparedImage.data, with: preparedUpload.upload)
-
-            let assetID = preparedUpload.asset.id ?? ""
-            let objectKey = preparedUpload.asset.objectKey ?? ""
-            guard !assetID.isEmpty, !objectKey.isEmpty else {
-                throw ChatImageError.invalidUploadResponse
-            }
-
-            let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
-            _ = LocalImageStore.shared.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
             let caption = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-            var imageMeta = ["asset": asset.metaValue]
-            if let width = preparedImage.width {
-                imageMeta["width"] = AnyCodable(width)
-            }
-            if let height = preparedImage.height {
-                imageMeta["height"] = AnyCodable(height)
-            }
-            let outgoingContent = RealtimeContentPayload(
-                type: "image",
-                body: caption.isEmpty ? (asset.fileName ?? preparedImage.fileName) : caption,
-                url: asset.preferredImageURLString,
-                name: asset.fileName,
-                size: asset.size,
-                meta: imageMeta
-            )
-
-            let didSend = RealtimeService.shared.sendMessage(
-                conversationId: conversationId,
-                content: outgoingContent,
-                topic: conversationId
-            )
-            guard didSend else {
-                throw ChatImageError.messageSendFailed
-            }
-
+            try await sendPreparedImage(preparedImage, caption: caption)
             inputText = ""
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+#if DEBUG
+    @MainActor
+    fileprivate func sendFixtureImageForUITest() async {
+        guard !isUploadingImage else { return }
+        guard connectionState == .connected else {
+            errorMessage = "当前连接不可用，暂时无法发送图片。"
+            return
+        }
+
+        isUploadingImage = true
+        defer { isUploadingImage = false }
+
+        do {
+            let payload = try fixtureUploadImagePayload()
+            try await sendPreparedImage(payload, caption: "V2 fixture image send \(Self.debugTimestampFormatter.string(from: Date()))")
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+#endif
+
+    private func sendPreparedImage(_ preparedImage: UploadImagePayload, caption: String) async throws {
+        let preparedUpload = try await APIClient.shared.prepareImageUpload(
+            fileName: preparedImage.fileName,
+            contentType: preparedImage.mimeType,
+            size: preparedImage.data.count,
+            conversationID: conversationId
+        )
+
+        try await APIClient.shared.uploadImageData(preparedImage.data, with: preparedUpload.upload)
+
+        let assetID = preparedUpload.asset.id ?? ""
+        let objectKey = preparedUpload.asset.objectKey ?? ""
+        guard !assetID.isEmpty, !objectKey.isEmpty else {
+            throw ChatImageError.invalidUploadResponse
+        }
+
+        let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
+        _ = LocalImageStore.shared.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
+        var imageMeta = ["asset": asset.metaValue]
+        if let width = preparedImage.width {
+            imageMeta["width"] = AnyCodable(width)
+        }
+        if let height = preparedImage.height {
+            imageMeta["height"] = AnyCodable(height)
+        }
+        let outgoingContent = RealtimeContentPayload(
+            type: "image",
+            body: caption.isEmpty ? (asset.fileName ?? preparedImage.fileName) : caption,
+            url: asset.preferredImageURLString,
+            name: asset.fileName,
+            size: asset.size,
+            meta: imageMeta
+        )
+
+        let didSend = RealtimeService.shared.sendMessage(
+            conversationId: conversationId,
+            content: outgoingContent,
+            topic: conversationId
+        )
+        guard didSend else {
+            throw ChatImageError.messageSendFailed
         }
     }
 
@@ -652,6 +676,57 @@ class ChatRoomViewModel: ObservableObject {
             return "jpg"
         }
     }
+
+#if DEBUG
+    private func fixtureUploadImagePayload() throws -> UploadImagePayload {
+        let size = CGSize(width: 640, height: 420)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            UIColor(red: 0.08, green: 0.38, blue: 0.84, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+
+            UIColor.white.setFill()
+            let title = "ChatRoom V2"
+            let subtitle = "image send fixture"
+            title.draw(
+                at: CGPoint(x: 44, y: 130),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 54, weight: .bold),
+                    .foregroundColor: UIColor.white
+                ]
+            )
+            subtitle.draw(
+                at: CGPoint(x: 48, y: 206),
+                withAttributes: [
+                    .font: UIFont.monospacedSystemFont(ofSize: 28, weight: .medium),
+                    .foregroundColor: UIColor.white.withAlphaComponent(0.92)
+                ]
+            )
+
+            UIColor.white.withAlphaComponent(0.18).setStroke()
+            let path = UIBezierPath(roundedRect: CGRect(x: 36, y: 96, width: 572, height: 228), cornerRadius: 28)
+            path.lineWidth = 4
+            path.stroke()
+        }
+
+        guard let data = image.pngData() else {
+            throw ChatImageError.unsupportedImage
+        }
+        return UploadImagePayload(
+            data: data,
+            fileName: "chatroom-v2-fixture-\(UUID().uuidString.lowercased()).png",
+            mimeType: "image/png",
+            width: Int(size.width),
+            height: Int(size.height)
+        )
+    }
+
+    private static let debugTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+#endif
 
     private static let supportedImageMimeTypes: Set<String> = [
         "image/jpeg",
@@ -833,6 +908,50 @@ class GroupMaintenanceViewModel: ObservableObject {
 
 struct ChatRoomView: View {
     let context: ChatContext
+    private let previewMessages: [Message]?
+    private let previewConnectionState: RealtimeConnectionState
+    private let previewCurrentUserID: String
+
+    init(context: ChatContext) {
+        self.context = context
+        self.previewMessages = nil
+        self.previewConnectionState = .connected
+        self.previewCurrentUserID = "preview-user"
+    }
+
+    init(conversationId: String, title: String) {
+        let context = ChatContext(id: conversationId, title: title, subtitle: "", isGroup: false, groupId: nil)
+        self.init(context: context)
+    }
+
+    init(
+        previewContext context: ChatContext,
+        messages: [Message],
+        connectionState: RealtimeConnectionState = .connected,
+        currentUserID: String = "preview-user"
+    ) {
+        self.context = context
+        self.previewMessages = messages
+        self.previewConnectionState = connectionState
+        self.previewCurrentUserID = currentUserID
+    }
+
+    var body: some View {
+        if let previewMessages {
+            ChatRoomLegacyView(
+                previewContext: context,
+                messages: previewMessages,
+                connectionState: previewConnectionState,
+                currentUserID: previewCurrentUserID
+            )
+        } else {
+            ChatRoomLegacyView(context: context)
+        }
+    }
+}
+
+private struct ChatRoomLegacyView: View {
+    let context: ChatContext
     @StateObject private var viewModel: ChatRoomViewModel
     @StateObject private var groupVM = GroupMaintenanceViewModel()
     @ObservedObject private var authManager = AuthManager.shared
@@ -850,6 +969,9 @@ struct ChatRoomView: View {
     @State private var listScrollCommand = ChatListScrollCommand.none
     @State private var selectedSlashCommandIndex = 0
     @State private var slashAutocompleteTask: Task<Void, Never>?
+#if DEBUG
+    @State private var hasTriggeredFixtureImageSend = false
+#endif
     private let loadsMessagesOnAppear: Bool
     private let currentUserIDOverride: String?
     private let bottomAutoScrollThreshold: CGFloat = 96
@@ -893,22 +1015,7 @@ struct ChatRoomView: View {
             VStack(spacing: 0) {
                 chatHeader
 
-                ChatMessageListView(
-                    messages: viewModel.messages,
-                    currentUserID: effectiveCurrentUserID,
-                    showsSenderInfo: context.isGroup,
-                    fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString,
-                    bottomMessageClearance: bottomMessageClearance,
-                    bottomAutoScrollThreshold: bottomAutoScrollThreshold,
-                    historyPreloadDistance: historyPreloadDistance,
-                    scrollCommand: listScrollCommand,
-                    onPreviewImage: { previewMessage = $0 },
-                    onSaveImage: saveImage,
-                    onLoadOlder: triggerHistoryPreloadIfNeeded,
-                    onNearBottomChange: { isNearBottom = $0 },
-                    onUserScrollChange: { isUserInteractingWithMessages = $0 },
-                    onInitialPositioned: { hasPositionedInitialMessages = true }
-                )
+                messageList
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     inputBar
                 }
@@ -954,6 +1061,10 @@ struct ChatRoomView: View {
             viewModel.refreshBotProfiles()
             viewModel.refreshGroupBotProfiles(groupId: context.groupId)
             viewModel.fetchMessages()
+            triggerFixtureImageSendIfNeeded()
+        }
+        .onChange(of: viewModel.connectionState) { _, _ in
+            triggerFixtureImageSendIfNeeded()
         }
         .onDisappear {
             guard loadsMessagesOnAppear else { return }
@@ -1024,6 +1135,43 @@ struct ChatRoomView: View {
                 settingsAffordance
             }
         )
+    }
+
+    @ViewBuilder
+    private var messageList: some View {
+        if ChatRoomV2FeatureFlag.isEnabled {
+            ChatRoomUIKitV2MessageListView(
+                context: context,
+                messages: viewModel.messages,
+                currentUserID: effectiveCurrentUserID,
+                bottomAutoScrollThreshold: bottomAutoScrollThreshold,
+                historyPreloadDistance: historyPreloadDistance,
+                scrollCommand: listScrollCommand,
+                onLoadOlder: triggerHistoryPreloadIfNeeded,
+                onNearBottomChange: { isNearBottom = $0 },
+                onUserScrollChange: { isUserInteractingWithMessages = $0 },
+                onInitialPositioned: { hasPositionedInitialMessages = true },
+                onPreviewImage: { previewMessage = $0 },
+                onSaveImage: saveImage
+            )
+        } else {
+            ChatMessageListView(
+                messages: viewModel.messages,
+                currentUserID: effectiveCurrentUserID,
+                showsSenderInfo: context.isGroup,
+                fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString,
+                bottomMessageClearance: bottomMessageClearance,
+                bottomAutoScrollThreshold: bottomAutoScrollThreshold,
+                historyPreloadDistance: historyPreloadDistance,
+                scrollCommand: listScrollCommand,
+                onPreviewImage: { previewMessage = $0 },
+                onSaveImage: saveImage,
+                onLoadOlder: triggerHistoryPreloadIfNeeded,
+                onNearBottomChange: { isNearBottom = $0 },
+                onUserScrollChange: { isUserInteractingWithMessages = $0 },
+                onInitialPositioned: { hasPositionedInitialMessages = true }
+            )
+        }
     }
 
     private var messageAvatarURLs: [URL] {
@@ -1566,6 +1714,19 @@ struct ChatRoomView: View {
         }
     }
 
+    private func triggerFixtureImageSendIfNeeded() {
+#if DEBUG
+        guard ChatRoomV2FeatureFlag.autoSendFixtureImage else { return }
+        guard loadsMessagesOnAppear else { return }
+        guard viewModel.connectionState == .connected else { return }
+        guard !hasTriggeredFixtureImageSend else { return }
+        hasTriggeredFixtureImageSend = true
+        Task { @MainActor in
+            await viewModel.sendFixtureImageForUITest()
+        }
+#endif
+    }
+
     private func scheduleInitialMessagePositionIfNeeded() {
         guard !hasPositionedInitialMessages else { return }
         guard !viewModel.messages.isEmpty else { return }
@@ -1641,7 +1802,7 @@ struct ChatRoomView: View {
     }
 }
 
-private struct ChatListScrollCommand: Equatable {
+struct ChatListScrollCommand: Equatable {
     enum Kind: Equatable {
         case none
         case scrollToBottom(animated: Bool)
@@ -3341,7 +3502,7 @@ private struct PendingImageSendScreen: View {
     }
 }
 
-private struct ChatImagePreviewScreen: View {
+struct ChatImagePreviewScreen: View {
     let message: Message
 
     @Environment(\.dismiss) private var dismiss
@@ -3388,6 +3549,7 @@ private struct ChatImagePreviewScreen: View {
                             .font(.system(size: 28, weight: .medium))
                             .foregroundStyle(.white.opacity(0.92))
                     }
+                    .accessibilityIdentifier("chat.imagePreview.close")
 
                     Spacer()
 
@@ -3395,6 +3557,7 @@ private struct ChatImagePreviewScreen: View {
                         .font(.headline)
                         .foregroundStyle(.white.opacity(0.92))
                         .lineLimit(1)
+                        .accessibilityIdentifier("chat.imagePreview.title")
 
                     Spacer()
 
@@ -3416,6 +3579,7 @@ private struct ChatImagePreviewScreen: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isSaving)
+                    .accessibilityIdentifier("chat.imagePreview.save")
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)

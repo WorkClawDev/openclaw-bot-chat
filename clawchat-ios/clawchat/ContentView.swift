@@ -11,7 +11,13 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if authManager.isAuthenticated {
+            if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2ImagePreview" {
+                ChatRoomV2ImagePreviewFixtureView(context: uiTestChatContext)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2LiveBridge" {
+                ChatRoomV2LiveBridgeFixtureView(context: uiTestChatContext)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
+                ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
+            } else if authManager.isAuthenticated {
                 HomeView()
                     .onAppear {
                         authManager.refreshCurrentUserIfNeeded()
@@ -27,6 +33,19 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(appearanceMode.colorScheme)
+    }
+
+    private var uiTestChatContext: ChatContext {
+        ChatContext(
+            id: "ui-test-chat-v2",
+            title: "Chat V2 Test",
+            subtitle: "",
+            isGroup: false,
+            groupId: nil,
+            bot: nil,
+            memberCount: nil,
+            avatarURLString: nil
+        )
     }
 }
 
