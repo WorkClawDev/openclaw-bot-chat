@@ -20,15 +20,40 @@ export type BotChatSendResult = {
   messageId: string;
 };
 
-type RuntimeLogger = {
+export type RuntimeLogger = {
   info(msg: string, fields?: Record<string, unknown>): void;
   warn(msg: string, fields?: Record<string, unknown>): void;
   error(msg: string, fields?: Record<string, unknown>): void;
   debug?(msg: string, fields?: Record<string, unknown>): void;
 };
 
-interface RuntimeHooks {
+export type BotChatTask = {
+  id: string;
+  title: string;
+  description?: string | null;
+  priority?: string;
+  status: string;
+  assignee_bot_id?: string | null;
+  progress?: number;
+  latest_status_note?: string | null;
+  [key: string]: unknown;
+};
+
+export type BotChatTaskExecutionResult =
+  | string
+  | {
+      note?: string;
+      latestStatusNote?: string;
+      latest_status_note?: string;
+      output?: string;
+      result?: string;
+      text?: string;
+    }
+  | void;
+
+export interface RuntimeHooks {
   emitMessage?: (message: BotChatMessage) => Promise<void>;
+  runTask?: (task: BotChatTask) => Promise<BotChatTaskExecutionResult>;
 }
 
 interface BootstrapResponse {
@@ -63,6 +88,8 @@ type MqttQos = 0 | 1 | 2;
 const BOT_CHAT_MQTT_KEEPALIVE_SECONDS = 30;
 const BOT_CHAT_MQTT_RECONNECT_MS = 1000;
 const BOT_CHAT_MQTT_CONNECT_TIMEOUT_MS = 30000;
+const BOT_CHAT_TASK_POLL_INTERVAL_MS = 15000;
+const BOT_CHAT_TASK_STARTED_PROGRESS = 1;
 
 export interface BotChatRuntime {
   start(
@@ -475,8 +502,8 @@ export function buildBotChatOutboundPayload(message: BotChatMessage): string {
     message_id: messageId,
   };
   const content =
-    contentType === "image"
-      ? { type: "image", body: message.text, ...(assetUrl ? { url: assetUrl } : {}), meta: contentMeta }
+    contentType === "image" || contentType === "audio"
+      ? { type: contentType, body: message.text, ...(assetUrl ? { url: assetUrl } : {}), meta: contentMeta }
       : { type: "text", body: message.text, meta: contentMeta };
   return JSON.stringify({
     id: messageId,
@@ -506,6 +533,9 @@ class DefaultBotChatRuntime implements BotChatRuntime {
   private qos: MqttQos = 1;
   private backendUrl?: string;
   private botKey?: string;
+  private taskPollTimer?: NodeJS.Timeout;
+  private taskPollActive = false;
+  private executingTaskIds = new Set<string>();
   private connectWaiters: Array<{
     resolve: () => void;
     reject: (error: Error) => void;
@@ -616,6 +646,8 @@ class DefaultBotChatRuntime implements BotChatRuntime {
         error: error.message,
       });
     });
+
+    this.startTaskPolling(config);
   }
 
   async stop(): Promise<void> {
@@ -624,6 +656,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     }
     this.started = false;
     this.connected = false;
+    this.stopTaskPolling();
     this.rejectConnectWaiters(new Error("mqtt client stopped"));
 
     await new Promise<void>((resolve) => {
@@ -853,6 +886,56 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     }
   }
 
+  private startTaskPolling(config: Record<string, unknown>): void {
+    if (!this.hooks?.runTask) {
+      this.logger?.debug?.("botchat.tasks.polling_skipped", {
+        reason: "missing_run_task_hook",
+      });
+      return;
+    }
+    const intervalMs = Math.max(
+      1000,
+      readNumber(config.taskPollingIntervalMs) ?? BOT_CHAT_TASK_POLL_INTERVAL_MS,
+    );
+    void this.pollTaskQueue();
+    this.taskPollTimer = setInterval(() => {
+      void this.pollTaskQueue();
+    }, intervalMs);
+    this.taskPollTimer.unref?.();
+  }
+
+  private stopTaskPolling(): void {
+    if (this.taskPollTimer) {
+      clearInterval(this.taskPollTimer);
+      this.taskPollTimer = undefined;
+    }
+    this.taskPollActive = false;
+    this.executingTaskIds.clear();
+  }
+
+  private async pollTaskQueue(): Promise<void> {
+    if (this.taskPollActive || !this.backendUrl || !this.botKey || !this.botId || !this.hooks?.runTask) {
+      return;
+    }
+    this.taskPollActive = true;
+    try {
+      await pollBotChatTasksOnce({
+        backendUrl: this.backendUrl,
+        botKey: this.botKey,
+        botId: this.botId,
+        hooks: this.hooks,
+        logger: this.logger,
+        executingTaskIds: this.executingTaskIds,
+      });
+    } catch (error) {
+      this.logger?.warn("botchat.tasks.poll_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.taskPollActive = false;
+    }
+  }
+
   private syncCheckpointsFromBootstrap(bootstrap: BootstrapResponse): void {
     for (const conversation of bootstrap.conversations ?? []) {
       const channelId = readString(conversation.conversation_id);
@@ -1024,6 +1107,191 @@ async function bootstrapBotWithRetry(
   }
 
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+export async function runBotChatTaskPollOnceForTest(params: {
+  backendUrl: string;
+  botKey: string;
+  botId: string;
+  hooks: RuntimeHooks;
+  logger?: RuntimeLogger;
+}): Promise<void> {
+  await pollBotChatTasksOnce({
+    ...params,
+    executingTaskIds: new Set<string>(),
+  });
+}
+
+async function pollBotChatTasksOnce(params: {
+  backendUrl: string;
+  botKey: string;
+  botId: string;
+  hooks: RuntimeHooks;
+  logger?: RuntimeLogger;
+  executingTaskIds: Set<string>;
+}): Promise<void> {
+  const runTask = params.hooks.runTask;
+  if (!runTask) {
+    params.logger?.debug?.("botchat.tasks.polling_skipped", {
+      reason: "missing_run_task_hook",
+    });
+    return;
+  }
+
+  const task = selectRunnableBotChatTask(
+    await fetchBotChatTasks(params.backendUrl, params.botKey),
+    params.botId,
+    params.executingTaskIds,
+  );
+  if (!task) {
+    return;
+  }
+
+  params.executingTaskIds.add(task.id);
+  let activeTask = task;
+  try {
+    if (task.status === "available") {
+      const claimed = await postBotChatTaskTransition(params.backendUrl, params.botKey, task.id, "claim", {
+        latest_status_note: "Robot claimed task",
+      });
+      if (!claimed) {
+        return;
+      }
+      activeTask = claimed;
+    }
+
+    if (activeTask.status === "claimed") {
+      const progressed = await postBotChatTaskTransition(params.backendUrl, params.botKey, activeTask.id, "progress", {
+        progress: Math.max(activeTask.progress ?? 0, BOT_CHAT_TASK_STARTED_PROGRESS),
+        latest_status_note: "Robot started task",
+      });
+      if (progressed) {
+        activeTask = progressed;
+      }
+    }
+
+    const result = await runTask(activeTask);
+    await postBotChatTaskTransition(params.backendUrl, params.botKey, activeTask.id, "complete", {
+      latest_status_note: summarizeTaskExecutionResult(result) ?? "Robot completed task",
+    });
+  } catch (error) {
+    await postBotChatTaskTransition(params.backendUrl, params.botKey, activeTask.id, "fail", {
+      latest_status_note: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    params.executingTaskIds.delete(task.id);
+  }
+}
+
+function selectRunnableBotChatTask(
+  tasks: BotChatTask[],
+  botId: string,
+  executingTaskIds: Set<string>,
+): BotChatTask | undefined {
+  return tasks.find((task) => {
+    if (!task.id || executingTaskIds.has(task.id)) {
+      return false;
+    }
+    if (task.status === "available" && !task.assignee_bot_id) {
+      return true;
+    }
+    if ((task.status === "claimed" || task.status === "in_progress") && task.assignee_bot_id === botId) {
+      return true;
+    }
+    return false;
+  });
+}
+
+async function fetchBotChatTasks(backendUrl: string, botKey: string): Promise<BotChatTask[]> {
+  const response = await fetch(buildBotChatRuntimeTaskUrl(backendUrl), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "X-Bot-Key": botKey,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`task list failed: ${response.status}`);
+  }
+  const json = (await response.json()) as { data?: unknown };
+  return Array.isArray(json.data) ? json.data.map(toBotChatTask).filter((task): task is BotChatTask => Boolean(task)) : [];
+}
+
+async function postBotChatTaskTransition(
+  backendUrl: string,
+  botKey: string,
+  taskId: string,
+  action: "claim" | "progress" | "complete" | "fail",
+  body: Record<string, unknown>,
+): Promise<BotChatTask | undefined> {
+  const response = await fetch(buildBotChatRuntimeTaskUrl(backendUrl, taskId, action), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Bot-Key": botKey,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    if (response.status === 409 || response.status === 404) {
+      return undefined;
+    }
+    throw new Error(`task ${action} failed: ${response.status}`);
+  }
+  const json = (await response.json()) as { data?: unknown };
+  return toBotChatTask(json.data);
+}
+
+function buildBotChatRuntimeTaskUrl(
+  backendUrl: string,
+  taskId?: string,
+  action?: "claim" | "progress" | "complete" | "fail",
+): string {
+  const base = `${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/tasks`;
+  if (!taskId) {
+    return base;
+  }
+  return `${base}/${encodeURIComponent(taskId)}/${action}`;
+}
+
+function toBotChatTask(value: unknown): BotChatTask | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const id = readString(value.id);
+  const title = readString(value.title);
+  const status = readString(value.status);
+  if (!id || !title || !status) {
+    return undefined;
+  }
+  return {
+    ...value,
+    id,
+    title,
+    status,
+    description: readString(value.description) ?? null,
+    assignee_bot_id: readString(value.assignee_bot_id) ?? null,
+    latest_status_note: readString(value.latest_status_note) ?? null,
+    progress: readNumber(value.progress),
+  };
+}
+
+function summarizeTaskExecutionResult(result: BotChatTaskExecutionResult): string | undefined {
+  if (typeof result === "string") {
+    return result.trim() || undefined;
+  }
+  if (!isRecord(result)) {
+    return undefined;
+  }
+  return (
+    readString(result.latestStatusNote) ??
+    readString(result.latest_status_note) ??
+    readString(result.note) ??
+    readString(result.output) ??
+    readString(result.result) ??
+    readString(result.text)
+  );
 }
 
 function delay(ms: number): Promise<void> {

@@ -118,6 +118,7 @@ type S3StorageConfig struct {
 
 type AssetConfig struct {
 	MaxImageSizeMB int `mapstructure:"max_image_size_mb"`
+	MaxAudioSizeMB int `mapstructure:"max_audio_size_mb"`
 }
 
 // LogConfig holds logging settings
@@ -203,6 +204,7 @@ func Load(configPath string) (*Config, error) {
 		"storage.s3.secret_key",
 		"storage.s3.ssl",
 		"asset.max_image_size_mb",
+		"asset.max_audio_size_mb",
 		"log.level",
 		"log.format",
 	)
@@ -264,6 +266,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if cfg.Asset.MaxImageSizeMB == 0 {
 		cfg.Asset.MaxImageSizeMB = 10
+	}
+	if cfg.Asset.MaxAudioSizeMB == 0 {
+		cfg.Asset.MaxAudioSizeMB = 20
 	}
 	if !cfg.Storage.PrivateRead {
 		cfg.Storage.PrivateRead = true

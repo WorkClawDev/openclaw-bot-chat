@@ -184,6 +184,58 @@ CREATE INDEX idx_bot_group_members_group_id ON bot_group_members(group_id);
 CREATE INDEX idx_bot_group_members_bot_id ON bot_group_members(bot_id);
 
 -- ============================================================
+-- Tables: tasks, task_dependencies, task_events
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tasks (
+    id                  UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+    owner_id            UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title               VARCHAR(255) NOT NULL,
+    description         TEXT,
+    priority            VARCHAR(16)  NOT NULL DEFAULT 'normal',
+    status              VARCHAR(32)  NOT NULL DEFAULT 'pending',
+    assignee_bot_id     UUID         REFERENCES bots(id) ON DELETE SET NULL,
+    estimated_start_at  TIMESTAMPTZ,
+    estimated_end_at    TIMESTAMPTZ,
+    actual_start_at     TIMESTAMPTZ,
+    actual_end_at       TIMESTAMPTZ,
+    progress            INTEGER      NOT NULL DEFAULT 0,
+    latest_status_note  TEXT,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    deleted_at          TIMESTAMPTZ
+);
+
+CREATE INDEX idx_tasks_owner_id ON tasks(owner_id);
+CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_priority ON tasks(priority);
+CREATE INDEX idx_tasks_assignee_bot_id ON tasks(assignee_bot_id);
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    task_id             UUID        NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id  UUID        NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(task_id, depends_on_task_id)
+);
+
+CREATE INDEX idx_task_dependencies_task_id ON task_dependencies(task_id);
+CREATE INDEX idx_task_dependencies_depends_on_task_id ON task_dependencies(depends_on_task_id);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    task_id     UUID        NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    actor_type  VARCHAR(16) NOT NULL,
+    actor_id    UUID,
+    status      VARCHAR(32) NOT NULL,
+    progress    INTEGER     NOT NULL DEFAULT 0,
+    note        TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_task_events_task_id ON task_events(task_id);
+CREATE INDEX idx_task_events_created_at ON task_events(created_at);
+
+-- ============================================================
 -- Table: audit_logs
 -- ============================================================
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -231,4 +283,7 @@ CREATE TRIGGER update_assets_updated_at BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_groups_updated_at BEFORE UPDATE ON groups
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

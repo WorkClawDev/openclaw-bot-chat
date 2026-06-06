@@ -293,21 +293,31 @@ export default function SettingsPage() {
               <section className="space-y-8">
                 <div>
                   <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest ml-1 mb-4">Background Theme</h2>
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                     {[
-                      { id: 'default', name: 'Default', colors: 'bg-slate-100' },
-                      { id: 'dark', name: 'Dark Night', colors: 'bg-slate-900' },
-                      { id: 'nature', name: 'Nature', colors: 'bg-emerald-100' },
-                      { id: 'sunset', name: 'Sunset', colors: 'bg-orange-100' },
-                      { id: 'ocean', name: 'Ocean', colors: 'bg-sky-100' },
-                      { id: 'minimal', name: 'Minimal', colors: 'bg-white border' },
+                      { id: 'default', name: 'Default', preview: '#e2e8f0' },
+                      { id: 'dark', name: 'Dark Night', preview: '#0f172a' },
+                      { id: 'nature', name: 'Nature', preview: '#bbf7d0' },
+                      { id: 'sunset', name: 'Sunset', preview: '#fed7aa' },
+                      { id: 'ocean', name: 'Ocean', preview: '#bae6fd' },
+                      { id: 'minimal', name: 'Minimal', preview: '#ffffff', previewBorder: '#e2e8f0' },
                     ].map((theme) => (
                       <button
                         key={theme.id}
                         onClick={() => setBackground(theme.id as BackgroundType)}
-                        className={`p-3 rounded-xl border-2 transition-all text-left space-y-2 ${background === theme.id ? 'border-sky-500 bg-sky-50/50' : 'border-transparent bg-slate-50 hover:bg-slate-100'}`}
+                        className={`p-3 rounded-xl border-2 transition-all text-left space-y-2 ${
+                          background === theme.id
+                            ? 'border-sky-500 bg-sky-50/50'
+                            : 'border-transparent bg-slate-50 hover:bg-slate-100'
+                        }`}
                       >
-                        <div className={`w-full h-12 rounded-lg ${theme.colors}`} />
+                        <div
+                          className="w-full h-12 rounded-lg"
+                          style={{
+                            backgroundColor: theme.preview,
+                            border: theme.previewBorder ? `1px solid ${theme.previewBorder}` : undefined,
+                          }}
+                        />
                         <span className="block truncate text-center text-sm font-bold text-slate-700">{theme.name}</span>
                       </button>
                     ))}

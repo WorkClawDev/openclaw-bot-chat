@@ -33,6 +33,33 @@ export async function uploadImageAsset(
   })
 }
 
+export async function uploadAudioAsset(
+  file: File,
+  options: { conversationId?: string; fileName?: string } = {},
+): Promise<Asset> {
+  const prepared = await assetsApi.prepareAudioUpload({
+    file_name: options.fileName || file.name,
+    content_type: file.type,
+    size: file.size,
+    conversation_id: options.conversationId,
+  })
+
+  const uploadResponse = await fetch(prepared.upload.url, {
+    method: prepared.upload.method || 'PUT',
+    headers: prepared.upload.headers,
+    body: file,
+  })
+
+  if (!uploadResponse.ok) {
+    throw new Error(`Upload failed with status ${uploadResponse.status}`)
+  }
+
+  return assetsApi.completeAudioUpload({
+    asset_id: prepared.asset.id || '',
+    object_key: prepared.asset.object_key || '',
+  })
+}
+
 export async function cropAndUploadAvatar(file: File): Promise<string> {
   const cropped = await cropImageToSquarePng(file, AVATAR_SIZE)
   const asset = await uploadImageAsset(cropped, { fileName: buildAvatarFileName(file.name) })

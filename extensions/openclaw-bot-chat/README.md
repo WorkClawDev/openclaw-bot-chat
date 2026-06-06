@@ -99,9 +99,14 @@ The extension uses the BotChat bot-runtime contract:
 
 - `GET /api/v1/bot-runtime/bootstrap` with `X-Bot-Key`
 - `GET /api/v1/bot-runtime/messages/<conversation_id>?limit=<n>&after_seq=<seq>` with `X-Bot-Key`
+- `GET /api/v1/bot-runtime/tasks` with `X-Bot-Key`
+- `POST /api/v1/bot-runtime/tasks` with `X-Bot-Key`
+- `POST /api/v1/bot-runtime/tasks/<task_id>/{claim|progress|complete|fail}` with `X-Bot-Key`
 - MQTT publish topics that BotChat can persist:
   - DM: `chat/dm/user/<userId>/bot/<botId>`
   - Group: `chat/group/<groupId>`
+
+Task assignment does not execute a task by itself. A running bot process must consume the task runtime API and post progress, completion, or failure. The extension polls runnable tasks when the OpenClaw host supplies `channelRuntime.runTask` or `channelRuntime.tasks.runTask`; without that hook it leaves task state unchanged instead of claiming work it cannot execute. Completed output is stored on the task as the latest status note and in the task history shown by the `/tasks` inspector.
 
 ## Target Mapping
 

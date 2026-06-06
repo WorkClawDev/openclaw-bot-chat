@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	"github.com/openclaw-bot-chat/backend/internal/model"
 	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
@@ -20,6 +21,14 @@ func NewAssetHandler(assetService *service.AssetService) *AssetHandler {
 }
 
 func (h *AssetHandler) PrepareImageUpload(c *gin.Context) {
+	h.prepareUpload(c, "image")
+}
+
+func (h *AssetHandler) PrepareAudioUpload(c *gin.Context) {
+	h.prepareUpload(c, "audio")
+}
+
+func (h *AssetHandler) prepareUpload(c *gin.Context, kind string) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
 		apiresponse.Unauthorized(c, "unauthorized")
@@ -32,7 +41,14 @@ func (h *AssetHandler) PrepareImageUpload(c *gin.Context) {
 		return
 	}
 
-	prepared, err := h.assetService.PrepareImageUpload(c.Request.Context(), userID, req)
+	var prepared *service.PreparedUpload
+	var err error
+	switch kind {
+	case "audio":
+		prepared, err = h.assetService.PrepareAudioUpload(c.Request.Context(), userID, req)
+	default:
+		prepared, err = h.assetService.PrepareImageUpload(c.Request.Context(), userID, req)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAssetProviderDisabled),
@@ -50,6 +66,14 @@ func (h *AssetHandler) PrepareImageUpload(c *gin.Context) {
 }
 
 func (h *AssetHandler) CompleteImageUpload(c *gin.Context) {
+	h.completeUpload(c, "image")
+}
+
+func (h *AssetHandler) CompleteAudioUpload(c *gin.Context) {
+	h.completeUpload(c, "audio")
+}
+
+func (h *AssetHandler) completeUpload(c *gin.Context, kind string) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
 		apiresponse.Unauthorized(c, "unauthorized")
@@ -62,7 +86,14 @@ func (h *AssetHandler) CompleteImageUpload(c *gin.Context) {
 		return
 	}
 
-	asset, err := h.assetService.CompleteImageUpload(c.Request.Context(), userID, req)
+	var asset *model.AssetPayload
+	var err error
+	switch kind {
+	case "audio":
+		asset, err = h.assetService.CompleteAudioUpload(c.Request.Context(), userID, req)
+	default:
+		asset, err = h.assetService.CompleteImageUpload(c.Request.Context(), userID, req)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAssetNotFound):
@@ -82,8 +113,23 @@ func (h *AssetHandler) CompleteImageUpload(c *gin.Context) {
 }
 
 func (h *AssetHandler) RedirectPublicImage(c *gin.Context) {
+	h.redirectPublicAsset(c, "image")
+}
+
+func (h *AssetHandler) RedirectPublicAudio(c *gin.Context) {
+	h.redirectPublicAsset(c, "audio")
+}
+
+func (h *AssetHandler) redirectPublicAsset(c *gin.Context, kind string) {
 	assetID := c.Param("id")
-	url, err := h.assetService.GetPublicImageURL(c.Request.Context(), assetID)
+	var url string
+	var err error
+	switch kind {
+	case "audio":
+		url, err = h.assetService.GetPublicAudioURL(c.Request.Context(), assetID)
+	default:
+		url, err = h.assetService.GetPublicImageURL(c.Request.Context(), assetID)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAssetNotFound):

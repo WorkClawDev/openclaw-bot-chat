@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Product Operations - Q3 2026 Timeline</title>
+  <style>
+    :root {
+      --accent: #0e91e9;
+      --accent-deep: #0768d9;
+      --navy: #19243c;
+      --slate-900: #1e293b;
+      --slate-700: #475569;
+      --slate-600: #64748b;
+      --slate-500: #94a3b8;
+      --slate-300: #cbd5e1;
+      --slate-200: #e2e8f0;
+      --slate-100: #f1f5f9;
+      --blue: #1682f0;
+      --violet: #8b5cf6;
+      --green: #34b27b;
+      --amber: #f59e0b;
+      --rose: #ef5a74;
+      --week: 74px;
+      --timeline-width: calc(var(--week) * 14);
+      --row: 31px;
+      --group: 34px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 1180px;
+      min-height: 100vh;
+      margin: 0;
+      padding: 18px;
+      overflow: auto;
+      color: var(--slate-900);
+      background:
+        radial-gradient(circle at 14% 8%, rgba(255,255,255,.96), rgba(255,255,255,0) 31%),
+        radial-gradient(circle at 92% 92%, rgba(186,211,239,.35), rgba(255,255,255,0) 35%),
+        linear-gradient(145deg, #f0f4f8 0%, #e2e8f0 100%);
+      font: 14px/1.35 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: 116px minmax(0, 1fr);
+      min-height: 970px;
+      overflow: hidden;
+      border: 1px solid rgba(188, 204, 224, .94);
+      border-radius: 24px;
+      background: rgba(255,255,255,.74);
+      box-shadow: 0 18px 34px rgba(56, 88, 125, .18), inset 0 1px rgba(255,255,255,.9);
+      backdrop-filter: blur(22px);
+    }
+
+    .rail {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      border-right: 1px solid rgba(203,213,225,.82);
+      background: rgba(248,251,255,.62);
+    }
+
+    .brand {
+      display: grid;
+      width: 70px;
+      height: 70px;
+      margin: 20px 0 23px;
+      place-items: center;
+      border-radius: 20px;
+      color: white;
+      background: linear-gradient(145deg, #0e91e9, #0662dc);
+      box-shadow: 0 8px 15px rgba(14,145,233,.24);
+    }
+
+    .brand svg { width: 42px; height: 42px; }
+
+    .rail-links {
+      display: grid;
+      gap: 10px;
+      width: 100%;
+      padding: 0 16px;
+    }
+
+    .rail-link {
+      display: grid;
+      min-height: 66px;
+      place-content: center;
+      gap: 5px;
+      border: 0;
+      border-radius: 11px;
+      color: #4a5d7b;
+      background: transparent;
+      text-align: center;
+      transition: .2s ease;
+    }
+
+    .rail-link svg { width: 25px; height: 25px; margin: auto; stroke-width: 1.8; }
+    .rail-link span { font-size: 12px; }
+    .rail-link:hover { color: var(--accent-deep); background: rgba(14,145,233,.06); }
+    .rail-link.active { color: #0668dc; background: linear-gradient(145deg, rgba(225,239,255,.95), rgba(238,246,255,.62)); }
+    .rail-bottom { margin-top: auto; margin-bottom: 24px; }
+
+    .workspace { min-width: 0; overflow: hidden; }
+
+    .header {
+      padding: 25px 34px 0;
+      border-bottom: 1px solid rgba(203,213,225,.68);
+      background: linear-gradient(115deg, rgba(255,255,255,.58), rgba(240,247,255,.35));
+    }
+
+    .topline, .title-row, .toolbar, .footer, .footer-left, .top-actions, .avatars,
+    .tabs, .stats, .stats-card, .zoom-controls, .segmented, .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+    }
+
+    .topline { justify-content: space-between; }
+
+    .breadcrumb {
+      color: var(--slate-700);
+      font-size: 15px;
+      letter-spacing: -.1px;
+    }
+    .breadcrumb .primary { color: #006fdd; }
+    .breadcrumb .slash { margin: 0 12px; color: var(--slate-500); }
+
+    .top-actions { gap: 20px; }
+    .avatars { padding-left: 12px; }
+    .avatar {
+      display: inline-grid;
+      width: 36px;
+      height: 36px;
+      margin-left: -9px;
+      place-items: center;
+      border: 2px solid rgba(255,255,255,.94);
+      border-radius: 50%;
+      color: white;
+      box-shadow: 0 3px 7px rgba(32,60,94,.15);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .avatar.blue { background: #0875df; }
+    .avatar.violet { background: #8b5ce1; }
+    .avatar.green { background: #1d9b69; }
+    .avatar.orange { background: #ec790e; }
+    .avatar.more { background: #334155; }
+
+    .icon-btn {
+      display: inline-grid;
+      width: 45px;
+      height: 45px;
+      place-items: center;
+      border: 1px solid rgba(203,213,225,.84);
+      border-radius: 10px;
+      color: #364863;
+      background: rgba(255,255,255,.76);
+      box-shadow: 0 4px 9px rgba(91,116,144,.08);
+      transition: .2s ease;
+    }
+    .icon-btn:hover { color: var(--accent-deep); border-color: rgba(14,145,233,.35); background: white; }
+    .icon-btn svg { width: 22px; height: 22px; }
+    .bell { position: relative; }
+    .bell::after {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      width: 7px;
+      height: 7px;
+      border: 2px solid white;
+      border-radius: 50%;
+      background: #0e7ff0;
+      content: "";
+    }
+
+    h1 {
+      margin: 15px 0 13px;
+      color: #1d2840;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -.8px;
+    }
+
+    .stats { gap: 18px; }
+    .stats-card {
+      width: 267px;
+      height: 82px;
+      gap: 17px;
+      padding: 16px 19px;
+      border: 1px solid rgba(203,213,225,.88);
+      border-radius: 11px;
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 3px 8px rgba(80,105,135,.08);
+    }
+    .stats-card.narrow { width: 208px; }
+    .stat-icon {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      border-radius: 50%;
+    }
+    .stat-icon svg { width: 27px; height: 27px; }
+    .stat-icon.task { color: white; background: linear-gradient(145deg, #2699ff, #167cf0); }
+    .stat-icon.pie { color: white; background: linear-gradient(145deg, #72d9ad, #45bb89); }
+    .stat-icon.track { color: #119061; background: #e7f7f0; }
+    .stat-value { color: #1d2840; font-size: 25px; font-weight: 700; line-height: 1; }
+    .stat-label { margin-top: 5px; color: var(--slate-700); font-size: 13px; }
+
+    .tabs { gap: 27px; margin-top: 15px; }
+    .tab {
+      position: relative;
+      padding: 9px 7px 13px;
+      border: 0;
+      color: #29364f;
+      background: transparent;
+      font-size: 15px;
+    }
+    .tab::after {
+      position: absolute;
+      right: 0;
+      bottom: -1px;
+      left: 0;
+      height: 3px;
+      border-radius: 2px 2px 0 0;
+      background: transparent;
+      content: "";
+    }
+    .tab.active { color: #006ce4; }
+    .tab.active::after { background: #087af2; }
+
+    .toolbar {
+      justify-content: space-between;
+      gap: 24px;
+      height: 73px;
+      padding: 0 25px;
+      border-bottom: 1px solid rgba(203,213,225,.74);
+      background: rgba(255,255,255,.55);
+    }
+    .toolbar-left, .toolbar-right { gap: 14px; }
+
+    .button {
+      display: inline-flex;
+      height: 40px;
+      align-items: center;
+      gap: 9px;
+      padding: 0 17px;
+      border: 1px solid rgba(203,213,225,.9);
+      border-radius: 9px;
+      color: #31415d;
+      background: rgba(255,255,255,.8);
+      transition: .2s ease;
+    }
+    .button svg { width: 18px; height: 18px; }
+    .button:hover { border-color: rgba(14,145,233,.46); color: #0875df; }
+    .button.primary {
+      border-color: #0873de;
+      color: white;
+      background: linear-gradient(150deg, #0f8cf1, #0865d9);
+      box-shadow: 0 5px 10px rgba(14,145,233,.18);
+    }
+    .button.filter-active { color: #0875df; border-color: #8bc8f2; background: #eff8ff; }
+
+    .search {
+      position: relative;
+      margin-left: 48px;
+    }
+    .search svg {
+      position: absolute;
+      top: 11px;
+      left: 14px;
+      width: 18px;
+      height: 18px;
+      color: #536581;
+    }
+    .search input {
+      width: 352px;
+      height: 40px;
+      padding: 0 15px 0 40px;
+      border: 1px solid rgba(203,213,225,.96);
+      border-radius: 8px;
+      outline: 0;
+      color: #32415d;
+      background: rgba(255,255,255,.7);
+      transition: .2s ease;
+    }
+    .search input:focus { border-color: rgba(14,145,233,.7); box-shadow: 0 0 0 3px rgba(14,145,233,.11); }
+
+    .segmented {
+      overflow: hidden;
+      border: 1px solid rgba(203,213,225,.96);
+      border-radius: 8px;
+      background: rgba(255,255,255,.66);
+    }
+    .segment {
+      height: 38px;
+      padding: 0 19px;
+      border: 0;
+      border-right: 1px solid rgba(203,213,225,.86);
+      color: #25334d;
+      background: transparent;
+    }
+    .segment:last-child { border-right: 0; }
+    .segment.active { color: #006ce4; background: #edf6ff; box-shadow: inset 0 0 0 1px #acd6ff; }
+
+    .zoom-controls { gap: 10px; margin-left: 56px; color: #34425a; }
+    .zoom-button {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid rgba(203,213,225,.96);
+      border-radius: 8px;
+      color: #40516b;
+      background: rgba(255,255,255,.76);
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    .gantt {
+      display: grid;
+      grid-template-columns: 448px minmax(0, 1fr);
+      height: 572px;
+      overflow: hidden;
+      background: rgba(255,255,255,.47);
+    }
+
+    .task-panel {
+      position: relative;
+      z-index: 3;
+      border-right: 1px solid rgba(203,213,225,.84);
+      background: rgba(255,255,255,.72);
+      box-shadow: 7px 0 13px rgba(75,98,128,.035);
+    }
+
+    .task-head {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) 95px 102px;
+      height: 64px;
+      align-items: center;
+      padding: 0 23px;
+      border-bottom: 1px solid rgba(203,213,225,.78);
+      color: #243148;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .task-body { height: 508px; overflow: hidden; }
+
+    .group-row {
+      display: flex;
+      height: var(--group);
+      align-items: center;
+      gap: 9px;
+      padding: 0 17px;
+      border-bottom: 1px solid rgba(226,232,240,.82);
+      color: #1e2a40;
+      background: rgba(248,251,255,.78);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .group-toggle {
+      display: grid;
+      width: 16px;
+      height: 16px;
+      place-items: center;
+      border: 0;
+      color: #1f334d;
+      background: transparent;
+      transition: transform .2s ease;
+    }
+    .group-toggle svg { width: 14px; height: 14px; }
+    .group-row.collapsed .group-toggle { transform: rotate(-90deg); }
+    .count { color: var(--slate-500); font-weight: 500; }
+
+    .dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+    }
+    .dot.blue { background: var(--blue); }
+    .dot.violet { background: var(--violet); }
+    .dot.green { background: var(--green); }
+    .dot.amber { background: var(--amber); }
+    .dot.rose { background: var(--rose); }
+
+    .task-row {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) 95px 102px;
+      height: var(--row);
+      align-items: center;
+      padding: 0 23px 0 25px;
+      border-bottom: 1px solid rgba(226,232,240,.78);
+      color: #31405a;
+      font-size: 12px;
+      transition: opacity .2s ease;
+    }
+    .task-row.hidden { opacity: .18; }
+    .task-name {
+      position: relative;
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 10px;
+      padding-left: 17px;
+      white-space: nowrap;
+    }
+    .task-name::before {
+      position: absolute;
+      top: -20px;
+      bottom: 8px;
+      left: 0;
+      width: 9px;
+      border-bottom: 1px dashed #cbd5e1;
+      border-left: 1px dashed #cbd5e1;
+      content: "";
+    }
+    .task-name span:last-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mini-avatar {
+      display: grid;
+      width: 23px;
+      height: 23px;
+      place-items: center;
+      border-radius: 50%;
+      color: white;
+      font-size: 9px;
+      font-weight: 700;
+    }
+    .dates { color: #34425d; white-space: nowrap; }
+
+    .timeline-panel { min-width: 0; overflow: auto hidden; }
+    .timeline-canvas { position: relative; width: var(--timeline-width); min-width: var(--timeline-width); }
+
+    .month-row {
+      display: grid;
+      grid-template-columns: calc(var(--week) * 5) calc(var(--week) * 4) calc(var(--week) * 5);
+      height: 30px;
+      border-bottom: 1px solid rgba(203,213,225,.88);
+      background: rgba(248,251,255,.82);
+      color: #243148;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+    }
+    .month-row div {
+      display: grid;
+      place-items: center;
+      border-right: 1px solid rgba(203,213,225,.72);
+    }
+    .month-row div:last-child { border-right: 0; }
+
+    .week-row {
+      display: grid;
+      grid-template-columns: repeat(14, var(--week));
+      height: 34px;
+      border-bottom: 1px solid rgba(203,213,225,.88);
+      background: rgba(255,255,255,.66);
+    }
+    .week-row div {
+      display: grid;
+      place-items: center;
+      border-right: 1px solid rgba(203,213,225,.72);
+      color: #334155;
+      font-size: 10px;
+      line-height: 1.35;
+      text-align: center;
+    }
+    .week-row b { display: block; font-size: 10px; font-weight: 500; }
+    .week-row span { display: block; color: #40506a; }
+
+    .chart-body {
+      position: relative;
+      height: 508px;
+      overflow: hidden;
+      background-color: rgba(255,255,255,.52);
+      background-image:
+        linear-gradient(to right, rgba(203,213,225,.62) 1px, transparent 1px),
+        linear-gradient(to right, rgba(226,232,240,.50) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(226,232,240,.62) 1px, transparent 1px);
+      background-position: 0 0, 0 0, 0 0;
+      background-size: var(--week) 100%, calc(var(--week) / 4) 100%, 100% var(--row);
+    }
+
+    .dependency-layer {
+      position: absolute;
+      inset: 0;
+      width: var(--timeline-width);
+      height: 508px;
+      overflow: visible;
+      pointer-events: none;
+    }
+    .dependency-layer path {
+      fill: none;
+      stroke: #8390a4;
+      stroke-width: 1.25;
+      marker-end: url(#arrow);
+    }
+
+    .bar {
+      position: absolute;
+      left: calc(var(--start) * var(--week));
+      top: var(--top);
+      width: calc(var(--span) * var(--week));
+      height: 20px;
+      overflow: hidden;
+      border: 1px solid var(--bar-border);
+      border-radius: 5px;
+      color: var(--bar-text);
+      background: var(--bar-bg);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.55), 0 2px 4px rgba(67,87,115,.08);
+      font-size: 10px;
+      transition: opacity .2s ease, filter .2s ease;
+    }
+    .bar::before {
+      position: absolute;
+      inset: 2px auto 2px 2px;
+      width: calc(var(--progress) - 4px);
+      max-width: calc(100% - 4px);
+      border-radius: 3px;
+      background: var(--bar-fill);
+      content: "";
+    }
+    .bar-label {
+      position: absolute;
+      right: 7px;
+      line-height: 18px;
+      font-weight: 700;
+    }
+    .bar.blue { --bar-border: #167cf0; --bar-bg: #d9ecff; --bar-fill: #4e9ff3; --bar-text: #0758c2; }
+    .bar.violet { --bar-border: #8b5cf6; --bar-bg: #eadfff; --bar-fill: #a47aea; --bar-text: #5220b7; }
+    .bar.green { --bar-border: #24a774; --bar-bg: #d8f3e8; --bar-fill: #5bc096; --bar-text: #087044; }
+    .bar.amber { --bar-border: #f59e0b; --bar-bg: #fff1ca; --bar-fill: #ffbe4f; --bar-text: #ae5d00; }
+    .bar.rose { --bar-border: #ef5a74; --bar-bg: #ffe0e7; --bar-fill: #f4889d; --bar-text: #b92442; }
+
+    .timeline-panel.filtering .bar:not(.in-focus) { opacity: .22; filter: saturate(.5); }
+    .timeline-item.hidden { opacity: .14; }
+
+    .milestone {
+      position: absolute;
+      top: var(--top);
+      left: calc(var(--start) * var(--week));
+      width: 12px;
+      height: 12px;
+      border: 1px solid rgba(16,71,126,.35);
+      background: var(--color);
+      transform: rotate(45deg);
+      box-shadow: 0 2px 3px rgba(31,49,77,.12);
+    }
+
+    .today-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc(2.17 * var(--week));
+      z-index: 4;
+      width: 2px;
+      background: #1682f0;
+      box-shadow: 0 0 0 1px rgba(22,130,240,.03);
+    }
+    .today-badge {
+      position: absolute;
+      top: -1px;
+      left: 50%;
+      padding: 3px 7px;
+      border-radius: 8px;
+      color: white;
+      background: #087af2;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: .25px;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 3px 7px rgba(14,145,233,.18);
+    }
+
+    .footer {
+      height: 64px;
+      justify-content: space-between;
+      padding: 0 36px;
+      border-top: 1px solid rgba(203,213,225,.74);
+      color: #40506a;
+      background: rgba(247,250,255,.66);
+      font-size: 13px;
+    }
+    .footer-left { gap: 27px; }
+    .legend { display: flex; align-items: center; gap: 9px; }
+    .legend .dot { width: 13px; height: 13px; }
+    .diamond {
+      width: 13px;
+      height: 13px;
+      margin-right: 2px;
+      background: #64748b;
+      transform: rotate(45deg);
+    }
+    .footer-right { display: flex; align-items: center; gap: 20px; }
+    .footer-right svg { width: 18px; height: 18px; }
+
+    .toast {
+      position: fixed;
+      right: 32px;
+      bottom: 30px;
+      z-index: 20;
+      padding: 12px 17px;
+      border: 1px solid rgba(125,211,252,.7);
+      border-radius: 10px;
+      color: #0758a7;
+      background: rgba(239,248,255,.96);
+      box-shadow: 0 10px 22px rgba(51,99,150,.16);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: .25s ease;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 1320px) {
+      body { padding: 10px; }
+      .app-shell { border-radius: 18px; }
+      .header { padding-right: 22px; padding-left: 22px; }
+      .search { margin-left: 8px; }
+      .search input { width: 270px; }
+      .zoom-controls { margin-left: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="rail">
+      <div class="brand" aria-label="OpenClaw Bot Chat">
+        <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M15 13c-3.2 1.5-5.3 4.9-5.3 8.6v6.9c0 4.1 3.4 7.5 7.5 7.5h13.6c4.1 0 7.5-3.4 7.5-7.5v-6.9c0-3.8-2.2-7.2-5.5-8.7" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+          <path d="M16.5 11.5 12 7m15-2.5v6M35.5 11.5 40 7M17 24h14c2.2 0 4 1.8 4 4v1c0 2.2-1.8 4-4 4H17c-2.2 0-4-1.8-4-4v-1c0-2.2 1.8-4 4-4Z" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/>
+          <circle cx="19" cy="28.5" r="1.8" fill="currentColor"/><circle cx="29" cy="28.5" r="1.8" fill="currentColor"/>
+        </svg>
+      </div>
+      <nav class="rail-links" aria-label="Primary navigation">
+        <button class="rail-link" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg><span>Home</span>
+        </button>
+        <button class="rail-link" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.6 2.6L16.5 8"/><path d="M17.5 4.8 20 2.4"/></svg><span>My Work</span>
+        </button>
+        <button class="rail-link active" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7.5h18v12H3z"/><path d="M3 7.5 6.2 4h5l2.1 3.5"/></svg><span>Projects</span>
+        </button>
+        <button class="rail-link" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="3"/><circle cx="16.5" cy="9" r="2.5"/><path d="M2.8 19c.5-3.4 2.2-5.2 5.2-5.2s4.7 1.8 5.2 5.2M14 14c3.7-.4 6 1.2 6.5 4.5"/></svg><span>Team</span>
+        </button>
+        <button class="rail-link" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 20h17M6 18V9m4 9V5m4 13v-7m4 7V3"/></svg><span>Reports</span>
+        </button>
+      </nav>
+      <div class="rail-bottom">
+        <button class="rail-link" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7.7 7.7 0 0 0 .1-6l2-1.5-2-3.4-2.5 1a8.2 8.2 0 0 0-5.2-2.1l-.4-2.6H7.5L7.1 3a8 8 0 0 0-4.6 2.7L.1 4.8l-2 3.4 2.1 1.6a7.6 7.6 0 0 0 0 5L-2 16.4l2 3.4 2.5-1a8.1 8.1 0 0 0 4.6 2.6l.4 2.6h3.9l.4-2.6A8.1 8.1 0 0 0 17 19l2.4 1 2-3.4Z" transform="translate(2 -0.4) scale(.83)"/></svg><span>Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="header">
+        <div class="topline">
+          <div class="breadcrumb"><span class="primary">Projects</span><span class="slash">/</span><span>Product Operations</span></div>
+          <div class="top-actions">
+            <div class="avatars" aria-label="Project members">
+              <span class="avatar blue">AK</span><span class="avatar violet">LM</span><span class="avatar green">JW</span><span class="avatar orange">SR</span><span class="avatar more">+3</span>
+            </div>
+            <button class="icon-btn bell" type="button" aria-label="Notifications">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8"/><path d="M10 20h4"/></svg>
+            </button>
+            <button class="icon-btn" type="button" aria-label="Project settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7.7 7.7 0 0 0 .1-6l2-1.5-2-3.4-2.5 1a8.2 8.2 0 0 0-5.2-2.1l-.4-2.6H8l-.4 2.6A8.1 8.1 0 0 0 3 5.5l-2.4-1-2 3.4 2.1 1.6a7.6 7.6 0 0 0 0 5l-2.1 1.6 2 3.4 2.5-1A8.1 8.1 0 0 0 7.6 21l.4 2.6h3.9l.4-2.6a8.1 8.1 0 0 0 4.6-2.6l2.4 1 2-3.4Z" transform="translate(2.1 2) scale(.82)"/></svg>
+            </button>
+          </div>
+        </div>
+        <h1>Product Operations — Q3 2026</h1>
+        <div class="stats">
+          <div class="stats-card">
+            <div class="stat-icon task">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 6h10M9 12h10M9 18h10"/><circle cx="5" cy="6" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="5" cy="18" r="1"/></svg>
+            </div>
+            <div><div class="stat-value">12</div><div class="stat-label">Tasks</div></div>
+          </div>
+          <div class="stats-card">
+            <div class="stat-icon pie">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3v9h9"/><path d="M20.2 15.8A9 9 0 1 1 8.3 3.8"/></svg>
+            </div>
+            <div><div class="stat-value">68%</div><div class="stat-label">Complete</div></div>
+          </div>
+          <div class="stats-card narrow">
+            <div class="stat-icon track">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 16 5-5 4 3 7-8"/><circle cx="4" cy="16" r="1.2" fill="currentColor"/><circle cx="9" cy="11" r="1.2" fill="currentColor"/><circle cx="13" cy="14" r="1.2" fill="currentColor"/><circle cx="20" cy="6" r="1.2" fill="currentColor"/></svg>
+            </div>
+            <div><div class="stat-value">8</div><div class="stat-label">On Track</div></div>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="Project views">
+          <button class="tab" type="button">Board</button>
+          <button class="tab active" type="button">Timeline</button>
+          <button class="tab" type="button">List</button>
+          <button class="tab" type="button">Calendar</button>
+        </nav>
+      </header>
+
+      <section class="toolbar" aria-label="Timeline controls">
+        <div class="toolbar-left">
+          <button class="button primary" id="addTask" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add Task
+          </button>
+          <button class="button" id="filterButton" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16l-6.4 7.2V19l-3.2-1.7v-5.1Z"/></svg>Filter
+          </button>
+          <label class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6"/><path d="m16 16 5 5"/></svg>
+            <input id="searchInput" type="search" placeholder="Search tasks..." aria-label="Search tasks">
+          </label>
+        </div>
+        <div class="toolbar-right">
+          <div class="segmented" aria-label="Timeline scale">
+            <button class="segment" type="button">Day</button><button class="segment active" type="button">Week</button><button class="segment" type="button">Month</button>
+          </div>
+          <div class="zoom-controls">
+            <button class="zoom-button" id="zoomOut" type="button" aria-label="Zoom out">−</button><span>Zoom</span><button class="zoom-button" id="zoomIn" type="button" aria-label="Zoom in">+</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="gantt" aria-label="Product Operations timeline">
+        <div class="task-panel">
+          <div class="task-head"><span>Task</span><span>Assignee</span><span>Dates</span></div>
+          <div class="task-body">
+            <div class="group-row" data-group-header="planning"><button class="group-toggle" type="button" aria-label="Toggle Planning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button><span class="dot blue"></span>Planning <span class="count">(3)</span></div>
+            <div class="task-row" data-group="planning" data-task="objectives"><div class="task-name"><span class="dot green"></span><span>Define Q3 Objectives</span></div><span class="mini-avatar blue">AK</span><span class="dates">Jun 2 – Jun 6</span></div>
+            <div class="task-row" data-group="planning" data-task="research"><div class="task-name"><span class="dot green"></span><span>Market &amp; User Research</span></div><span class="mini-avatar violet">LM</span><span class="dates">Jun 2 – Jun 13</span></div>
+            <div class="task-row" data-group="planning" data-task="roadmap"><div class="task-name"><span class="dot amber"></span><span>Roadmap &amp; Prioritization</span></div><span class="mini-avatar green">JW</span><span class="dates">Jun 9 – Jun 20</span></div>
+
+            <div class="group-row" data-group-header="design"><button class="group-toggle" type="button" aria-label="Toggle Design and Development"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button><span class="dot violet"></span>Design &amp; Dev <span class="count">(4)</span></div>
+            <div class="task-row" data-group="design" data-task="wireframes"><div class="task-name"><span class="dot green"></span><span>UX Wireframes</span></div><span class="mini-avatar orange">SR</span><span class="dates">Jun 16 – Jun 27</span></div>
+            <div class="task-row" data-group="design" data-task="ui"><div class="task-name"><span class="dot green"></span><span>UI Design</span></div><span class="mini-avatar blue">AK</span><span class="dates">Jun 23 – Jul 4</span></div>
+            <div class="task-row" data-group="design" data-task="frontend"><div class="task-name"><span class="dot blue"></span><span>Frontend Development</span></div><span class="mini-avatar green">JW</span><span class="dates">Jul 7 – Jul 31</span></div>
+            <div class="task-row" data-group="design" data-task="backend"><div class="task-name"><span class="dot blue"></span><span>Backend Development</span></div><span class="mini-avatar violet">LM</span><span class="dates">Jul 7 – Aug 14</span></div>
+
+            <div class="group-row" data-group-header="testing"><button class="group-toggle" type="button" aria-label="Toggle Testing and QA"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button><span class="dot green"></span>Testing &amp; QA <span class="count">(3)</span></div>
+            <div class="task-row" data-group="testing" data-task="testplan"><div class="task-name"><span class="dot amber"></span><span>Test Plan &amp; Cases</span></div><span class="mini-avatar orange">SR</span><span class="dates">Jul 14 – Jul 18</span></div>
+            <div class="task-row" data-group="testing" data-task="qa"><div class="task-name"><span class="dot blue"></span><span>QA Execution</span></div><span class="mini-avatar blue">AK</span><span class="dates">Jul 21 – Aug 7</span></div>
+            <div class="task-row" data-group="testing" data-task="regression"><div class="task-name"><span class="dot blue"></span><span>Bug Fixing &amp; Regression</span></div><span class="mini-avatar green">JW</span><span class="dates">Aug 4 – Aug 21</span></div>
+
+            <div class="group-row" data-group-header="launch"><button class="group-toggle" type="button" aria-label="Toggle Launch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button><span class="dot rose"></span>Launch <span class="count">(2)</span></div>
+            <div class="task-row" data-group="launch" data-task="gtm"><div class="task-name"><span class="dot amber"></span><span>Go-to-Market Prep</span></div><span class="mini-avatar violet">LM</span><span class="dates">Aug 17 – Aug 28</span></div>
+            <div class="task-row" data-group="launch" data-task="monitor"><div class="task-name"><span class="dot rose"></span><span>Launch &amp; Monitor</span></div><span class="mini-avatar orange">SR</span><span class="dates">Aug 31 – Sep 4</span></div>
+          </div>
+        </div>
+
+        <div class="timeline-panel" id="timelinePanel">
+          <div class="timeline-canvas">
+            <div class="month-row"><div>June</div><div>July</div><div>August</div></div>
+            <div class="week-row">
+              <div><b>Jun 1</b><span>W23</span></div><div><b>Jun 8</b><span>W24</span></div><div><b>Jun 15</b><span>W25</span></div><div><b>Jun 22</b><span>W26</span></div><div><b>Jun 29</b><span>W27</span></div><div><b>Jul 6</b><span>W28</span></div><div><b>Jul 13</b><span>W29</span></div><div><b>Jul 20</b><span>W30</span></div><div><b>Jul 27</b><span>W31</span></div><div><b>Aug 3</b><span>W32</span></div><div><b>Aug 10</b><span>W33</span></div><div><b>Aug 17</b><span>W34</span></div><div><b>Aug 24</b><span>W35</span></div><div><b>Aug 31</b><span>W36</span></div>
+            </div>
+            <div class="chart-body">
+              <svg class="dependency-layer" viewBox="0 0 1036 508" aria-hidden="true">
+                <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8390a4" stroke="none"/></marker></defs>
+                <path d="M75 52 H92 V83 H112"/>
+                <path d="M148 83 H166 V114 H185"/>
+                <path d="M322 114 H341"/>
+                <path d="M236 179 H254 V210 H278"/>
+                <path d="M309 210 H332 V241 H365"/>
+                <path d="M453 241 H474 V272 H495"/>
+                <path d="M542 272 H565 V303 H584"/>
+                <path d="M445 272 H463 V337 H495"/>
+                <path d="M615 337 H637 V368 H660"/>
+                <path d="M748 368 H770 V399 H793"/>
+                <path d="M865 399 H887 V464 H904"/>
+              </svg>
+              <div class="today-line"><span class="today-badge">TODAY</span></div>
+
+              <div class="timeline-item bar blue in-focus" data-task-id="objectives" data-task-group="planning" style="--start:.16;--span:.84;--progress:100%;--top:42px"><span class="bar-label">100%</span></div>
+              <div class="timeline-item bar blue in-focus" data-task-id="research" data-task-group="planning" style="--start:.69;--span:2.31;--progress:26%;--top:73px"><span class="bar-label">100%</span></div>
+              <div class="timeline-item bar blue" data-task-id="roadmap" data-task-group="planning" style="--start:1.31;--span:2.61;--progress:45%;--top:104px"><span class="bar-label">75%</span></div>
+              <span class="timeline-item milestone" data-task-group="planning" style="--start:5.14;--top:109px;--color:#167cf0"></span>
+
+              <div class="timeline-item bar violet in-focus" data-task-id="wireframes" data-task-group="design" style="--start:2.38;--span:1.91;--progress:38%;--top:169px"><span class="bar-label">100%</span></div>
+              <div class="timeline-item bar violet in-focus" data-task-id="ui" data-task-group="design" style="--start:3.26;--span:2.55;--progress:40%;--top:200px"><span class="bar-label">100%</span></div>
+              <div class="timeline-item bar violet" data-task-id="frontend" data-task-group="design" style="--start:5.15;--span:3.7;--progress:56%;--top:231px"><span class="bar-label">65%</span></div>
+              <div class="timeline-item bar violet" data-task-id="backend" data-task-group="design" style="--start:5.15;--span:5.7;--progress:48%;--top:262px"><span class="bar-label">50%</span></div>
+              <span class="timeline-item milestone" data-task-group="design" style="--start:10.88;--top:267px;--color:#7c3aed"></span>
+
+              <div class="timeline-item bar green" data-task-id="testplan" data-task-group="testing" style="--start:6.15;--span:.86;--progress:53%;--top:327px"><span class="bar-label">60%</span></div>
+              <div class="timeline-item bar green" data-task-id="qa" data-task-group="testing" style="--start:7.15;--span:2.56;--progress:32%;--top:358px"><span class="bar-label">35%</span></div>
+              <div class="timeline-item bar green" data-task-id="regression" data-task-group="testing" style="--start:9.15;--span:2.57;--progress:21%;--top:389px"><span class="bar-label">20%</span></div>
+              <span class="timeline-item milestone" data-task-group="testing" style="--start:11.72;--top:394px;--color:#16945d"></span>
+
+              <div class="timeline-item bar amber" data-task-id="gtm" data-task-group="launch" style="--start:11.05;--span:1.75;--progress:34%;--top:454px"><span class="bar-label">30%</span></div>
+              <div class="timeline-item bar rose" data-task-id="monitor" data-task-group="launch" style="--start:13.05;--span:.82;--progress:4%;--top:485px"><span class="bar-label">0%</span></div>
+              <span class="timeline-item milestone" data-task-group="launch" style="--start:13.78;--top:490px;--color:#ed4667"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <div class="footer-left">
+          <span class="legend"><span class="dot blue"></span>Planning</span>
+          <span class="legend"><span class="dot violet"></span>Design &amp; Dev</span>
+          <span class="legend"><span class="dot green"></span>Testing &amp; QA</span>
+          <span class="legend"><span class="dot rose"></span>Launch</span>
+          <span class="legend"><span class="diamond"></span>Milestone</span>
+        </div>
+        <div class="footer-right"><span>Last updated 10 minutes ago</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v6h-6"/></svg></div>
+      </footer>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite">Task creation panel is ready for the product flow.</div>
+
+  <script>
+    const root = document.documentElement;
+    const timelinePanel = document.getElementById("timelinePanel");
+    const filterButton = document.getElementById("filterButton");
+    const searchInput = document.getElementById("searchInput");
+    const toast = document.getElementById("toast");
+    let weekWidth = 74;
+    let toastTimer;
+
+    document.querySelectorAll("[data-group-header]").forEach((header) => {
+      header.querySelector(".group-toggle").addEventListener("click", () => {
+        const group = header.dataset.groupHeader;
+        const isCollapsed = header.classList.toggle("collapsed");
+        document.querySelectorAll(`[data-group="${group}"], [data-task-group="${group}"]`).forEach((item) => {
+          item.style.visibility = isCollapsed ? "hidden" : "";
+        });
+      });
+    });
+
+    searchInput.addEventListener("input", () => {
+      const query = searchInput.value.trim().toLowerCase();
+      document.querySelectorAll(".task-row").forEach((row) => {
+        const matches = !query || row.textContent.toLowerCase().includes(query);
+        row.classList.toggle("hidden", !matches);
+        document.querySelectorAll(`[data-task-id="${row.dataset.task}"]`).forEach((item) => item.classList.toggle("hidden", !matches));
+      });
+    });
+
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelector(".tab.active").classList.remove("active");
+        tab.classList.add("active");
+      });
+    });
+
+    document.querySelectorAll(".segment").forEach((segment) => {
+      segment.addEventListener("click", () => {
+        document.querySelector(".segment.active").classList.remove("active");
+        segment.classList.add("active");
+      });
+    });
+
+    filterButton.addEventListener("click", () => {
+      filterButton.classList.toggle("filter-active");
+      timelinePanel.classList.toggle("filtering");
+    });
+
+    function setZoom(delta) {
+      weekWidth = Math.min(92, Math.max(58, weekWidth + delta));
+      root.style.setProperty("--week", `${weekWidth}px`);
+    }
+    document.getElementById("zoomOut").addEventListener("click", () => setZoom(-4));
+    document.getElementById("zoomIn").addEventListener("click", () => setZoom(4));
+
+    document.getElementById("addTask").addEventListener("click", () => {
+      clearTimeout(toastTimer);
+      toast.classList.add("show");
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 2500);
+    });
+  </script>
+</body>
+</html>

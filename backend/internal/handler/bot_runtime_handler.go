@@ -3,12 +3,16 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/config"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	"github.com/openclaw-bot-chat/backend/internal/model"
 	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
@@ -156,6 +160,14 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 }
 
 func (h *BotRuntimeHandler) ImportImage(c *gin.Context) {
+	h.importAsset(c, "image")
+}
+
+func (h *BotRuntimeHandler) ImportAudio(c *gin.Context) {
+	h.importAsset(c, "audio")
+}
+
+func (h *BotRuntimeHandler) importAsset(c *gin.Context, kind string) {
 	bot, ok := middleware.GetBot(c)
 	if !ok {
 		apiresponse.Unauthorized(c, "unauthorized")
@@ -166,13 +178,78 @@ func (h *BotRuntimeHandler) ImportImage(c *gin.Context) {
 		return
 	}
 
+	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
+		h.importAssetMultipart(c, bot.ID, kind)
+		return
+	}
+
 	var req service.ImportBotImageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 
-	asset, err := h.assetSvc.ImportImageForBot(c.Request.Context(), bot.ID, req)
+	var asset *model.AssetPayload
+	var err error
+	switch kind {
+	case "audio":
+		asset, err = h.assetSvc.ImportAudioForBot(c.Request.Context(), bot.ID, req)
+	default:
+		asset, err = h.assetSvc.ImportImageForBot(c.Request.Context(), bot.ID, req)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAssetProviderDisabled),
+			errors.Is(err, service.ErrAssetTooLarge),
+			errors.Is(err, service.ErrAssetUnsupportedType),
+			errors.Is(err, service.ErrAssetInvalid):
+			apiresponse.BadRequest(c, err.Error())
+		default:
+			apiresponse.InternalError(c, err.Error())
+		}
+		return
+	}
+
+	apiresponse.Success(c, responsedto.NewAssetResponse(asset))
+}
+
+func (h *BotRuntimeHandler) importAssetMultipart(c *gin.Context, botID uuid.UUID, kind string) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		apiresponse.BadRequest(c, "file is required")
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		apiresponse.BadRequest(c, "invalid file upload")
+		return
+	}
+	defer file.Close()
+
+	payload, err := io.ReadAll(file)
+	if err != nil {
+		apiresponse.BadRequest(c, "failed to read file upload")
+		return
+	}
+	contentType := strings.TrimSpace(c.PostForm("content_type"))
+	if contentType == "" {
+		contentType = strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+	}
+	if contentType == "" {
+		contentType = http.DetectContentType(payload)
+	}
+	fileName := strings.TrimSpace(c.PostForm("file_name"))
+	if fileName == "" {
+		fileName = fileHeader.Filename
+	}
+
+	var asset *model.AssetPayload
+	switch kind {
+	case "audio":
+		asset, err = h.assetSvc.ImportAudioBytesForBot(c.Request.Context(), botID, payload, fileName, contentType)
+	default:
+		asset, err = h.assetSvc.ImportImageBytesForBot(c.Request.Context(), botID, payload, fileName, contentType)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAssetProviderDisabled),

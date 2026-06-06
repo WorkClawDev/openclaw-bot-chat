@@ -139,6 +139,7 @@ type AssetKind string
 
 const (
 	AssetKindImage AssetKind = "image"
+	AssetKindAudio AssetKind = "audio"
 )
 
 type AssetStatus string
@@ -231,6 +232,77 @@ type BotGroupMember struct {
 }
 
 func (BotGroupMember) TableName() string { return "bot_group_members" }
+
+// --- Task ---
+
+type TaskStatus string
+
+const (
+	TaskStatusPending    TaskStatus = "pending"
+	TaskStatusAvailable  TaskStatus = "available"
+	TaskStatusClaimed    TaskStatus = "claimed"
+	TaskStatusInProgress TaskStatus = "in_progress"
+	TaskStatusCompleted  TaskStatus = "completed"
+	TaskStatusFailed     TaskStatus = "failed"
+	TaskStatusBlocked    TaskStatus = "blocked"
+)
+
+type TaskPriority string
+
+const (
+	TaskPriorityLow      TaskPriority = "low"
+	TaskPriorityNormal   TaskPriority = "normal"
+	TaskPriorityHigh     TaskPriority = "high"
+	TaskPriorityCritical TaskPriority = "critical"
+)
+
+type Task struct {
+	ID               uuid.UUID    `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	OwnerID          uuid.UUID    `gorm:"type:uuid;not null;index"`
+	Title            string       `gorm:"type:varchar(255);not null"`
+	Description      *string      `gorm:"type:text"`
+	Priority         TaskPriority `gorm:"type:varchar(16);not null;default:'normal';index"`
+	Status           TaskStatus   `gorm:"type:varchar(32);not null;default:'pending';index"`
+	AssigneeBotID    *uuid.UUID   `gorm:"type:uuid;index"`
+	EstimatedStartAt *time.Time
+	EstimatedEndAt   *time.Time
+	ActualStartAt    *time.Time
+	ActualEndAt      *time.Time
+	Progress         int            `gorm:"not null;default:0"`
+	LatestStatusNote *string        `gorm:"type:text"`
+	CreatedAt        time.Time      `gorm:"not null;default:now()"`
+	UpdatedAt        time.Time      `gorm:"not null;default:now()"`
+	DeletedAt        gorm.DeletedAt `gorm:"index"`
+	Owner            *User          `gorm:"foreignKey:OwnerID"`
+	AssigneeBot      *Bot           `gorm:"foreignKey:AssigneeBotID"`
+	Dependencies     []TaskDependency
+	Events           []TaskEvent
+}
+
+func (Task) TableName() string { return "tasks" }
+
+type TaskDependency struct {
+	ID              uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	TaskID          uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_task_dependency"`
+	DependsOnTaskID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_task_dependency"`
+	CreatedAt       time.Time `gorm:"not null;default:now()"`
+	DependsOnTask   *Task     `gorm:"foreignKey:DependsOnTaskID"`
+}
+
+func (TaskDependency) TableName() string { return "task_dependencies" }
+
+type TaskEvent struct {
+	ID        uuid.UUID  `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	TaskID    uuid.UUID  `gorm:"type:uuid;not null;index"`
+	ActorType string     `gorm:"type:varchar(16);not null"`
+	ActorID   *uuid.UUID `gorm:"type:uuid"`
+	Status    TaskStatus `gorm:"type:varchar(32);not null"`
+	Progress  int        `gorm:"not null;default:0"`
+	Note      *string    `gorm:"type:text"`
+	CreatedAt time.Time  `gorm:"not null;default:now();index"`
+}
+
+func (TaskEvent) TableName() string { return "task_events" }
 
 // --- AuditLog ---
 

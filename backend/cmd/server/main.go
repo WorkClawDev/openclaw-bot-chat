@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/config"
 	"github.com/openclaw-bot-chat/backend/internal/handler"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
@@ -77,6 +76,7 @@ func main() {
 	groupRepo := repository.NewGroupRepository(db)
 	assetRepo := repository.NewAssetRepository(db)
 	auditRepo := repository.NewAuditLogRepository(db)
+	taskRepo := repository.NewTaskRepository(db)
 
 	// --- Object Storage ---
 	objectStorage, err := storage.NewProvider(cfg.Storage)
@@ -90,6 +90,7 @@ func main() {
 	assetService := service.NewAssetService(assetRepo, objectStorage, cfg.Storage, cfg.Asset)
 	msgService := service.NewMessageService(msgRepo, botRepo, groupRepo, assetRepo, auditRepo, assetService)
 	groupService := service.NewGroupService(groupRepo, botRepo, auditRepo)
+	taskService := service.NewTaskService(taskRepo, botRepo)
 
 	// --- MQTT Client ---
 	mqttClient := mqtt.NewClient(mqtt.MQTTConfig{
@@ -117,9 +118,11 @@ func main() {
 	assetHandler := handler.NewAssetHandler(assetService)
 	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService, assetService, cfg.MQTT)
 	groupHandler := handler.NewGroupHandler(groupService)
+	taskHandler := handler.NewTaskHandler(taskService)
+	taskRuntimeHandler := handler.NewTaskRuntimeHandler(taskService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, botService, jwtManager)
+	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, botService, jwtManager)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -179,6 +182,9 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.Group{},
 		&model.GroupMember{},
 		&model.BotGroupMember{},
+		&model.Task{},
+		&model.TaskDependency{},
+		&model.TaskEvent{},
 		&model.AuditLog{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
@@ -214,6 +220,8 @@ func setupRoutes(
 	assetHandler *handler.AssetHandler,
 	botRuntimeHandler *handler.BotRuntimeHandler,
 	groupHandler *handler.GroupHandler,
+	taskHandler *handler.TaskHandler,
+	taskRuntimeHandler *handler.TaskRuntimeHandler,
 	botService *service.BotService,
 	jwtManager *jwt.Manager,
 ) {
@@ -237,9 +245,17 @@ func setupRoutes(
 		botRuntime.GET("/bootstrap", botRuntimeHandler.Bootstrap)
 		botRuntime.GET("/messages/*conversation_id", botRuntimeHandler.GetConversationMessages)
 		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
+		botRuntime.POST("/assets/audio/import", botRuntimeHandler.ImportAudio)
+		botRuntime.GET("/tasks", taskRuntimeHandler.List)
+		botRuntime.POST("/tasks", taskRuntimeHandler.Create)
+		botRuntime.POST("/tasks/:id/claim", taskRuntimeHandler.Claim)
+		botRuntime.POST("/tasks/:id/progress", taskRuntimeHandler.Progress)
+		botRuntime.POST("/tasks/:id/complete", taskRuntimeHandler.Complete)
+		botRuntime.POST("/tasks/:id/fail", taskRuntimeHandler.Fail)
 	}
 
 	api.GET("/assets/image/:id", assetHandler.RedirectPublicImage)
+	api.GET("/assets/audio/:id", assetHandler.RedirectPublicAudio)
 
 	// Protected routes
 	protected := api.Group("")
@@ -269,6 +285,8 @@ func setupRoutes(
 		protected.GET("/conversations", msgHandler.GetConversations)
 		protected.POST("/assets/image/upload-prepare", assetHandler.PrepareImageUpload)
 		protected.POST("/assets/image/complete", assetHandler.CompleteImageUpload)
+		protected.POST("/assets/audio/upload-prepare", assetHandler.PrepareAudioUpload)
+		protected.POST("/assets/audio/complete", assetHandler.CompleteAudioUpload)
 
 		// Groups
 		protected.GET("/groups", groupHandler.List)
@@ -279,7 +297,14 @@ func setupRoutes(
 		protected.POST("/groups/:id/members", groupHandler.AddMember)
 		protected.DELETE("/groups/:id/members/:uid", groupHandler.RemoveMember)
 		protected.GET("/groups/:id/members", groupHandler.GetMembers)
+
+		// Tasks
+		protected.GET("/tasks", taskHandler.List)
+		protected.POST("/tasks", taskHandler.Create)
+		protected.GET("/tasks/:id", taskHandler.Get)
+		protected.PUT("/tasks/:id", taskHandler.Update)
+		protected.POST("/tasks/:id/reassign", taskHandler.Reassign)
+		protected.DELETE("/tasks/:id", taskHandler.Delete)
 	}
 
-	_ = uuid.UUID{} // suppress unused import if needed
 }

@@ -23,6 +23,7 @@ export type BotChatChannelConfig = {
   permissionApprovalUrl?: string;
   permissionApprovalTimeoutMs?: number;
   permissionDeniedReply?: string;
+  taskPollingIntervalMs?: number;
 };
 
 export type BotChatTarget =
@@ -165,6 +166,10 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
         text: string;
         metadata?: Record<string, unknown>;
       }) => Promise<void>;
+      tasks?: {
+        runTask?: (task: Record<string, unknown>) => Promise<unknown>;
+      };
+      runTask?: (task: Record<string, unknown>) => Promise<unknown>;
       reply?: {
         dispatchReplyWithBufferedBlockDispatcher?: (params: {
           ctx: Record<string, unknown>;
@@ -209,6 +214,15 @@ export type ChannelOutboundAdapter = {
     text?: string;
     mediaUrl: string;
     mediaAccess?: Record<string, unknown>;
+    accountId?: string | null;
+    metadata?: Record<string, unknown>;
+  }) => Promise<ChannelOutboundDeliveryResult>;
+  sendVoice?: (params: {
+    cfg: Record<string, unknown>;
+    to: string;
+    text?: string;
+    voiceUrl: string;
+    voiceAccess?: Record<string, unknown>;
     accountId?: string | null;
     metadata?: Record<string, unknown>;
   }) => Promise<ChannelOutboundDeliveryResult>;
