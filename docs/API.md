@@ -80,6 +80,32 @@ HTTP 接口（除 `/health`）统一返回：
 
 `X-Bot-Key` 鉴权的历史查询，支持 `limit` 和 `after_seq`。使用星号路径是因为 `conversation_id` 本身包含 `/`。
 
+## 任务协调
+
+任务存储按 owner 隔离。用户 JWT 接口和 bot runtime 接口读取同一份任务数据，因此 bot 创建或更新的任务会出现在 web `/tasks` 页面。
+
+### 用户接口
+
+- `GET /api/v1/tasks`
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks/:id`
+- `PUT /api/v1/tasks/:id`
+- `POST /api/v1/tasks/:id/reassign`
+- `DELETE /api/v1/tasks/:id`
+
+### Bot Runtime 接口
+
+以下接口使用 `X-Bot-Key` 鉴权：
+
+- `GET /api/v1/bot-runtime/tasks`
+- `POST /api/v1/bot-runtime/tasks`
+- `POST /api/v1/bot-runtime/tasks/:id/claim`
+- `POST /api/v1/bot-runtime/tasks/:id/progress`
+- `POST /api/v1/bot-runtime/tasks/:id/complete`
+- `POST /api/v1/bot-runtime/tasks/:id/fail`
+
+`POST /api/v1/bot-runtime/tasks` 接受与用户创建任务相同的 payload。创建事件会记录当前 bot 作为 actor。
+
 ## 历史与会话
 
 ### `GET /api/v1/conversations`
@@ -107,6 +133,8 @@ HTTP 接口（除 `/health`）统一返回：
 - `/api/v1/bots/*`
 - `/api/v1/groups/*`
 - `/api/v1/assets/image/*`
+- `/api/v1/assets/audio/*`
+- `/api/v1/tasks/*`
 
 ## MQTT Topic 约定
 

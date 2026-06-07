@@ -17,8 +17,9 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
   const isBot = message.sender_type === 'bot'
   const isSystem = message.sender_type === 'system'
   const isImageMessage = message.content.type === 'image'
+  const isAudioMessage = message.content.type === 'audio'
   const asset = readAsset(message.content.meta)
-  const imageURL =
+  const assetURL =
     message.content.url ||
     asset?.download_url ||
     asset?.external_url ||
@@ -27,7 +28,10 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
     readString(message.content.meta?.external_url) ||
     readString(message.content.meta?.source_url) ||
     readString(message.content.meta?.url)
+  const imageURL = assetURL
+  const audioURL = assetURL
   const imageName = message.content.name || asset?.file_name || 'Image'
+  const audioName = message.content.name || asset?.file_name || 'Voice message'
 
   const processContent = (text: string) => {
     if (!mentions.length) {
@@ -114,6 +118,33 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
                   </div>
                 )}
                 {message.content.body && message.content.body !== imageName && !message.content.meta?.is_sticker && (
+                  <p className={`text-sm whitespace-pre-wrap break-words ${isOwn ? 'text-white/90' : 'text-slate-700'}`}>
+                    {message.content.body}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {isAudioMessage && (
+              <div className="w-[min(18rem,70vw)] space-y-2">
+                {audioURL ? (
+                  <div className={`rounded-xl border px-3 py-2 ${isOwn ? 'border-white/25 bg-white/10' : 'border-slate-200 bg-white'}`}>
+                    <div className={`mb-2 flex items-center gap-2 text-xs font-semibold ${isOwn ? 'text-white/90' : 'text-slate-600'}`}>
+                      <span className={`flex h-7 w-7 items-center justify-center rounded-full ${isOwn ? 'bg-white/20' : 'bg-sky-50 text-sky-600'}`}>
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-2v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2Zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2Z" />
+                        </svg>
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{audioName}</span>
+                    </div>
+                    <audio controls preload="metadata" src={audioURL} className="h-9 w-full" />
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-400">
+                    Voice message unavailable
+                  </div>
+                )}
+                {message.content.body && message.content.body !== audioName && (
                   <p className={`text-sm whitespace-pre-wrap break-words ${isOwn ? 'text-white/90' : 'text-slate-700'}`}>
                     {message.content.body}
                   </p>

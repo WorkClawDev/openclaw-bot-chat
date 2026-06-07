@@ -45,6 +45,20 @@ func TestNormalizeIncomingMessagePromotesImageURLIntoAssetMeta(t *testing.T) {
 	}
 }
 
+func TestNormalizeIncomingMessagePromotesAudioURLIntoAssetMeta(t *testing.T) {
+	normalized := normalizeIncomingMessage("chat/group/11111111-1111-1111-1111-111111111111", MessagePayload{
+		ContentRaw: []byte(`{"type":"audio","body":"voice.m4a","url":"https://assets.example/voice.m4a?sig=ok"}`),
+	})
+
+	if normalized.contentType != "audio" {
+		t.Fatalf("normalizeIncomingMessage() contentType = %q, want audio", normalized.contentType)
+	}
+	asset := normalized.meta["asset"].(map[string]interface{})
+	if got := asset["external_url"]; got != "https://assets.example/voice.m4a?sig=ok" {
+		t.Fatalf("asset external_url = %#v", got)
+	}
+}
+
 func TestWithMessageContentAssetPrefersExistingAssetFields(t *testing.T) {
 	meta := map[string]interface{}{
 		"asset": map[string]interface{}{

@@ -94,7 +94,7 @@ export interface PreparedUpload {
 }
 
 export interface ComposerMessageInput {
-  type: 'text' | 'image'
+  type: 'text' | 'image' | 'audio'
   body?: string
   asset?: Asset
   meta?: Record<string, unknown>
@@ -186,6 +186,51 @@ export interface GroupMember {
 export interface GroupMembersResponse {
   users: GroupMember[]
   bots: GroupMember[]
+}
+
+export type TaskStatus = 'pending' | 'available' | 'claimed' | 'in_progress' | 'completed' | 'failed' | 'blocked'
+export type TaskPriority = 'low' | 'normal' | 'high' | 'critical'
+
+export interface TaskDependency {
+  id: string
+  depends_on_task_id: string
+  depends_on_task?: {
+    id: string
+    title: string
+    status: TaskStatus
+    progress: number
+  }
+}
+
+export interface TaskEvent {
+  id: string
+  actor_type: 'user' | 'bot' | 'system'
+  actor_id?: string | null
+  status: TaskStatus
+  progress: number
+  note?: string | null
+  created_at: string
+}
+
+export interface Task {
+  id: string
+  owner_id: string
+  title: string
+  description?: string | null
+  priority: TaskPriority
+  status: TaskStatus
+  assignee_bot_id?: string | null
+  assignee_bot?: Bot | null
+  estimated_start_at?: string | null
+  estimated_end_at?: string | null
+  actual_start_at?: string | null
+  actual_end_at?: string | null
+  progress: number
+  latest_status_note?: string | null
+  dependencies: TaskDependency[]
+  events: TaskEvent[]
+  created_at: string
+  updated_at: string
 }
 
 export interface MessageApiResponse {

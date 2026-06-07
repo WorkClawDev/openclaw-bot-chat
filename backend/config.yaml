@@ -70,6 +70,7 @@ storage:
 
 asset:
   max_image_size_mb: 10
+  max_audio_size_mb: 20
 
 log:
   level: debug  # debug, info, warn, error

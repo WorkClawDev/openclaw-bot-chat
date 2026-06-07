@@ -66,8 +66,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [connectionState, setConnectionState] = useState<RealtimeConnectionState>('idle')
   const subscriptionsRef = useRef<Map<string, () => void>>(new Map())
   const conversationsRef = useRef<Conversation[]>([])
+  const userRef = useRef(user)
+  const botsRef = useRef<Bot[]>([])
+  const groupsRef = useRef<Group[]>([])
+  const realtimeBootstrapRef = useRef<RealtimeBootstrapResponse | null>(null)
   const lastSeqByConversationRef = useRef<Map<string, number>>(new Map())
   const hasConnectedOnceRef = useRef(false)
+
+  useEffect(() => {
+    userRef.current = user
+    botsRef.current = bots
+    groupsRef.current = groups
+    realtimeBootstrapRef.current = realtimeBootstrap
+  }, [bots, groups, realtimeBootstrap, user])
 
   const enrichMessage = useCallback(
     (message: Message) => enrichMessagePeers(message, { currentUser: user, bots, groups }),
@@ -115,7 +126,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const upsertMessage = useCallback((message: Message) => {
-    const enrichedMessage = enrichMessage(message)
+    const enrichedMessage = enrichMessagePeers(message, {
+      currentUser: userRef.current,
+      bots: botsRef.current,
+      groups: groupsRef.current,
+    })
 
     setMessages((prev) => {
       const current = prev.get(enrichedMessage.conversation_id) || []
@@ -161,7 +176,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         lastSeqByConversationRef.current.set(enrichedMessage.conversation_id, enrichedMessage.seq)
       }
     }
-  }, [enrichMessage])
+  }, [])
 
   const ensureTopicSubscription = useCallback((topic: string) => {
     if (!topic || subscriptionsRef.current.has(topic) || !user || !realtimeBootstrap) {
@@ -174,18 +189,24 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = mqtt.subscribe(
       topic,
       (incomingTopic, payload) => {
+        const activeBootstrap = realtimeBootstrapRef.current
         if (
-          incomingTopic === realtimeBootstrap.slash_command_topic ||
+          incomingTopic === activeBootstrap?.slash_command_topic ||
           isSlashCommandCatalogPayload(payload)
         ) {
           setSlashCommands(readSlashCommandsFromPayload(payload))
           return
         }
 
+        const activeUser = userRef.current
+        if (!activeUser) {
+          return
+        }
+
         const conversationId = payload.conversation_id || incomingTopic
         const existingConversation = conversationsRef.current.find((item) => item.id === conversationId)
         const conversation =
-          existingConversation || buildConversationFromTopic(incomingTopic, user.id, bots, groups)
+          existingConversation || buildConversationFromTopic(incomingTopic, activeUser.id, botsRef.current, groupsRef.current)
 
         if (!conversation) {
           return
@@ -612,12 +633,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 }
 
 function buildOutgoingContent(input: ComposerMessageInput): Message['content'] {
-  if (input.type === 'image') {
+  if (input.type === 'image' || input.type === 'audio') {
     const asset = input.asset
     const url = asset?.download_url || asset?.external_url || asset?.source_url
-    const body = input.body?.trim() || asset?.file_name || 'Image'
+    const body = input.body?.trim() || asset?.file_name || (input.type === 'audio' ? 'Voice message' : 'Image')
     return {
-      type: 'image',
+      type: input.type,
       body,
       url,
       name: asset?.file_name,

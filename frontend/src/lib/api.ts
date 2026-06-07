@@ -12,6 +12,9 @@ import type {
   Asset,
   PreparedUpload,
   RealtimeBootstrapResponse,
+  Task,
+  TaskPriority,
+  TaskStatus,
 } from './types'
 
 const RAW_API_BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '')
@@ -280,6 +283,18 @@ export const assetsApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  prepareAudioUpload: (data: { file_name: string; content_type: string; size: number; conversation_id?: string }) =>
+    request<PreparedUpload>('/api/v1/assets/audio/upload-prepare', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  completeAudioUpload: (data: { asset_id: string; object_key: string }) =>
+    request<Asset>('/api/v1/assets/audio/complete', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 }
 
 // Groups API
@@ -316,6 +331,43 @@ export const groupsApi = {
     request<void>(`/api/v1/groups/${id}/members/${userId}`, {
       method: 'DELETE',
     }),
+}
+
+export const tasksApi = {
+  list: () => request<Task[]>('/api/v1/tasks'),
+
+  get: (id: string) => request<Task>(`/api/v1/tasks/${id}`),
+
+  create: (data: {
+    title: string
+    description?: string
+    priority?: TaskPriority
+    status?: TaskStatus
+    assignee_bot_id?: string
+    estimated_start_at?: string
+    estimated_end_at?: string
+    dependency_ids?: string[]
+    latest_status_note?: string
+  }) =>
+    request<Task>('/api/v1/tasks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: string, data: Partial<Task> & { dependency_ids?: string[] }) =>
+    request<Task>(`/api/v1/tasks/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  reassign: (id: string, data: { assignee_bot_id?: string | null; latest_status_note?: string }) =>
+    request<Task>(`/api/v1/tasks/${id}/reassign`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: string) =>
+    request<void>(`/api/v1/tasks/${id}`, { method: 'DELETE' }),
 }
 
 // Health check

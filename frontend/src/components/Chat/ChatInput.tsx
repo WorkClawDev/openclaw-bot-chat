@@ -1,12 +1,12 @@
 'use client'
 
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { Theme } from 'emoji-picker-react'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
-import { groupsApi } from '@/lib/api'
-import { uploadImageAsset } from '@/lib/imageUpload'
+import { groupsApi, tasksApi } from '@/lib/api'
+import { uploadAudioAsset, uploadImageAsset } from '@/lib/imageUpload'
 import { Bot, ComposerMessageInput, GroupMember, SlashCommand } from '@/lib/types'
 import { STICKERS, Sticker } from '@/lib/stickers'
 
@@ -32,17 +32,28 @@ type MentionCandidate = {
   aliases?: string[]
 }
 
+const TASK_SLASH_COMMANDS: SlashCommand[] = [
+  { name: 'task-create', description: 'Create task: /task-create title | optional description', acceptsArgs: true },
+  { name: 'task-claim', description: 'Assign task: /task-claim task-id bot-id', acceptsArgs: true },
+  { name: 'task-progress', description: 'Update task: /task-progress task-id percent optional note', acceptsArgs: true },
+  { name: 'task-complete', description: 'Complete task: /task-complete task-id optional note', acceptsArgs: true },
+  { name: 'task-fail', description: 'Fail task: /task-fail task-id optional note', acceptsArgs: true },
+]
+
 export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a message...' }: ChatInputProps) {
   const [content, setContent] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [showStickerPicker, setShowStickerPicker] = useState(false)
+  const [sendError, setSendError] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const audioInputRef = useRef<HTMLInputElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
 
   const { bots, currentConversation, slashCommands } = useChat()
+  const allSlashCommands = useMemo(() => mergeSlashCommands(slashCommands, TASK_SLASH_COMMANDS), [slashCommands])
   const [mentionActive, setMentionActive] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
   const [mentionStartIndex, setMentionStartIndex] = useState(-1)
@@ -86,6 +97,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     if (disabled || isSending || isUploading || !currentConversation) return
 
     setIsSending(true)
+    setSendError('')
     try {
       await onSendMessage({
         type: 'image',
@@ -114,7 +126,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     bot.name.toLowerCase().includes(mentionQuery.toLowerCase())
   )
 
-  const filteredSlashCommands = slashCommands
+  const filteredSlashCommands = allSlashCommands
     .filter((command) => command.name.toLowerCase().includes(slashQuery.toLowerCase()))
 
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -186,20 +198,34 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     if (!content.trim() || isSending || isUploading || disabled) return
 
     setIsSending(true)
+    setSendError('')
     try {
-      await onSendMessage({
-        type: 'text',
-        body: content.trim(),
-        meta: {
-          ...buildMentionMeta(content, mentionBots),
-          ...buildSlashCommandMeta(content, slashCommands),
-        },
-      })
+      const taskCommandResult = await executeTaskChatCommand(content.trim())
+      try {
+        await onSendMessage({
+          type: 'text',
+          body: content.trim(),
+          meta: {
+            ...buildMentionMeta(content, mentionBots),
+            ...buildSlashCommandMeta(content, allSlashCommands),
+            ...(taskCommandResult ? { task_command_result: taskCommandResult } : {}),
+          },
+        })
+      } catch (error) {
+        if (!taskCommandResult) throw error
+        console.error('Task command succeeded, but chat notification failed:', error)
+        setContent('')
+        setMentionActive(false)
+        setSlashActive(false)
+        setSendError('Task command succeeded, but the chat notification failed. Refresh the task board before retrying.')
+        return
+      }
       setContent('')
       setMentionActive(false)
       setSlashActive(false)
     } catch (error) {
       console.error('Failed to send message:', error)
+      setSendError(error instanceof Error ? error.message : 'Failed to send message')
     } finally {
       setIsSending(false)
     }
@@ -227,6 +253,34 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       setSlashActive(false)
     } catch (error) {
       console.error('Failed to upload image:', error)
+    } finally {
+      setIsUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  const handleAudioSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !currentConversation || disabled || isSending || isUploading) {
+      e.target.value = ''
+      return
+    }
+
+    setIsUploading(true)
+    try {
+      const asset = await uploadAudioAsset(file, { conversationId: currentConversation.send_topic })
+
+      await onSendMessage({
+        type: 'audio',
+        body: content.trim() || file.name,
+        asset,
+        meta: buildMentionMeta(content, mentionBots),
+      })
+      setContent('')
+      setMentionActive(false)
+      setSlashActive(false)
+    } catch (error) {
+      console.error('Failed to upload voice message:', error)
     } finally {
       setIsUploading(false)
       e.target.value = ''
@@ -396,6 +450,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
   return (
     <div className="relative border-t border-slate-200/70 bg-white/80 px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-sm md:px-6 md:py-4 md:pb-[calc(1rem+env(safe-area-inset-bottom))]" ref={pickerRef}>
+      {sendError ? <div className="mb-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-600">{sendError}</div> : null}
       {/* Pickers */}
       {(showEmojiPicker || showStickerPicker) && (
         <div className="absolute bottom-full left-3 md:left-6 mb-2 z-50 animate-in slide-in-from-bottom-2">
@@ -537,6 +592,15 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
             void handleImageSelect(e)
           }}
         />
+        <input
+          ref={audioInputRef}
+          type="file"
+          accept="audio/aac,audio/amr,audio/m4a,audio/mp4,audio/mpeg,audio/ogg,audio/opus,audio/wav,audio/webm,audio/x-m4a,audio/x-wav,audio/3gpp,audio/3gpp2"
+          className="hidden"
+          onChange={(e) => {
+            void handleAudioSelect(e)
+          }}
+        />
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -596,12 +660,32 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
               </svg>
             )}
           </button>
+          <button
+            type="button"
+            onClick={() => audioInputRef.current?.click()}
+            disabled={disabled || isSending || isUploading || !currentConversation}
+            className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all flex-shrink-0 ${
+              !disabled && !isSending && !isUploading && currentConversation
+                ? 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'
+                : 'text-slate-300'
+            }`}
+            title="Upload voice"
+            aria-label="Upload voice"
+          >
+            {isUploading ? (
+              <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
+            ) : (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18.75a6 6 0 0 0 6-6v-1.5m-12 1.5a6 6 0 0 0 12 0M12 15a3 3 0 0 0 3-3V5.25a3 3 0 0 0-6 0V12a3 3 0 0 0 3 3Zm0 3.75V22m-4 0h8" />
+              </svg>
+            )}
+          </button>
         </div>
         <div className="relative flex-1">
           {/* Highlights Overlay */}
           <div 
             ref={overlayRef}
-            className="absolute inset-0 pointer-events-none whitespace-pre-wrap break-words overflow-hidden py-2 px-3 m-0 border-none font-inherit"
+            className="chat-composer-overlay absolute inset-0 pointer-events-none whitespace-pre-wrap break-words overflow-hidden py-2 px-3 m-0 border-none font-inherit"
             style={{ 
               fontFamily: 'inherit',
               fontSize: 'inherit',
@@ -627,8 +711,8 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
             }}
             disabled={disabled || isSending || isUploading}
             rows={1}
-            className="w-full bg-transparent border-none focus:ring-0 resize-none py-2 px-3 placeholder:text-transparent max-h-[200px] relative z-10 m-0"
-            style={{ color: 'transparent', caretColor: '#334155' }}
+            className="chat-composer-textarea w-full bg-transparent border-none focus:ring-0 resize-none py-2 px-3 placeholder:text-transparent max-h-[200px] relative z-10 m-0"
+            style={{ color: 'transparent', caretColor: 'var(--chat-composer-caret)' }}
             aria-label={placeholder}
           />
         </div>
@@ -711,6 +795,72 @@ function buildSlashCommandMeta(
     command_source: 'native',
     native_command: true,
     native_command_name: matched.name,
+  }
+}
+
+function mergeSlashCommands(...groups: SlashCommand[][]): SlashCommand[] {
+  const commands = new Map<string, SlashCommand>()
+  for (const command of groups.flat()) {
+    commands.set(command.name.toLowerCase(), command)
+  }
+  return [...commands.values()]
+}
+
+async function executeTaskChatCommand(body: string): Promise<Record<string, unknown> | null> {
+  const [rawName, ...args] = body.trim().split(/\s+/)
+  const name = rawName?.toLowerCase()
+  if (!name?.startsWith('/task-')) {
+    return null
+  }
+
+  switch (name) {
+    case '/task-create': {
+      const input = body.slice(rawName.length).trim()
+      const [title, description] = input.split('|', 2).map((value) => value.trim())
+      if (!title) throw new Error('Usage: /task-create title | optional description')
+      const task = await tasksApi.create({ title, ...(description ? { description } : {}) })
+      return { action: 'created', task_id: task.id, task_title: task.title }
+    }
+    case '/task-claim': {
+      const [taskId, botId] = args
+      if (!taskId || !botId) throw new Error('Usage: /task-claim task-id bot-id')
+      const task = await tasksApi.reassign(taskId, { assignee_bot_id: botId, latest_status_note: 'Assigned from chat' })
+      return { action: 'assigned', task_id: task.id, assignee_bot_id: task.assignee_bot_id }
+    }
+    case '/task-progress': {
+      const [taskId, rawProgress, ...noteParts] = args
+      const progress = Number(rawProgress)
+      if (!taskId || !Number.isInteger(progress) || progress < 0 || progress > 100) {
+        throw new Error('Usage: /task-progress task-id percent optional note')
+      }
+      const task = await tasksApi.update(taskId, {
+        progress,
+        status: progress === 100 ? 'completed' : 'in_progress',
+        latest_status_note: noteParts.join(' ') || 'Progress updated from chat',
+      })
+      return { action: 'progress', task_id: task.id, progress: task.progress, status: task.status }
+    }
+    case '/task-complete': {
+      const [taskId, ...noteParts] = args
+      if (!taskId) throw new Error('Usage: /task-complete task-id optional note')
+      const task = await tasksApi.update(taskId, {
+        progress: 100,
+        status: 'completed',
+        latest_status_note: noteParts.join(' ') || 'Completed from chat',
+      })
+      return { action: 'completed', task_id: task.id, status: task.status }
+    }
+    case '/task-fail': {
+      const [taskId, ...noteParts] = args
+      if (!taskId) throw new Error('Usage: /task-fail task-id optional note')
+      const task = await tasksApi.update(taskId, {
+        status: 'failed',
+        latest_status_note: noteParts.join(' ') || 'Failed from chat',
+      })
+      return { action: 'failed', task_id: task.id, status: task.status }
+    }
+    default:
+      return null
   }
 }
 

@@ -19,6 +19,7 @@ import {
   buildBotChatOutboundMessageTarget,
   getBotChatRuntime,
   resolveBotChatAccount,
+  type RuntimeHooks,
 } from "./runtime.js";
 
 type BotChatAttachment = {
@@ -32,6 +33,8 @@ type BotChatAttachment = {
   size?: number;
   asset?: Record<string, unknown>;
 };
+
+type BotChatMediaKind = "image" | "audio";
 
 type BotChatSlashCommand = {
   name: string;
@@ -138,51 +141,32 @@ const botChatOutboundAdapter: ChannelOutboundAdapter = {
     };
   },
   sendMedia: async ({ cfg, to, text, mediaUrl, mediaAccess, accountId, metadata }) => {
-    const account = resolveBotChatAccount(cfg, accountId ?? undefined);
-    const target = buildBotChatOutboundMessageTarget({ raw: to, account, metadata });
-    const fallbackBody = text?.trim() || readFileNameFromMediaPath(mediaUrl) || "Image";
-    let asset: Record<string, unknown> | undefined;
-    try {
-      asset = await prepareBotChatOutboundMediaAsset(account, mediaUrl);
-    } catch {
-      asset = undefined;
-    }
-    const body = text?.trim() || readString(asset?.file_name) || fallbackBody;
-    const result = await getBotChatRuntime().sendToChannel({
-      channelId: target.channelId,
-      userId: target.userId,
-      text: body,
-      metadata: {
-        ...(metadata ?? {}),
-        ...(asset
-          ? {
-              content_type: "image",
-              asset: {
-                ...asset,
-                ...(mediaAccess ? { access: mediaAccess } : {}),
-              },
-            }
-          : {}),
-        target: target.normalizedTarget,
-        chatType: target.chatType,
-        botId: account.botId,
-        toType: target.recipientType,
-        publishTopic: target.publishTopic,
-      },
+    const mimeType = resolveBotChatMediaMimeType(mediaUrl);
+    const kind: BotChatMediaKind = mimeType.startsWith("audio/") ? "audio" : "image";
+    return sendBotChatOutboundAsset({
+      cfg,
+      to,
+      text,
+      mediaUrl,
+      mediaAccess,
+      accountId,
+      metadata,
+      kind,
+      fallbackLabel: kind === "audio" ? "Voice message" : "Image",
     });
-    return {
-      channel: BOT_CHAT_CHANNEL_ID,
-      messageId: result.messageId,
-      channelId: target.channelId,
-      conversationId: target.channelId,
-      timestamp: Date.now(),
-      meta: {
-        target: target.normalizedTarget,
-        chatType: target.chatType,
-        recipientType: target.recipientType,
-        publishTopic: target.publishTopic,
-      },
-    };
+  },
+  sendVoice: async ({ cfg, to, text, voiceUrl, voiceAccess, accountId, metadata }) => {
+    return sendBotChatOutboundAsset({
+      cfg,
+      to,
+      text,
+      mediaUrl: voiceUrl,
+      mediaAccess: voiceAccess,
+      accountId,
+      metadata,
+      kind: "audio",
+      fallbackLabel: "Voice message",
+    });
   },
 };
 
@@ -200,6 +184,7 @@ export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
         debug: (message: string, fields?: Record<string, unknown>) => ctx.log?.debug?.(message, fields),
       };
       await getBotChatRuntime().start(ctx.account.config as Record<string, unknown>, logger, {
+        runTask: resolveBotChatTaskRunner(ctx.channelRuntime),
         emitMessage: async (message) => {
           if (message.metadata?.senderType === "bot") {
             return;
@@ -250,6 +235,71 @@ export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
     secondaryGate: "custom-approval",
   },
 };
+
+async function sendBotChatOutboundAsset(params: {
+  cfg: Record<string, unknown>;
+  to: string;
+  text?: string;
+  mediaUrl: string;
+  mediaAccess?: Record<string, unknown>;
+  accountId?: string | null;
+  metadata?: Record<string, unknown>;
+  kind: BotChatMediaKind;
+  fallbackLabel: string;
+}) {
+  const account = resolveBotChatAccount(params.cfg, params.accountId ?? undefined);
+  const target = buildBotChatOutboundMessageTarget({
+    raw: params.to,
+    account,
+    metadata: params.metadata,
+  });
+  const fallbackBody =
+    params.text?.trim() ||
+    readFileNameFromMediaPath(params.mediaUrl) ||
+    params.fallbackLabel;
+  let asset: Record<string, unknown> | undefined;
+  try {
+    asset = await prepareBotChatOutboundMediaAsset(account, params.mediaUrl, params.kind);
+  } catch {
+    asset = undefined;
+  }
+  const body = params.text?.trim() || readString(asset?.file_name) || fallbackBody;
+  const result = await getBotChatRuntime().sendToChannel({
+    channelId: target.channelId,
+    userId: target.userId,
+    text: body,
+    metadata: {
+      ...(params.metadata ?? {}),
+      ...(asset
+        ? {
+            content_type: params.kind,
+            asset: {
+              ...asset,
+              ...(params.mediaAccess ? { access: params.mediaAccess } : {}),
+            },
+          }
+        : {}),
+      target: target.normalizedTarget,
+      chatType: target.chatType,
+      botId: account.botId,
+      toType: target.recipientType,
+      publishTopic: target.publishTopic,
+    },
+  });
+  return {
+    channel: BOT_CHAT_CHANNEL_ID,
+    messageId: result.messageId,
+    channelId: target.channelId,
+    conversationId: target.channelId,
+    timestamp: Date.now(),
+    meta: {
+      target: target.normalizedTarget,
+      chatType: target.chatType,
+      recipientType: target.recipientType,
+      publishTopic: target.publishTopic,
+    },
+  };
+}
 
 async function dispatchBotChatReply(params: {
   cfg: Record<string, unknown>;
@@ -391,17 +441,42 @@ async function dispatchBotChatReply(params: {
       userId: params.message.userId,
       chunks: replyChunks.length,
     });
-    await getBotChatRuntime().sendToChannel({
-      channelId: params.message.channelId,
-      userId: replyTarget.recipientId,
-      text: preparedReply.text,
-      metadata: {
-        ...preparedReply.metadata,
-        botId,
-        toType: replyTarget.recipientType,
-        publishTopic: params.message.metadata?.topic ?? params.message.channelId,
-      },
-    });
+    const replyMetadata = {
+      ...preparedReply.metadata,
+      botId,
+      toType: replyTarget.recipientType,
+      publishTopic: params.message.metadata?.topic ?? params.message.channelId,
+    };
+    try {
+      await getBotChatRuntime().sendToChannel({
+        channelId: params.message.channelId,
+        userId: replyTarget.recipientId,
+        text: preparedReply.text,
+        metadata: replyMetadata,
+      });
+    } catch (error) {
+      if (!preparedReply.mediaKind) {
+        throw error;
+      }
+      params.log?.error?.("botchat.reply.send_error", {
+        error: error instanceof Error ? error.message : String(error),
+        kind: preparedReply.mediaKind,
+      });
+      await getBotChatRuntime().sendToChannel({
+        channelId: params.message.channelId,
+        userId: replyTarget.recipientId,
+        text: preparedReply.text,
+        metadata: {
+          ...metadataWithoutBotChatAsset(replyMetadata),
+          botId,
+          toType: replyTarget.recipientType,
+          publishTopic: params.message.metadata?.topic ?? params.message.channelId,
+        },
+      });
+      params.log?.warn?.("botchat.reply.media_fallback_sent", {
+        kind: preparedReply.mediaKind,
+      });
+    }
   }
   params.log?.debug?.("botchat.reply.dispatch_done", {
     channelId: params.message.channelId,
@@ -604,30 +679,48 @@ async function prepareBotChatReplyDelivery(
   log?: {
     warn?(message: string, fields?: Record<string, unknown>): void;
   },
-): Promise<{ text: string; metadata: Record<string, unknown> }> {
+): Promise<{ text: string; metadata: Record<string, unknown>; mediaKind?: BotChatMediaKind }> {
   const directive = extractBotChatMediaDirective(text);
   if (!directive) {
     return { text, metadata };
   }
 
   try {
-    const mediaAsset = await prepareBotChatOutboundMediaAsset(account, directive.mediaPath);
-    const body = directive.body || readString(mediaAsset.file_name) || "Image";
+    const mediaAsset = await prepareBotChatOutboundMediaAsset(
+      account,
+      directive.mediaPath,
+      directive.kind,
+    );
+    const fallbackLabel = directive.kind === "audio" ? "Voice message" : "Image";
+    const body = directive.body || readString(mediaAsset.file_name) || fallbackLabel;
     return {
       text: body,
       metadata: {
         ...metadata,
-        content_type: "image",
+        content_type: directive.kind,
         asset: mediaAsset,
       },
+      mediaKind: directive.kind,
     };
   } catch (error) {
     log?.warn?.("botchat.reply.media_directive_failed", {
       mediaPath: directive.mediaPath,
+      kind: directive.kind,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { text, metadata };
+    const fallbackLabel = directive.kind === "audio" ? "Voice message" : "Image";
+    const fallbackText = directive.body || `${fallbackLabel} could not be sent`;
+    return { text: fallbackText, metadata };
   }
+}
+
+function metadataWithoutBotChatAsset(metadata: Record<string, unknown>): Record<string, unknown> {
+  const {
+    content_type: _contentType,
+    asset: _asset,
+    ...fallbackMetadata
+  } = metadata;
+  return fallbackMetadata;
 }
 
 async function publishBotChatSlashCommands(params: {
@@ -1049,17 +1142,24 @@ function resolveBotChatCommandSource(message: {
   return "text";
 }
 
-function extractBotChatMediaDirective(text: string): { mediaPath: string; body: string } | undefined {
+function extractBotChatMediaDirective(
+  text: string,
+): { mediaPath: string; body: string; kind: BotChatMediaKind } | undefined {
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trimEnd());
-  const directiveIndex = lines.findIndex((line) => line.trimStart().startsWith("MEDIA:"));
+  const directiveIndex = lines.findIndex((line) => {
+    const trimmed = line.trimStart();
+    return trimmed.startsWith("MEDIA:") || trimmed.startsWith("VOICE:");
+  });
   if (directiveIndex < 0) {
     return undefined;
   }
 
   const directiveLine = lines[directiveIndex]?.trim();
-  const mediaPath = directiveLine?.slice("MEDIA:".length).trim();
+  const kind: BotChatMediaKind = directiveLine?.startsWith("VOICE:") ? "audio" : "image";
+  const prefix = kind === "audio" ? "VOICE:" : "MEDIA:";
+  const mediaPath = directiveLine?.slice(prefix.length).trim();
   if (!mediaPath) {
     return undefined;
   }
@@ -1068,10 +1168,13 @@ function extractBotChatMediaDirective(text: string): { mediaPath: string; body: 
     .filter((_line, index) => index !== directiveIndex)
     .join("\n")
     .trim();
-  return { mediaPath, body };
+  return { mediaPath, body, kind };
 }
 
-async function buildBotChatMediaAsset(mediaPath: string): Promise<Record<string, unknown>> {
+async function buildBotChatMediaAsset(
+  mediaPath: string,
+  kind: BotChatMediaKind,
+): Promise<Record<string, unknown>> {
   const fileName = readFileNameFromMediaPath(mediaPath);
   const mimeType = resolveBotChatMediaMimeType(mediaPath);
   const sourceUrl = isWebResolvableUrl(mediaPath)
@@ -1079,8 +1182,8 @@ async function buildBotChatMediaAsset(mediaPath: string): Promise<Record<string,
     : await buildDataUrlFromFile(mediaPath, mimeType);
 
   return {
-    kind: "image",
-    type: "image",
+    kind,
+    type: kind,
     source_url: sourceUrl,
     ...(fileName ? { file_name: fileName } : {}),
     ...(mimeType ? { content_type: mimeType, mime_type: mimeType } : {}),
@@ -1090,17 +1193,19 @@ async function buildBotChatMediaAsset(mediaPath: string): Promise<Record<string,
 async function prepareBotChatOutboundMediaAsset(
   account: ResolvedBotChatAccount,
   mediaPath: string,
+  kind: BotChatMediaKind,
 ): Promise<Record<string, unknown>> {
   if (isWebResolvableUrl(mediaPath)) {
-    return buildBotChatMediaAsset(mediaPath);
+    return buildBotChatMediaAsset(mediaPath, kind);
   }
 
-  return importBotChatMediaAsset(account, mediaPath);
+  return importBotChatMediaAsset(account, mediaPath, kind);
 }
 
 async function importBotChatMediaAsset(
   account: ResolvedBotChatAccount,
   mediaPath: string,
+  kind: BotChatMediaKind,
 ): Promise<Record<string, unknown>> {
   const backendUrl = readString(account.backendUrl);
   const botKey = readString(account.config?.botKey);
@@ -1108,10 +1213,20 @@ async function importBotChatMediaAsset(
     throw new Error("BotChat backendUrl and botKey are required to import local media");
   }
 
+  if (kind === "audio") {
+    try {
+      return await importBotChatMediaFile(account, mediaPath, kind);
+    } catch (error) {
+      if (!isBotChatMultipartFallbackStatus(error)) {
+        throw error;
+      }
+    }
+  }
+
   const mimeType = resolveBotChatMediaMimeType(mediaPath);
   const dataUrl = await buildDataUrlFromFile(mediaPath, mimeType);
   const fileName = readFileNameFromMediaPath(mediaPath);
-  const response = await fetch(`${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/assets/image/import`, {
+  const response = await fetch(`${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/assets/${kind}/import`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -1135,6 +1250,58 @@ async function importBotChatMediaAsset(
     throw new Error("bot media import returned no asset payload");
   }
   return imported;
+}
+
+async function importBotChatMediaFile(
+  account: ResolvedBotChatAccount,
+  mediaPath: string,
+  kind: BotChatMediaKind,
+): Promise<Record<string, unknown>> {
+  const backendUrl = readString(account.backendUrl);
+  const botKey = readString(account.config?.botKey);
+  if (!backendUrl || !botKey) {
+    throw new Error("BotChat backendUrl and botKey are required to import local media");
+  }
+
+  const mimeType = resolveBotChatMediaMimeType(mediaPath);
+  const fileName = readFileNameFromMediaPath(mediaPath) ?? "media";
+  const contents = await fs.readFile(mediaPath);
+  const formData = new FormData();
+  formData.set("content_type", mimeType);
+  formData.set("file_name", fileName);
+  formData.set("file", new Blob([contents], { type: mimeType }), fileName);
+  const response = await fetch(`${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/assets/${kind}/import`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "X-Bot-Key": botKey,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new BotChatMediaImportError(response.status);
+  }
+
+  const json = (await response.json()) as { data?: Record<string, unknown> };
+  const imported = readRecord(json.data);
+  if (!imported) {
+    throw new Error("bot media import returned no asset payload");
+  }
+  return imported;
+}
+
+class BotChatMediaImportError extends Error {
+  status: number;
+
+  constructor(status: number) {
+    super(`bot media import failed: ${status}`);
+    this.status = status;
+  }
+}
+
+function isBotChatMultipartFallbackStatus(error: unknown): boolean {
+  return error instanceof BotChatMediaImportError && [400, 404, 415].includes(error.status);
 }
 
 function isWebResolvableUrl(value: string): boolean {
@@ -1168,10 +1335,31 @@ function readFileNameFromMediaPath(mediaPath: string): string | undefined {
 function resolveBotChatMediaMimeType(mediaPath: string): string {
   const extension = path.extname(mediaPath).trim().toLowerCase();
   switch (extension) {
+    case ".aac":
+      return "audio/aac";
+    case ".amr":
+      return "audio/amr";
     case ".apng":
       return "image/apng";
     case ".avif":
       return "image/avif";
+    case ".m4a":
+      return "audio/mp4";
+    case ".mp3":
+      return "audio/mpeg";
+    case ".oga":
+    case ".ogg":
+      return "audio/ogg";
+    case ".opus":
+      return "audio/opus";
+    case ".wav":
+      return "audio/wav";
+    case ".webm":
+      return "audio/webm";
+    case ".3gp":
+      return "audio/3gpp";
+    case ".3g2":
+      return "audio/3gpp2";
     case ".gif":
       return "image/gif";
     case ".jpeg":
@@ -1198,6 +1386,20 @@ async function waitForAbort(signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolve) => {
     signal.addEventListener("abort", () => resolve(), { once: true });
   });
+}
+
+function resolveBotChatTaskRunner(channelRuntime: unknown): RuntimeHooks["runTask"] | undefined {
+  const runtime = readRecord(channelRuntime);
+  const directRunner = runtime?.runTask;
+  if (typeof directRunner === "function") {
+    return async (task) => directRunner(task);
+  }
+  const tasks = readRecord(runtime?.tasks);
+  const taskRunner = tasks?.runTask;
+  if (typeof taskRunner === "function") {
+    return async (task) => taskRunner(task);
+  }
+  return undefined;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

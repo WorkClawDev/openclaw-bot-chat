@@ -20,6 +20,7 @@ import {
   normalizeAllowFromEntry,
   parseBotChatTarget,
   resolveBotChatAccount,
+  runBotChatTaskPollOnceForTest,
   setBotChatRuntime,
   buildBotChatDirectTopic,
   buildBotChatGroupTopic,
@@ -34,6 +35,16 @@ import { botChatSetupPlugin } from '../src/channel.setup.ts';
 import { botChatDoctor } from '../src/doctor.ts';
 import { botChatSecrets } from '../src/secret-config-contract.ts';
 import { botChatStatus } from '../src/status.ts';
+
+function jsonResponse(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return payload;
+    },
+  };
+}
 
 test('normalizeBotChatConfig falls back to env and defaults', () => {
   const config = normalizeBotChatConfig({}, {
@@ -381,11 +392,223 @@ test('outbound image payload prefers hydrated asset urls over source_url', () =>
   assert.equal(payload.content.url, 'https://assets.example/image.png?sig=ok');
 });
 
+test('outbound audio payload uses audio content type and hydrated asset url', () => {
+  const payload = JSON.parse(
+    buildBotChatOutboundPayload({
+      channelId: 'conv-2',
+      userId: 'user-2',
+      text: 'voice caption',
+      metadata: {
+        content_type: 'audio',
+        asset: {
+          id: 'asset-2',
+          download_url: 'https://assets.example/voice.m4a?sig=ok',
+          source_url: '/tmp/local-voice.m4a',
+        },
+      },
+    }),
+  );
+
+  assert.equal(payload.content.type, 'audio');
+  assert.equal(payload.content.url, 'https://assets.example/voice.m4a?sig=ok');
+});
+
 test('state path stays scoped by bot id', () => {
   assert.equal(
     buildBotChatStatePath({ stateDir: './data', botId: 'bot-z' }),
     'data/botchat-bot-z-state.json',
   );
+});
+
+test('task polling does not claim work without an executor hook', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    return jsonResponse({
+      data: [
+        {
+          id: 'task-1',
+          title: 'Available task',
+          status: 'available',
+          assignee_bot_id: null,
+          progress: 0,
+        },
+      ],
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {},
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls.length, 0);
+});
+
+test('task polling executes an assigned claimed task and reports completion', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  const executed = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-1',
+            title: 'Assigned task',
+            status: 'claimed',
+            assignee_bot_id: 'bot-a',
+            progress: 0,
+          },
+        ],
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    return jsonResponse({
+      data: {
+        id: 'task-1',
+        title: 'Assigned task',
+        status: action === 'progress' ? 'in_progress' : 'completed',
+        assignee_bot_id: 'bot-a',
+        progress: action === 'progress' ? 1 : 100,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask(task) {
+          executed.push(task);
+          return { note: `done:${task.title}` };
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(executed.length, 1);
+  assert.equal(fetchCalls.length, 3);
+  assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/tasks/task-1/progress');
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-1/complete');
+  assert.deepEqual(JSON.parse(fetchCalls[2].init.body), {
+    latest_status_note: 'done:Assigned task',
+  });
+});
+
+test('task polling claims an available task before execution', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-2',
+            title: 'Available task',
+            status: 'available',
+            assignee_bot_id: null,
+            progress: 0,
+          },
+        ],
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    return jsonResponse({
+      data: {
+        id: 'task-2',
+        title: 'Available task',
+        status: action === 'claim' ? 'claimed' : action === 'progress' ? 'in_progress' : 'completed',
+        assignee_bot_id: 'bot-a',
+        progress: action === 'complete' ? 100 : 1,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask() {
+          return 'available task complete';
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls.length, 4);
+  assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/claim');
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/progress');
+  assert.equal(fetchCalls[3].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/complete');
+});
+
+test('task polling reports executor failures back to the task', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-3',
+            title: 'Failing task',
+            status: 'claimed',
+            assignee_bot_id: 'bot-a',
+            progress: 0,
+          },
+        ],
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    return jsonResponse({
+      data: {
+        id: 'task-3',
+        title: 'Failing task',
+        status: action === 'fail' ? 'failed' : 'in_progress',
+        assignee_bot_id: 'bot-a',
+        progress: 1,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask() {
+          throw new Error('executor exploded');
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls.length, 3);
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-3/fail');
+  assert.deepEqual(JSON.parse(fetchCalls[2].init.body), {
+    latest_status_note: 'executor exploded',
+  });
 });
 
 test('diagnostics report errors and warnings without leaking secrets', () => {
@@ -929,6 +1152,404 @@ test('outbound adapter strips MEDIA lines from text and imports local media befo
       },
     },
   ]);
+});
+
+test('outbound adapter imports local voice before sendVoice', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  const fetchCalls = [];
+  const tempFile = path.join(os.tmpdir(), `botchat-voice-${Date.now()}.m4a`);
+
+  await fs.writeFile(tempFile, Buffer.from([0x00, 0x00, 0x00, 0x18]));
+  setBotChatRuntime({
+    async start() {},
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `msg-${sent.length}` };
+    },
+  });
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    return {
+      ok: true,
+      async json() {
+        return {
+          data: {
+            id: 'voice-asset-1',
+            kind: 'audio',
+            mime_type: 'audio/mp4',
+            content_type: 'audio/mp4',
+            file_name: 'reply.m4a',
+            download_url: 'https://assets.example/reply.m4a?sig=ok',
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    await botChatPlugin.outbound.sendVoice({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      to: 'dm:alice',
+      text: '',
+      voiceUrl: tempFile,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    setBotChatRuntime(originalRuntime);
+    await fs.rm(tempFile, { force: true });
+  }
+
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/assets/audio/import');
+  const importPayload = fetchCalls[0].init.body;
+  assert.equal(typeof importPayload.get, 'function');
+  assert.equal(importPayload.get('content_type'), 'audio/mp4');
+  assert.equal(importPayload.get('file_name').endsWith('.m4a'), true);
+  assert.equal(importPayload.get('file').type, 'audio/mp4');
+  assert.equal(importPayload.get('file').name.endsWith('.m4a'), true);
+
+  assert.deepEqual(sent, [
+    {
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'reply.m4a',
+      metadata: {
+        content_type: 'audio',
+        asset: {
+          id: 'voice-asset-1',
+          kind: 'audio',
+          mime_type: 'audio/mp4',
+          content_type: 'audio/mp4',
+          file_name: 'reply.m4a',
+          download_url: 'https://assets.example/reply.m4a?sig=ok',
+        },
+        target: 'dm:alice',
+        chatType: 'direct',
+        botId: 'bot-a',
+        toType: 'user',
+        publishTopic: 'chat/dm/user/alice/bot/bot-a',
+      },
+    },
+  ]);
+});
+
+test('gateway reply VOICE directive imports audio and sends audio content', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  const fetchCalls = [];
+  let capturedHooks;
+  const tempFile = path.join(os.tmpdir(), `botchat-reply-voice-${Date.now()}.m4a`);
+
+  await fs.writeFile(tempFile, Buffer.from([0x00, 0x00, 0x00, 0x18]));
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `reply-${sent.length}` };
+    },
+  });
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    return {
+      ok: true,
+      async json() {
+        return {
+          data: {
+            id: 'voice-asset-2',
+            kind: 'audio',
+            mime_type: 'audio/mp4',
+            content_type: 'audio/mp4',
+            file_name: 'voice.m4a',
+            download_url: 'https://assets.example/voice.m4a?sig=ok',
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      channelRuntime: {
+        reply: {
+          async dispatchReplyWithBufferedBlockDispatcher({ dispatcherOptions }) {
+            await dispatcherOptions.deliver({ text: `voice note\nVOICE:${tempFile}` });
+          },
+        },
+      },
+    });
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'hello',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        message_id: 'incoming-voice-1',
+        senderType: 'user',
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    setBotChatRuntime(originalRuntime);
+    await fs.rm(tempFile, { force: true });
+  }
+
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/assets/audio/import');
+  assert.equal(typeof fetchCalls[0].init.body.get, 'function');
+  assert.equal(fetchCalls[0].init.body.get('content_type'), 'audio/mp4');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'voice note');
+  assert.equal(sent[0].metadata.content_type, 'audio');
+  assert.equal(sent[0].metadata.asset.kind, 'audio');
+  assert.equal(sent[0].metadata.asset.download_url, 'https://assets.example/voice.m4a?sig=ok');
+});
+
+test('local media import falls back to JSON data_url when multipart is unsupported', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  const fetchCalls = [];
+  const tempFile = path.join(os.tmpdir(), `botchat-voice-fallback-${Date.now()}.mp3`);
+
+  await fs.writeFile(tempFile, Buffer.from([0x49, 0x44, 0x33, 0x04]));
+  setBotChatRuntime({
+    async start() {},
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `msg-${sent.length}` };
+    },
+  });
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (fetchCalls.length === 1) {
+      return {
+        ok: false,
+        status: 415,
+        async json() {
+          return { message: 'unsupported media type' };
+        },
+      };
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          data: {
+            id: 'voice-asset-json',
+            kind: 'audio',
+            mime_type: 'audio/mpeg',
+            content_type: 'audio/mpeg',
+            file_name: 'fallback.mp3',
+            download_url: 'https://assets.example/fallback.mp3?sig=ok',
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    await botChatPlugin.outbound.sendVoice({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      to: 'dm:alice',
+      voiceUrl: tempFile,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    setBotChatRuntime(originalRuntime);
+    await fs.rm(tempFile, { force: true });
+  }
+
+  assert.equal(fetchCalls.length, 2);
+  assert.equal(typeof fetchCalls[0].init.body.get, 'function');
+  const jsonPayload = JSON.parse(fetchCalls[1].init.body);
+  assert.equal(jsonPayload.content_type, 'audio/mpeg');
+  assert.equal(jsonPayload.data_url.startsWith('data:audio/mpeg;base64,'), true);
+  assert.equal(sent[0].metadata.content_type, 'audio');
+  assert.equal(sent[0].metadata.asset.id, 'voice-asset-json');
+});
+
+test('gateway reply VOICE directive failure sends visible fallback text', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  const warnings = [];
+  let capturedHooks;
+  const tempFile = path.join(os.tmpdir(), `botchat-reply-voice-fail-${Date.now()}.mp3`);
+
+  await fs.writeFile(tempFile, Buffer.from([0x49, 0x44, 0x33, 0x04]));
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `reply-${sent.length}` };
+    },
+  });
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 500,
+    async json() {
+      return { message: 'import failed' };
+    },
+  });
+
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      log: {
+        warn(message, fields) {
+          warnings.push({ message, fields });
+        },
+      },
+      channelRuntime: {
+        reply: {
+          async dispatchReplyWithBufferedBlockDispatcher({ dispatcherOptions }) {
+            await dispatcherOptions.deliver({ text: `VOICE:${tempFile}` });
+          },
+        },
+      },
+    });
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'hello',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        message_id: 'incoming-voice-fail-1',
+        senderType: 'user',
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    setBotChatRuntime(originalRuntime);
+    await fs.rm(tempFile, { force: true });
+  }
+
+  const replies = sent.filter((message) => message.text !== 'slash_commands');
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text.includes('Voice message could not be sent'), true);
+  assert.equal(replies[0].text.includes('VOICE:'), false);
+  assert.equal(replies[0].metadata.content_type, undefined);
+  const warning = warnings.find((entry) => entry.message === 'botchat.reply.media_directive_failed');
+  assert.ok(warning);
+  assert.equal(warning.fields.kind, 'audio');
+  assert.equal(typeof warning.fields.error, 'string');
+});
+
+test('gateway reply media send failure logs and retries as plain text', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  const errors = [];
+  const warnings = [];
+  let capturedHooks;
+  const tempFile = path.join(os.tmpdir(), `botchat-reply-voice-send-fail-${Date.now()}.m4a`);
+
+  await fs.writeFile(tempFile, Buffer.from([0x00, 0x00, 0x00, 0x18]));
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      if (message.metadata?.content_type === 'audio') {
+        throw new Error('audio publish failed');
+      }
+      sent.push(message);
+      return { messageId: `reply-${sent.length}` };
+    },
+  });
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        data: {
+          id: 'voice-asset-send-fail',
+          kind: 'audio',
+          mime_type: 'audio/mp4',
+          content_type: 'audio/mp4',
+          file_name: 'voice.m4a',
+          download_url: 'https://assets.example/voice.m4a?sig=ok',
+        },
+      };
+    },
+  });
+
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      log: {
+        error(message, fields) {
+          errors.push({ message, fields });
+        },
+        warn(message, fields) {
+          warnings.push({ message, fields });
+        },
+      },
+      channelRuntime: {
+        reply: {
+          async dispatchReplyWithBufferedBlockDispatcher({ dispatcherOptions }) {
+            await dispatcherOptions.deliver({ text: `voice note\nVOICE:${tempFile}` });
+          },
+        },
+      },
+    });
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'hello',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        message_id: 'incoming-voice-send-fail-1',
+        senderType: 'user',
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    setBotChatRuntime(originalRuntime);
+    await fs.rm(tempFile, { force: true });
+  }
+
+  const replies = sent.filter((message) => message.text !== 'slash_commands');
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text, 'voice note');
+  assert.equal(replies[0].metadata.content_type, undefined);
+  assert.equal(replies[0].metadata.asset, undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message, 'botchat.reply.send_error');
+  assert.equal(errors[0].fields.error, 'audio publish failed');
+  assert.ok(warnings.find((entry) => entry.message === 'botchat.reply.media_fallback_sent'));
 });
 
 test('gateway startAccount returns stop handle when host has no abort signal', async () => {
