@@ -112,101 +112,150 @@ class AuthViewModel: ObservableObject {
 struct LoginView: View {
     @StateObject private var viewModel = AuthViewModel()
     @State private var isRegistering = false
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var usesWideLayout: Bool {
+        AppPlatform.usesDesktopPresentation && horizontalSizeClass == .regular
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 FrostedBackground()
 
-                ScrollView {
-                    VStack(spacing: 26) {
-                        VStack(spacing: 18) {
-                            Image("AppLogo")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 72, height: 72)
-                                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                .shadow(color: Color.black.opacity(0.08), radius: 14, y: 8)
-                                .padding(.top, 28)
-
-                            VStack(spacing: 8) {
-                                Text("Welcome back")
-                                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                                    .foregroundStyle(Color.rcmsTextStrong)
-
-                                Text("Sign in to ClawChat")
-                                    .font(.body)
-                                    .foregroundStyle(Color.rcmsTextSecondary)
-                                    .multilineTextAlignment(.center)
-                            }
-                        }
-
-                        VStack(spacing: 18) {
-                            AuthTextInput(
-                                icon: "envelope",
-                                placeholder: "Email or username",
-                                text: $viewModel.identifier,
-                                error: viewModel.fieldErrors["identifier"]
-                            )
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-
-                            AuthSecureInput(
-                                icon: "lock",
-                                placeholder: "Password",
-                                text: $viewModel.password,
-                                error: viewModel.fieldErrors["password"]
-                            )
-
-                            if let error = viewModel.errorMessage {
-                                AuthErrorBanner(message: error)
-                            }
-
-                            Button(action: viewModel.login) {
-                                AuthPrimaryButtonLabel(title: "Login", isLoading: viewModel.isLoading)
-                            }
-                            .disabled(viewModel.isLoading)
-                        }
-                        .padding(.horizontal, 20)
-
-                        NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }.hidden()
-                        Button {
-                            isRegistering = true
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("Don't have an account?")
-                                    .foregroundStyle(Color.rcmsTextSecondary)
-                                Text("Create account")
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(Color.rcmsAccent)
-                            }
-                            .font(.subheadline)
-                        }
-
-                        Rectangle()
-                            .fill(Color.rcmsDivider)
-                            .frame(height: 1)
-                            .padding(.horizontal, 20)
-
-                        VStack(alignment: .leading, spacing: 16) {
-                            CapabilityRow(icon: "antenna.radiowaves.left.and.right", text: "MQTT realtime")
-                            CapabilityRow(icon: "shield.checkered", text: "Secure auth")
-                            CapabilityRow(icon: "message.badge", text: "Connect bots, groups, and message history")
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(20)
-                        .background(Color.rcmsControlSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.rcmsHairline, lineWidth: 1)
-                        )
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 28)
-                    }
+                if usesWideLayout {
+                    wideBody
+                } else {
+                    compactBody
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    private var compactBody: some View {
+        ScrollView {
+            VStack(spacing: 26) {
+                authBrandHeader(title: "Welcome back", subtitle: "Sign in to ClawChat", logoSize: 72)
+
+                loginForm
+                    .padding(.horizontal, 20)
+
+                registerLink
+
+                divider
+
+                capabilityCard([
+                    ("antenna.radiowaves.left.and.right", "MQTT realtime"),
+                    ("shield.checkered", "Secure auth"),
+                    ("message.badge", "Connect bots, groups, and message history")
+                ])
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
+            }
+        }
+    }
+
+    private var wideBody: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 28) {
+                Image("AppLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 108, height: 108)
+                    .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    .shadow(color: Color.black.opacity(0.08), radius: 16, y: 8)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("ClawChat")
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.rcmsTextStrong)
+                    Text("Broker-first chats for humans, bots, and groups.")
+                        .font(.title3)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                capabilityCard([
+                    ("antenna.radiowaves.left.and.right", "MQTT realtime"),
+                    ("shield.checkered", "Secure auth"),
+                    ("message.badge", "Bot and group history")
+                ])
+
+                Spacer()
+            }
+            .frame(maxWidth: 460, maxHeight: .infinity, alignment: .topLeading)
+            .padding(54)
+
+            Divider()
+                .overlay(Color.rcmsDivider)
+
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Text("Welcome back")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.rcmsTextStrong)
+                    Text("Sign in to ClawChat")
+                        .font(.body)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                }
+
+                loginForm
+
+                registerLink
+            }
+            .frame(width: 430)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 54)
+        }
+        .padding(22)
+    }
+
+    private var loginForm: some View {
+        VStack(spacing: 18) {
+            AuthTextInput(
+                icon: "envelope",
+                placeholder: "Email or username",
+                text: $viewModel.identifier,
+                error: viewModel.fieldErrors["identifier"]
+            )
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+
+            AuthSecureInput(
+                icon: "lock",
+                placeholder: "Password",
+                text: $viewModel.password,
+                error: viewModel.fieldErrors["password"]
+            )
+
+            if let error = viewModel.errorMessage {
+                AuthErrorBanner(message: error)
+            }
+
+            Button(action: viewModel.login) {
+                AuthPrimaryButtonLabel(title: "Login", isLoading: viewModel.isLoading)
+            }
+            .disabled(viewModel.isLoading)
+        }
+    }
+
+    private var registerLink: some View {
+        VStack {
+            NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }
+                .hidden()
+            Button {
+                isRegistering = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Don't have an account?")
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                    Text("Create account")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.rcmsAccent)
+                }
+                .font(.subheadline)
+            }
         }
     }
 }
@@ -214,276 +263,159 @@ struct LoginView: View {
 struct RegisterView: View {
     @StateObject private var viewModel = AuthViewModel()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var usesWideLayout: Bool {
+        AppPlatform.usesDesktopPresentation && horizontalSizeClass == .regular
+    }
 
     var body: some View {
         ZStack {
             FrostedBackground()
 
-            ScrollView {
-                VStack(spacing: 26) {
-                    VStack(spacing: 18) {
-                        Image("AppLogo")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 72, height: 72)
-                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                            .shadow(color: Color.black.opacity(0.08), radius: 14, y: 8)
-                            .padding(.top, 28)
-
-                        VStack(spacing: 8) {
-                            Text("Create account")
-                                .font(.system(size: 32, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color.rcmsTextStrong)
-                            Text("Start chatting with bots and teams")
-                                .font(.body)
-                                .foregroundStyle(Color.rcmsTextSecondary)
-                                .multilineTextAlignment(.center)
-                        }
-                    }
-
-                    VStack(spacing: 18) {
-                        AuthTextInput(
-                            icon: "person",
-                            placeholder: "Username",
-                            text: $viewModel.username,
-                            error: viewModel.fieldErrors["username"]
-                        )
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-
-                        AuthTextInput(
-                            icon: "envelope",
-                            placeholder: "Email",
-                            text: $viewModel.email,
-                            error: viewModel.fieldErrors["email"]
-                        )
-                        .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-
-                        AuthSecureInput(
-                            icon: "lock",
-                            placeholder: "Password",
-                            text: $viewModel.password,
-                            error: viewModel.fieldErrors["password"]
-                        )
-
-                        PasswordRequirementRow(text: "At least 8 characters", isMet: viewModel.password.count >= 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 4)
-
-                        if let error = viewModel.errorMessage {
-                            AuthErrorBanner(message: error)
-                        }
-
-                        Button(action: viewModel.register) {
-                            AuthPrimaryButtonLabel(title: "Register", isLoading: viewModel.isLoading)
-                        }
-                        .disabled(viewModel.isLoading)
-                    }
-                    .padding(.horizontal, 20)
-                    
-                    Button {
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("Already have an account?")
-                                .foregroundStyle(Color.rcmsTextSecondary)
-                            Text("Sign in")
-                                .fontWeight(.semibold)
-                                .foregroundStyle(Color.rcmsAccent)
-                        }
-                        .font(.subheadline)
-                    }
-
-                    Rectangle()
-                        .fill(Color.rcmsDivider)
-                        .frame(height: 1)
-                        .padding(.horizontal, 20)
-
-                    VStack(alignment: .leading, spacing: 16) {
-                        CapabilityRow(icon: "cpu", text: "Bot single chat")
-                        CapabilityRow(icon: "person.3", text: "Group conversations")
-                        CapabilityRow(icon: "clock", text: "Realtime history")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
-                    .background(Color.rcmsControlSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(Color.rcmsHairline, lineWidth: 1)
-                    )
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 28)
+                if usesWideLayout {
+                    wideBody
+                } else {
+                    compactBody
                 }
-            }
         }
         .navigationBarTitleDisplayMode(.inline)
     }
-}
 
-private struct AuthTextInput: View {
-    let icon: String
-    let placeholder: String
-    @Binding var text: String
-    let error: String?
+    private var compactBody: some View {
+        ScrollView {
+            VStack(spacing: 26) {
+                authBrandHeader(title: "Create account", subtitle: "Start chatting with bots and teams", logoSize: 72)
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(error == nil ? Color.rcmsAccent : Color.rcmsDanger)
-                    .frame(width: 22)
+                registerForm
+                    .padding(.horizontal, 20)
 
-                TextField(placeholder, text: $text)
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(Color.rcmsTextPrimary)
+                signInLink
+
+                divider
+
+                capabilityCard([
+                    ("cpu", "Bot single chat"),
+                    ("person.3", "Group conversations"),
+                    ("clock", "Realtime history")
+                ])
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .background(Color.rcmsFieldSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(error == nil ? Color.rcmsHairline : Color.rcmsDanger.opacity(0.55), lineWidth: 1)
+        }
+    }
+
+    private var wideBody: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 28) {
+                Image("AppLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 108, height: 108)
+                    .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    .shadow(color: Color.black.opacity(0.08), radius: 16, y: 8)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("ClawChat")
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.rcmsTextStrong)
+                    Text("Create one account for bot direct chats, group rooms, and realtime history.")
+                        .font(.title3)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                capabilityCard([
+                    ("cpu", "Bot single chat"),
+                    ("person.3", "Group conversations"),
+                    ("clock", "Realtime history")
+                ])
+
+                Spacer()
+            }
+            .frame(maxWidth: 460, maxHeight: .infinity, alignment: .topLeading)
+            .padding(54)
+
+            Divider()
+                .overlay(Color.rcmsDivider)
+
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Text("Create account")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.rcmsTextStrong)
+                    Text("Start chatting with bots and teams")
+                        .font(.body)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                }
+
+                registerForm
+
+                signInLink
+            }
+            .frame(width: 430)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 54)
+        }
+        .padding(22)
+    }
+
+    private var registerForm: some View {
+        VStack(spacing: 18) {
+            AuthTextInput(
+                icon: "person",
+                placeholder: "Username",
+                text: $viewModel.username,
+                error: viewModel.fieldErrors["username"]
+            )
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+
+            AuthTextInput(
+                icon: "envelope",
+                placeholder: "Email",
+                text: $viewModel.email,
+                error: viewModel.fieldErrors["email"]
+            )
+            .keyboardType(.emailAddress)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+
+            AuthSecureInput(
+                icon: "lock",
+                placeholder: "Password",
+                text: $viewModel.password,
+                error: viewModel.fieldErrors["password"]
             )
 
-            if let error {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(Color.rcmsDanger)
-                    .padding(.horizontal, 4)
+            PasswordRequirementRow(text: "At least 8 characters", isMet: viewModel.password.count >= 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 4)
+
+            if let error = viewModel.errorMessage {
+                AuthErrorBanner(message: error)
             }
-        }
-    }
-}
 
-private struct AuthSecureInput: View {
-    let icon: String
-    let placeholder: String
-    @Binding var text: String
-    let error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(error == nil ? Color.rcmsAccent : Color.rcmsDanger)
-                    .frame(width: 22)
-
-                SecureField(placeholder, text: $text)
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(Color.rcmsTextPrimary)
+            Button(action: viewModel.register) {
+                AuthPrimaryButtonLabel(title: "Register", isLoading: viewModel.isLoading)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .background(Color.rcmsFieldSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(error == nil ? Color.rcmsHairline : Color.rcmsDanger.opacity(0.55), lineWidth: 1)
-            )
+            .disabled(viewModel.isLoading)
+        }
+    }
 
-            if let error {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(Color.rcmsDanger)
-                    .padding(.horizontal, 4)
+    private var signInLink: some View {
+        Button {
+            dismiss()
+        } label: {
+            HStack(spacing: 4) {
+                Text("Already have an account?")
+                    .foregroundStyle(Color.rcmsTextSecondary)
+                Text("Sign in")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.rcmsAccent)
             }
+            .font(.subheadline)
         }
     }
 }
 
-private struct AuthPrimaryButtonLabel: View {
-    let title: String
-    let isLoading: Bool
-
-    var body: some View {
-        Group {
-            if isLoading {
-                ProgressView().tint(.white)
-            } else {
-                Text(title)
-                    .font(.headline)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 15)
-        .background(Color.rcmsAccent)
-        .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.rcmsAccent.opacity(0.26), radius: 10, y: 5)
-    }
-}
-
-private struct AuthErrorBanner: View {
-    let message: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .padding(.top, 1)
-            Text(message)
-                .font(.caption)
-        }
-        .foregroundStyle(Color.rcmsDanger)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.rcmsDanger.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-}
-
-private struct PasswordRequirementRow: View {
-    let text: String
-    let isMet: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isMet ? "checkmark.circle.fill" : "circle")
-                .font(.caption)
-                .foregroundStyle(isMet ? Color.rcmsOnline : Color.rcmsTextSecondary.opacity(0.55))
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(Color.rcmsTextSecondary)
-        }
-    }
-}
-
-private struct CapabilityRow: View {
-    let icon: String
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "checkmark.circle")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.rcmsOnline)
-
-            Image(systemName: icon)
-                .font(.title3.weight(.medium))
-                .foregroundStyle(Color.rcmsTextSecondary)
-                .frame(width: 28)
-
-            Text(text)
-                .font(.body)
-                .foregroundStyle(Color.rcmsTextPrimary)
-        }
-    }
-}
-
-struct AuthView_Previews: PreviewProvider {
-    static var previews: some View {
-        Group {
-            LoginView()
-                .previewDisplayName("Login")
-            RegisterView()
-                .previewDisplayName("Register")
-        }
-        .preferredColorScheme(.light)
-    }
-}

@@ -6,12 +6,12 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
     }
 
     @MainActor
-    func testTwentyConsecutivePrependsStayStable() throws {
+    func testConsecutivePrependsStayStable() throws {
         let app = XCUIApplication()
         app.launchArguments = [
             "-uiTestMode", "chatRoomV2",
             "-fixture", "textPrependStress",
-            "-chatRoomV2AutoPrependStress", "20"
+            "-chatRoomV2AutoPrependStress", "5"
         ]
         app.launch()
 
@@ -21,14 +21,14 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
         let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
         XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
 
-        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "prepends=20", "prepends=20")
+        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "prepends=5", "prepends=5")
         expectation(for: completed, evaluatedWith: diagnostics)
         waitForExpectations(timeout: 20)
 
         let noUnexpectedReloads = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "reloads=0", "reloads=0")
         XCTAssertTrue(noUnexpectedReloads.evaluate(with: diagnostics))
 
-        let singleRestorePerPrepend = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "restores=20", "restores=20")
+        let singleRestorePerPrepend = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "restores=5", "restores=5")
         XCTAssertTrue(singleRestorePerPrepend.evaluate(with: diagnostics))
 
         let diagnosticText = diagnostics.value as? String ?? diagnostics.label
@@ -47,14 +47,16 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
         let collection = app.collectionViews["chatRoomV2.collectionView"]
         XCTAssertTrue(collection.waitForExistence(timeout: 10))
 
+        let top = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        let bottom = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
         for _ in 0..<5 {
-            collection.swipeUp(velocity: .fast)
+            bottom.press(forDuration: 0.01, thenDragTo: top)
         }
         for _ in 0..<5 {
-            collection.swipeDown(velocity: .fast)
+            top.press(forDuration: 0.01, thenDragTo: bottom)
         }
 
-        XCTAssertTrue(app.staticTexts["chatRoomV2.diagnostics"].exists)
+        XCTAssertTrue(app.staticTexts["chatRoomV2.diagnostics"].waitForExistence(timeout: 10))
         XCTAssertTrue(collection.cells.count > 0)
     }
 

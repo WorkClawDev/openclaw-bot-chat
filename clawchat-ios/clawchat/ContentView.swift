@@ -17,8 +17,10 @@ struct ContentView: View {
                 ChatRoomV2LiveBridgeFixtureView(context: uiTestChatContext)
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
                 ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
+            } else if ChatRoomV2FeatureFlag.uiTestMode?.hasPrefix("ipadWorkspace") == true {
+                IpadWorkspaceView(launchSection: ChatRoomV2FeatureFlag.uiTestMode)
             } else if authManager.isAuthenticated {
-                HomeView()
+                AdaptiveHomeShell()
                     .onAppear {
                         authManager.refreshCurrentUserIfNeeded()
                         RealtimeService.shared.start()
@@ -46,6 +48,22 @@ struct ContentView: View {
             memberCount: nil,
             avatarURLString: nil
         )
+    }
+}
+
+private struct AdaptiveHomeShell: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var usesWideWorkspace: Bool {
+        AppPlatform.usesDesktopPresentation && horizontalSizeClass == .regular
+    }
+
+    var body: some View {
+        if usesWideWorkspace {
+            IpadWorkspaceView()
+        } else {
+            HomeView()
+        }
     }
 }
 
@@ -94,6 +112,7 @@ struct HomeView: View {
         case settings
     }
 }
+
 
 #Preview {
     ContentView()
