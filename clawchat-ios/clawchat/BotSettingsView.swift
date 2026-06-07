@@ -19,7 +19,7 @@ class BotSettingsViewModel: ObservableObject {
     
     func fetchKeys() {
         isLoading = true
-        APIClient.shared.request("/api/v1/bots/\(bot.id.uuidString.lowercased())/keys")
+        APIClient.shared.fetchBotKeys(botID: bot.id)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -34,14 +34,7 @@ class BotSettingsViewModel: ObservableObject {
     
     func updateBot(name: String, description: String?, avatarURL: String?, onDone: @escaping () -> Void) {
         isLoading = true
-        let payload = UpdateBotRequest(
-            name: name,
-            description: description?.isEmpty == true ? nil : description,
-            avatarUrl: avatarURL
-        )
-        let data = try? JSONEncoder().encode(payload)
-        
-        APIClient.shared.request("/api/v1/bots/\(bot.id.uuidString.lowercased())", method: "PUT", body: data)
+        APIClient.shared.updateBot(id: bot.id, name: name, description: description, avatarURL: avatarURL)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -57,7 +50,7 @@ class BotSettingsViewModel: ObservableObject {
     
     func deleteBot(onDone: @escaping () -> Void) {
         isLoading = true
-        APIClient.shared.request("/api/v1/bots/\(bot.id.uuidString.lowercased())", method: "DELETE")
+        APIClient.shared.deleteBot(id: bot.id)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -72,10 +65,7 @@ class BotSettingsViewModel: ObservableObject {
     
     func createKey(name: String?) {
         isLoading = true
-        let payload = CreateKeyRequest(name: name?.isEmpty == true ? nil : name, expiresAt: 0)
-        let data = try? JSONEncoder().encode(payload)
-        
-        APIClient.shared.request("/api/v1/bots/\(bot.id.uuidString.lowercased())/keys", method: "POST", body: data)
+        APIClient.shared.createBotKey(botID: bot.id, name: name)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -91,7 +81,7 @@ class BotSettingsViewModel: ObservableObject {
     
     func revokeKey(keyId: UUID) {
         isLoading = true
-        APIClient.shared.request("/api/v1/bots/\(bot.id.uuidString.lowercased())/keys/\(keyId.uuidString.lowercased())", method: "DELETE")
+        APIClient.shared.revokeBotKey(botID: bot.id, keyID: keyId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -258,29 +248,29 @@ struct BotSettingsView: View {
                                         .font(.system(size: 18, weight: .semibold))
                                         .foregroundStyle(Color.rcmsAccent)
                                         .frame(width: 38, height: 38)
-                                        .background(Color.white.opacity(0.72))
+                                        .background(Color.rcmsControlSurface)
                                         .clipShape(Circle())
                                 }
                             }
                             .disabled(isUploadingAvatar || viewModel.isLoading)
                         }
                         .padding(12)
-                        .background(Color.black.opacity(0.03))
+                        .background(Color.rcmsSubtleFill)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                         TextField("机器人名称", text: $editName)
                             .padding(12)
-                            .background(Color.black.opacity(0.04))
+                            .background(Color.rcmsFieldSurface)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                         TextField("一句话描述", text: $editDescription)
                             .padding(12)
-                            .background(Color.black.opacity(0.04))
+                            .background(Color.rcmsFieldSurface)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                         TextField("头像 URL", text: $editAvatarURL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
                             .padding(12)
-                            .background(Color.black.opacity(0.04))
+                            .background(Color.rcmsFieldSurface)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     .padding(16)

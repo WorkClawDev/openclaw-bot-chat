@@ -22,7 +22,7 @@ class ConversationsViewModel: ObservableObject {
         reloadCachedConversations()
         isLoading = false
 
-        APIClient.shared.request("/api/v1/conversations")
+        APIClient.shared.fetchConversations()
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false

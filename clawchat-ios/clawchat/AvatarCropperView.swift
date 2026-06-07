@@ -20,7 +20,7 @@ struct AvatarCropperView: View {
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
-                let cropSide = min(geometry.size.width - 40, 340)
+                let cropSide = resolvedCropSide(for: geometry.size)
 
                 VStack(spacing: 22) {
                     Spacer(minLength: 12)
@@ -71,6 +71,13 @@ struct AvatarCropperView: View {
                 }
             }
         }
+    }
+
+    private func resolvedCropSide(for containerSize: CGSize) -> CGFloat {
+        let availableWidth = containerSize.width.isFinite ? containerSize.width : 0
+        let availableHeight = containerSize.height.isFinite ? containerSize.height : 0
+        let availableSide = min(availableWidth - 40, availableHeight - 180, 340)
+        return max(120, availableSide)
     }
 
     private func cropSurface(cropSide: CGFloat) -> some View {

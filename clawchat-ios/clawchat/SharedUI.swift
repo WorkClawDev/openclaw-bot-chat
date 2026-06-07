@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import SwiftUI
 import UIKit
 import WebKit
@@ -229,13 +230,13 @@ struct AvatarBadge: View {
             avatarBody
                 .frame(width: diameter, height: diameter)
                 .clipShape(Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.95), lineWidth: 1))
+                .overlay(Circle().stroke(Color.rcmsAvatarBorder, lineWidth: 1))
 
             if let statusColor {
                 Circle()
                     .fill(statusColor)
                     .frame(width: max(10, diameter * 0.22), height: max(10, diameter * 0.22))
-                    .overlay(Circle().stroke(Color.white, lineWidth: max(2, diameter * 0.045)))
+                    .overlay(Circle().stroke(Color.rcmsSurfaceSolid, lineWidth: max(2, diameter * 0.045)))
             }
         }
         .frame(width: diameter, height: diameter)
@@ -316,22 +317,12 @@ final class AvatarImageLoader: ObservableObject {
     @Published var image: UIImage?
     @Published var displayedURL: URL?
 
+    private static let diskCache = AvatarImageDiskCache()
     private static let imageCache: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 600
         cache.totalCostLimit = 32 * 1024 * 1024
         return cache
-    }()
-
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.default
-        configuration.requestCachePolicy = .useProtocolCachePolicy
-        configuration.urlCache = URLCache(
-            memoryCapacity: 16 * 1024 * 1024,
-            diskCapacity: 96 * 1024 * 1024,
-            diskPath: "site.changer.clawchat.avatar-url-cache"
-        )
-        return URLSession(configuration: configuration)
     }()
 
     private static var inFlightLoads: [URL: Task<UIImage?, Never>] = [:]
@@ -346,7 +337,7 @@ final class AvatarImageLoader: ObservableObject {
 
     static func prefetch(_ urls: [URL]) {
         for url in Array(Set(urls)) {
-            guard imageCache.object(forKey: url as NSURL) == nil else { continue }
+            guard cachedImage(for: url) == nil else { continue }
             Task {
                 _ = await image(for: url)
             }
@@ -372,11 +363,20 @@ final class AvatarImageLoader: ObservableObject {
     }
 
     private static func cachedImage(for url: URL) -> UIImage? {
-        imageCache.object(forKey: url as NSURL)
+        if let image = imageCache.object(forKey: url as NSURL) {
+            return image
+        }
+
+        guard let image = diskCache.image(for: url) else {
+            return nil
+        }
+
+        imageCache.setObject(image, forKey: url as NSURL, cost: cacheCost(for: image))
+        return image
     }
 
     private static func image(for url: URL) async -> UIImage? {
-        if let cachedImage = imageCache.object(forKey: url as NSURL) {
+        if let cachedImage = cachedImage(for: url) {
             return cachedImage
         }
 
@@ -387,17 +387,13 @@ final class AvatarImageLoader: ObservableObject {
         let task = Task { @MainActor in
             let loadedImage: UIImage?
             if url.pathExtension.caseInsensitiveCompare("svg") == .orderedSame {
-                loadedImage = await SVGAvatarSnapshotter.shared.image(for: url, session: session)
+                loadedImage = await SVGAvatarSnapshotter.shared.image(for: url)
             } else {
                 loadedImage = await loadBitmapImage(for: url)
             }
 
             if let loadedImage {
-                imageCache.setObject(
-                    loadedImage,
-                    forKey: url as NSURL,
-                    cost: max(1, Int(loadedImage.size.width * loadedImage.size.height * loadedImage.scale * loadedImage.scale * 4))
-                )
+                cache(loadedImage, for: url)
             }
             return loadedImage
         }
@@ -409,23 +405,80 @@ final class AvatarImageLoader: ObservableObject {
     }
 
     private static func loadBitmapImage(for url: URL) async -> UIImage? {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .useProtocolCachePolicy
-        request.timeoutInterval = 20
-        request.addValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-
         do {
-            let (data, response) = try await Self.session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode),
-                  let loadedImage = UIImage(data: data)
-            else {
-                return nil
-            }
-            return loadedImage
+            let data = try await APIClient.shared.fetchRemoteData(
+                from: url,
+                acceptHeader: "image/avif,image/webp,image/*,*/*;q=0.8"
+            )
+            return UIImage(data: data)
         } catch {
             return nil
         }
+    }
+
+    private static func cache(_ image: UIImage, for url: URL) {
+        imageCache.setObject(image, forKey: url as NSURL, cost: cacheCost(for: image))
+        diskCache.store(image, for: url)
+    }
+
+    private static func cacheCost(for image: UIImage) -> Int {
+        max(1, Int(image.size.width * image.size.height * image.scale * image.scale * 4))
+    }
+}
+
+private final class AvatarImageDiskCache {
+    private let fileManager: FileManager
+    private let directoryURL: URL
+    private let writeQueue = DispatchQueue(label: "site.changer.clawchat.avatar-image-disk-cache")
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+
+        let baseURL = (try? fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? fileManager.temporaryDirectory
+
+        let cacheURL = baseURL
+            .appendingPathComponent("clawchat", isDirectory: true)
+            .appendingPathComponent("avatar-cache", isDirectory: true)
+
+        if !fileManager.fileExists(atPath: cacheURL.path) {
+            try? fileManager.createDirectory(at: cacheURL, withIntermediateDirectories: true)
+        }
+
+        self.directoryURL = cacheURL
+    }
+
+    func image(for url: URL) -> UIImage? {
+        let fileURL = storageFileURL(for: url)
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return nil
+        }
+        return UIImage(contentsOfFile: fileURL.path)
+    }
+
+    func store(_ image: UIImage, for url: URL) {
+        let fileURL = storageFileURL(for: url)
+        writeQueue.async { [fileManager] in
+            guard !fileManager.fileExists(atPath: fileURL.path),
+                  let data = image.pngData()
+            else {
+                return
+            }
+            try? data.write(to: fileURL, options: [.atomic])
+        }
+    }
+
+    private func storageFileURL(for url: URL) -> URL {
+        directoryURL.appendingPathComponent("\(digest(url.absoluteString)).png", isDirectory: false)
+    }
+
+    private func digest(_ rawValue: String) -> String {
+        let hash = SHA256.hash(data: Data(rawValue.utf8))
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -436,8 +489,8 @@ private final class SVGAvatarSnapshotter: NSObject, WKNavigationDelegate {
     private let renderSize = CGSize(width: 96, height: 96)
     private var continuations: [ObjectIdentifier: CheckedContinuation<Void, Never>] = [:]
 
-    func image(for url: URL, session: URLSession) async -> UIImage? {
-        let svgMarkup = await fetchSVGMarkup(for: url, session: session)
+    func image(for url: URL) async -> UIImage? {
+        let svgMarkup = await fetchSVGMarkup(for: url)
         let html = htmlDocument(for: url, svgMarkup: svgMarkup)
         let webView = makeWebView()
 
@@ -471,19 +524,12 @@ private final class SVGAvatarSnapshotter: NSObject, WKNavigationDelegate {
         return webView
     }
 
-    private func fetchSVGMarkup(for url: URL, session: URLSession) async -> String? {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .useProtocolCachePolicy
-        request.timeoutInterval = 20
-        request.addValue("image/svg+xml,*/*;q=0.8", forHTTPHeaderField: "Accept")
-
+    private func fetchSVGMarkup(for url: URL) async -> String? {
         do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode)
-            else {
-                return nil
-            }
+            let data = try await APIClient.shared.fetchRemoteData(
+                from: url,
+                acceptHeader: "image/svg+xml,*/*;q=0.8"
+            )
             return String(data: data, encoding: .utf8)
         } catch {
             return nil

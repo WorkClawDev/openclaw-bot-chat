@@ -65,9 +65,9 @@ final class HomeDashboardViewModel: ObservableObject {
         errorMessage = nil
         isLoading = true
 
-        let botsRequest: AnyPublisher<[Bot], Error> = APIClient.shared.request("/api/v1/bots")
-        let groupsRequest: AnyPublisher<[ChatGroup], Error> = APIClient.shared.request("/api/v1/groups")
-        let conversationsRequest: AnyPublisher<[Conversation], Error> = APIClient.shared.request("/api/v1/conversations")
+        let botsRequest = APIClient.shared.fetchBots()
+        let groupsRequest = APIClient.shared.fetchGroups()
+        let conversationsRequest = APIClient.shared.fetchConversations()
 
         Publishers.Zip3(botsRequest, groupsRequest, conversationsRequest)
             .receive(on: DispatchQueue.main)

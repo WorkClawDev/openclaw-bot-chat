@@ -1,6 +1,15 @@
 {
-  "originHash" : "382e6599c0f98d54d4bc2a9ed670ac6cdf9c4f3ce5bf7f7bb5aab1543e53da0a",
+  "originHash" : "b2ec2eddedec85620f400db999d15af96f478770dbd043ac82eac1ce0ee3bee7",
   "pins" : [
+    {
+      "identity" : "chatlayout",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ekazaev/ChatLayout",
+      "state" : {
+        "revision" : "48b4ed3d48bd6fdf0c1978fb4f400a91ca37eb64",
+        "version" : "2.4.2"
+      }
+    },
     {
       "identity" : "cocoamqtt",
       "kind" : "remoteSourceControl",

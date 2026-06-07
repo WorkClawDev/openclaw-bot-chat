@@ -33,7 +33,7 @@ class BotsViewModel: ObservableObject {
     private func fetchBots() {
         isLoading = true
         errorMessage = nil
-        APIClient.shared.request("/api/v1/bots")
+        APIClient.shared.fetchBots()
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -61,15 +61,7 @@ class BotsViewModel: ObservableObject {
     }
 
     func createBot(name: String, description: String?, avatarURL: String?, onDone: @escaping () -> Void) {
-        let payload: [String: Any?] = [
-            "name": name,
-            "description": description?.isEmpty == true ? nil : description,
-            "avatar_url": avatarURL?.isEmpty == true ? nil : avatarURL
-        ]
-
-        let data = try? JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
-
-        APIClient.shared.request("/api/v1/bots", method: "POST", body: data)
+        APIClient.shared.createBot(name: name, description: description, avatarURL: avatarURL)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -164,7 +156,6 @@ struct BotsView: View {
             }
             .navigationTitle("Bots")
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.light, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
@@ -196,7 +187,7 @@ struct BotsView: View {
                 .foregroundStyle(Color.rcmsTextPrimary)
         }
         .padding(12)
-        .background(Color(red: 241/255, green: 245/255, blue: 249/255).opacity(0.95))
+        .background(Color.rcmsSurfaceMuted.opacity(0.95))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
@@ -362,7 +353,7 @@ struct BotRowCard: View {
                 Circle()
                     .fill((bot.status == "online") ? Color.rcmsOnline : Color.rcmsOffline)
                     .frame(width: 11, height: 11)
-                    .overlay(Circle().stroke(.white, lineWidth: 2.5))
+                    .overlay(Circle().stroke(Color.rcmsSurfaceSolid, lineWidth: 2.5))
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -383,7 +374,7 @@ struct BotRowCard: View {
         .contentShape(Rectangle())
         .padding(.horizontal, 4)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.7))
+        .background(Color.rcmsSurface)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.rcmsDivider)

@@ -3,12 +3,22 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var authManager = AuthManager.shared
+    @AppStorage("settings.appearanceMode") private var appearanceModeRawValue = AppAppearanceMode.system.rawValue
+
+    private var appearanceMode: AppAppearanceMode {
+        AppAppearanceMode(rawValue: appearanceModeRawValue) ?? .system
+    }
 
     var body: some View {
         Group {
-            if authManager.isAuthenticated {
+            if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2ImagePreview" {
+                ChatRoomV2ImagePreviewFixtureView(context: uiTestChatContext)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2LiveBridge" {
+                ChatRoomV2LiveBridgeFixtureView(context: uiTestChatContext)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
+                ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
+            } else if authManager.isAuthenticated {
                 HomeView()
-                    .preferredColorScheme(.light)
                     .onAppear {
                         authManager.refreshCurrentUserIfNeeded()
                         RealtimeService.shared.start()
@@ -22,6 +32,20 @@ struct ContentView: View {
                 LoginView()
             }
         }
+        .preferredColorScheme(appearanceMode.colorScheme)
+    }
+
+    private var uiTestChatContext: ChatContext {
+        ChatContext(
+            id: "ui-test-chat-v2",
+            title: "Chat V2 Test",
+            subtitle: "",
+            isGroup: false,
+            groupId: nil,
+            bot: nil,
+            memberCount: nil,
+            avatarURLString: nil
+        )
     }
 }
 
@@ -59,7 +83,7 @@ struct HomeView: View {
             }
             .tint(Color.rcmsAccent)
             .toolbarBackground(.visible, for: .tabBar)
-            .toolbarBackground(Color.white.opacity(0.7), for: .tabBar)
+            .toolbarBackground(Color.rcmsToolbarSurface, for: .tabBar)
         }
     }
 

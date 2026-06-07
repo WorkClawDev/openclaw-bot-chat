@@ -1,6 +1,8 @@
 import SwiftUI
+import AVFoundation
 import Combine
 import MarkdownUI
+import Photos
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
@@ -49,7 +51,8 @@ class ChatRoomViewModel: ObservableObject {
 
     let conversationId: String
 
-    private let pageSize = 50
+    private let initialPageSize = 50
+    private let historyPageSize = 24
     private var cancellables = Set<AnyCancellable>()
     private var syncTask: Task<Void, Never>?
     private var botProfilesByID: [String: ChatPeerProfile] = [:]
@@ -99,7 +102,7 @@ class ChatRoomViewModel: ObservableObject {
     func fetchMessages() {
         errorMessage = nil
         loadCachedBotProfiles()
-        messages = sortMessages(enrichMessages(LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: pageSize)))
+        messages = sortMessages(enrichMessages(LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: initialPageSize)))
         updateHistoryAvailability()
         isLoading = messages.isEmpty
 
@@ -123,19 +126,19 @@ class ChatRoomViewModel: ObservableObject {
         let localOlderMessages = LocalMessageStore.shared.messagesBefore(
             conversationId: conversationId,
             beforeSequence: beforeSequence,
-            limit: pageSize
+            limit: historyPageSize
         )
         if !localOlderMessages.isEmpty {
             messages = mergeMessages(messages, with: localOlderMessages)
         }
 
-        guard localOlderMessages.count < pageSize else {
+        guard localOlderMessages.count < historyPageSize else {
             updateHistoryAvailability()
             return
         }
 
         do {
-            let remoteOlderMessages = try await fetchRemoteMessages(limit: pageSize, beforeSeq: beforeSequence)
+            let remoteOlderMessages = try await fetchRemoteMessages(limit: historyPageSize, beforeSeq: beforeSequence)
             if !remoteOlderMessages.isEmpty {
                 LocalMessageStore.shared.upsert(messages: remoteOlderMessages)
                 messages = mergeMessages(messages, with: remoteOlderMessages)
@@ -168,7 +171,7 @@ class ChatRoomViewModel: ObservableObject {
                 remoteMessages.append(contentsOf: catchupMessages)
             }
 
-            let latestMessages = try await fetchRemoteMessages(limit: pageSize)
+            let latestMessages = try await fetchRemoteMessages(limit: initialPageSize)
             remoteMessages.append(contentsOf: latestMessages)
 
             if !remoteMessages.isEmpty {
@@ -191,27 +194,13 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     private func fetchRemoteMessages(limit: Int, beforeSeq: Int? = nil, afterSeq: Int? = nil) async throws -> [Message] {
-        let endpoint = messageEndpoint(limit: limit, beforeSeq: beforeSeq, afterSeq: afterSeq)
-
-        return try await withCheckedThrowingContinuation { continuation in
-            var cancellable: AnyCancellable?
-            cancellable = APIClient.shared.request(endpoint)
-                .receive(on: DispatchQueue.main)
-                .sink { completion in
-                    switch completion {
-                    case .finished:
-                        break
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
-                    }
-                    cancellable?.cancel()
-                    cancellable = nil
-                } receiveValue: { (messages: [Message]) in
-                    continuation.resume(returning: self.sortMessages(self.enrichMessages(messages)))
-                    cancellable?.cancel()
-                    cancellable = nil
-                }
-        }
+        let messages = try await APIClient.shared.fetchMessages(
+            conversationID: conversationId,
+            limit: limit,
+            beforeSeq: beforeSeq,
+            afterSeq: afterSeq
+        )
+        return sortMessages(enrichMessages(messages))
     }
 
     func seedBotProfile(_ bot: Bot?) {
@@ -222,7 +211,7 @@ class ChatRoomViewModel: ObservableObject {
     func refreshBotProfiles() {
         loadCachedBotProfiles()
 
-        APIClient.shared.request("/api/v1/bots")
+        APIClient.shared.fetchBots()
             .receive(on: DispatchQueue.main)
             .sink { _ in
             } receiveValue: { [weak self] (bots: [Bot]) in
@@ -235,7 +224,7 @@ class ChatRoomViewModel: ObservableObject {
     func refreshGroupBotProfiles(groupId: String?) {
         guard let groupId, !groupId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-        APIClient.shared.request("/api/v1/groups/\(groupId)/members")
+        APIClient.shared.fetchGroupMembers(groupID: groupId)
             .receive(on: DispatchQueue.main)
             .sink { _ in
             } receiveValue: { [weak self] (payload: GroupMembersPayload) in
@@ -324,17 +313,6 @@ class ChatRoomViewModel: ObservableObject {
         values
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
-    }
-
-    private func messageEndpoint(limit: Int, beforeSeq: Int? = nil, afterSeq: Int? = nil) -> String {
-        var endpoint = "/api/v1/messages/\(conversationId)?limit=\(max(1, min(limit, 200)))"
-        if let beforeSeq {
-            endpoint += "&before_seq=\(beforeSeq)"
-        }
-        if let afterSeq {
-            endpoint += "&after_seq=\(afterSeq)"
-        }
-        return endpoint
     }
 
     private func mergeMessages(_ existing: [Message], with incoming: [Message]) -> [Message] {
@@ -502,45 +480,76 @@ class ChatRoomViewModel: ObservableObject {
 
         do {
             let preparedImage = try await normalizedUploadImage(from: item, mode: mode)
-            let preparedUpload = try await APIClient.shared.prepareImageUpload(
-                fileName: preparedImage.fileName,
-                contentType: preparedImage.mimeType,
-                size: preparedImage.data.count,
-                conversationID: conversationId
-            )
-
-            try await APIClient.shared.uploadImageData(preparedImage.data, with: preparedUpload.upload)
-
-            let assetID = preparedUpload.asset.id ?? ""
-            let objectKey = preparedUpload.asset.objectKey ?? ""
-            guard !assetID.isEmpty, !objectKey.isEmpty else {
-                throw ChatImageError.invalidUploadResponse
-            }
-
-            let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
-            _ = LocalImageStore.shared.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
             let caption = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let outgoingContent = RealtimeContentPayload(
-                type: "image",
-                body: caption.isEmpty ? (asset.fileName ?? preparedImage.fileName) : caption,
-                url: asset.preferredImageURLString,
-                name: asset.fileName,
-                size: asset.size,
-                meta: ["asset": asset.metaValue]
-            )
-
-            let didSend = RealtimeService.shared.sendMessage(
-                conversationId: conversationId,
-                content: outgoingContent,
-                topic: conversationId
-            )
-            guard didSend else {
-                throw ChatImageError.messageSendFailed
-            }
-
+            try await sendPreparedImage(preparedImage, caption: caption)
             inputText = ""
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+#if DEBUG
+    @MainActor
+    fileprivate func sendFixtureImageForUITest() async {
+        guard !isUploadingImage else { return }
+        guard connectionState == .connected else {
+            errorMessage = "当前连接不可用，暂时无法发送图片。"
+            return
+        }
+
+        isUploadingImage = true
+        defer { isUploadingImage = false }
+
+        do {
+            let payload = try fixtureUploadImagePayload()
+            try await sendPreparedImage(payload, caption: "V2 fixture image send \(Self.debugTimestampFormatter.string(from: Date()))")
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+#endif
+
+    private func sendPreparedImage(_ preparedImage: UploadImagePayload, caption: String) async throws {
+        let preparedUpload = try await APIClient.shared.prepareImageUpload(
+            fileName: preparedImage.fileName,
+            contentType: preparedImage.mimeType,
+            size: preparedImage.data.count,
+            conversationID: conversationId
+        )
+
+        try await APIClient.shared.uploadImageData(preparedImage.data, with: preparedUpload.upload)
+
+        let assetID = preparedUpload.asset.id ?? ""
+        let objectKey = preparedUpload.asset.objectKey ?? ""
+        guard !assetID.isEmpty, !objectKey.isEmpty else {
+            throw ChatImageError.invalidUploadResponse
+        }
+
+        let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
+        _ = LocalImageStore.shared.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
+        var imageMeta = ["asset": asset.metaValue]
+        if let width = preparedImage.width {
+            imageMeta["width"] = AnyCodable(width)
+        }
+        if let height = preparedImage.height {
+            imageMeta["height"] = AnyCodable(height)
+        }
+        let outgoingContent = RealtimeContentPayload(
+            type: "image",
+            body: caption.isEmpty ? (asset.fileName ?? preparedImage.fileName) : caption,
+            url: asset.preferredImageURLString,
+            name: asset.fileName,
+            size: asset.size,
+            meta: imageMeta
+        )
+
+        let didSend = RealtimeService.shared.sendMessage(
+            conversationId: conversationId,
+            content: outgoingContent,
+            topic: conversationId
+        )
+        guard didSend else {
+            throw ChatImageError.messageSendFailed
         }
     }
 
@@ -586,10 +595,13 @@ class ChatRoomViewModel: ObservableObject {
 
     private func originalUploadImagePayload(data: Data, preferredType: UTType?, mimeType: String) -> UploadImagePayload {
         let fileExtension = preferredType?.preferredFilenameExtension ?? fileExtension(for: mimeType)
+        let imageSize = imagePixelSize(from: data)
         return UploadImagePayload(
             data: data,
             fileName: "image-\(UUID().uuidString.lowercased()).\(fileExtension)",
-            mimeType: mimeType
+            mimeType: mimeType,
+            width: imageSize?.width,
+            height: imageSize?.height
         )
     }
 
@@ -612,7 +624,19 @@ class ChatRoomViewModel: ObservableObject {
         return UploadImagePayload(
             data: jpegData,
             fileName: "image-\(UUID().uuidString.lowercased()).jpg",
-            mimeType: "image/jpeg"
+            mimeType: "image/jpeg",
+            width: Int(normalizedImage.size.width.rounded()),
+            height: Int(normalizedImage.size.height.rounded())
+        )
+    }
+
+    private func imagePixelSize(from data: Data) -> (width: Int, height: Int)? {
+        guard let image = UIImage(data: data), image.size.width > 0, image.size.height > 0 else {
+            return nil
+        }
+        return (
+            width: Int((image.size.width * image.scale).rounded()),
+            height: Int((image.size.height * image.scale).rounded())
         )
     }
 
@@ -653,6 +677,57 @@ class ChatRoomViewModel: ObservableObject {
         }
     }
 
+#if DEBUG
+    private func fixtureUploadImagePayload() throws -> UploadImagePayload {
+        let size = CGSize(width: 640, height: 420)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            UIColor(red: 0.08, green: 0.38, blue: 0.84, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+
+            UIColor.white.setFill()
+            let title = "ChatRoom V2"
+            let subtitle = "image send fixture"
+            title.draw(
+                at: CGPoint(x: 44, y: 130),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 54, weight: .bold),
+                    .foregroundColor: UIColor.white
+                ]
+            )
+            subtitle.draw(
+                at: CGPoint(x: 48, y: 206),
+                withAttributes: [
+                    .font: UIFont.monospacedSystemFont(ofSize: 28, weight: .medium),
+                    .foregroundColor: UIColor.white.withAlphaComponent(0.92)
+                ]
+            )
+
+            UIColor.white.withAlphaComponent(0.18).setStroke()
+            let path = UIBezierPath(roundedRect: CGRect(x: 36, y: 96, width: 572, height: 228), cornerRadius: 28)
+            path.lineWidth = 4
+            path.stroke()
+        }
+
+        guard let data = image.pngData() else {
+            throw ChatImageError.unsupportedImage
+        }
+        return UploadImagePayload(
+            data: data,
+            fileName: "chatroom-v2-fixture-\(UUID().uuidString.lowercased()).png",
+            mimeType: "image/png",
+            width: Int(size.width),
+            height: Int(size.height)
+        )
+    }
+
+    private static let debugTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+#endif
+
     private static let supportedImageMimeTypes: Set<String> = [
         "image/jpeg",
         "image/png",
@@ -674,6 +749,8 @@ private struct UploadImagePayload {
     let data: Data
     let fileName: String
     let mimeType: String
+    let width: Int?
+    let height: Int?
 }
 
 private enum ImageSendMode: CaseIterable, Hashable {
@@ -764,7 +841,7 @@ class GroupMaintenanceViewModel: ObservableObject {
     }
 
     func loadMembers(groupId: String) {
-        APIClient.shared.request("/api/v1/groups/\(groupId)/members")
+        APIClient.shared.fetchGroupMembers(groupID: groupId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -778,7 +855,7 @@ class GroupMaintenanceViewModel: ObservableObject {
     }
 
     func loadBots() {
-        APIClient.shared.request("/api/v1/bots")
+        APIClient.shared.fetchBots()
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -791,16 +868,13 @@ class GroupMaintenanceViewModel: ObservableObject {
     }
 
     func renameGroup(groupId: String) {
-        let payload: [String: String] = ["name": groupName]
-        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
-
-        APIClient.shared.request("/api/v1/groups/\(groupId)", method: "PUT", body: body)
+        APIClient.shared.updateGroupName(groupID: groupId, name: groupName)
             .sink { _ in } receiveValue: { (_: ChatGroup) in }
             .store(in: &cancellables)
     }
 
     func removeMember(groupId: String, memberId: UUID) {
-        APIClient.shared.request("/api/v1/groups/\(groupId)/members/\(memberId.uuidString)", method: "DELETE")
+        APIClient.shared.removeGroupMember(groupID: groupId, memberID: memberId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -813,10 +887,7 @@ class GroupMaintenanceViewModel: ObservableObject {
     }
 
     func addBot(groupId: String, botId: UUID) {
-        let payload: [String: String] = ["bot_id": botId.uuidString]
-        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
-
-        APIClient.shared.request("/api/v1/groups/\(groupId)/members", method: "POST", body: body)
+        APIClient.shared.addBotToGroup(groupID: groupId, botID: botId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -837,6 +908,50 @@ class GroupMaintenanceViewModel: ObservableObject {
 
 struct ChatRoomView: View {
     let context: ChatContext
+    private let previewMessages: [Message]?
+    private let previewConnectionState: RealtimeConnectionState
+    private let previewCurrentUserID: String
+
+    init(context: ChatContext) {
+        self.context = context
+        self.previewMessages = nil
+        self.previewConnectionState = .connected
+        self.previewCurrentUserID = "preview-user"
+    }
+
+    init(conversationId: String, title: String) {
+        let context = ChatContext(id: conversationId, title: title, subtitle: "", isGroup: false, groupId: nil)
+        self.init(context: context)
+    }
+
+    init(
+        previewContext context: ChatContext,
+        messages: [Message],
+        connectionState: RealtimeConnectionState = .connected,
+        currentUserID: String = "preview-user"
+    ) {
+        self.context = context
+        self.previewMessages = messages
+        self.previewConnectionState = connectionState
+        self.previewCurrentUserID = currentUserID
+    }
+
+    var body: some View {
+        if let previewMessages {
+            ChatRoomLegacyView(
+                previewContext: context,
+                messages: previewMessages,
+                connectionState: previewConnectionState,
+                currentUserID: previewCurrentUserID
+            )
+        } else {
+            ChatRoomLegacyView(context: context)
+        }
+    }
+}
+
+private struct ChatRoomLegacyView: View {
+    let context: ChatContext
     @StateObject private var viewModel: ChatRoomViewModel
     @StateObject private var groupVM = GroupMaintenanceViewModel()
     @ObservedObject private var authManager = AuthManager.shared
@@ -846,18 +961,22 @@ struct ChatRoomView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var previewMessage: Message?
     @State private var pendingImageSelection: PendingImageSelection?
-    @State private var scrollViewportHeight: CGFloat = 0
+    @State private var imageSaveStatus: ChatImageSaveStatus?
     @State private var isNearBottom = true
     @State private var hasPositionedInitialMessages = false
     @State private var isUserInteractingWithMessages = false
+    @State private var isHistoryPreloadScheduled = false
+    @State private var listScrollCommand = ChatListScrollCommand.none
     @State private var selectedSlashCommandIndex = 0
     @State private var slashAutocompleteTask: Task<Void, Never>?
+#if DEBUG
+    @State private var hasTriggeredFixtureImageSend = false
+#endif
     private let loadsMessagesOnAppear: Bool
     private let currentUserIDOverride: String?
-    private let bottomAnchorID = "chat-room-bottom-anchor"
-    private let scrollCoordinateSpaceName = "chat-room-scroll-space"
     private let bottomAutoScrollThreshold: CGFloat = 96
     private let bottomMessageClearance: CGFloat = 24
+    private let historyPreloadDistance: CGFloat = 1200
     @FocusState private var isInputFocused: Bool
 
     init(context: ChatContext) {
@@ -896,88 +1015,39 @@ struct ChatRoomView: View {
             VStack(spacing: 0) {
                 chatHeader
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            ForEach(viewModel.messages) { message in
-                                ChatBubbleRow(
-                                    message: message,
-                                    currentUserID: effectiveCurrentUserID,
-                                    showsSenderInfo: context.isGroup,
-                                    fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString,
-                                    onPreviewImage: { previewMessage = $0 }
-                                )
-                                    .id(message.id)
-                            }
-
-                            Color.clear
-                                .frame(height: bottomMessageClearance)
-                                .id(bottomAnchorID)
-                                .background(
-                                    ChatScrollBottomReader(
-                                        coordinateSpaceName: scrollCoordinateSpaceName,
-                                        onChange: handleScrollBottomChange
-                                    )
-                                )
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
-                        .padding(.bottom, 16)
+                messageList
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    inputBar
+                }
+                .onTapGesture {
+                    isInputFocused = false
+                }
+                .onAppear {
+                    scheduleInitialMessagePositionIfNeeded()
+                }
+                .onChange(of: hasPositionedInitialMessages) { _, isPositioned in
+                    guard isPositioned else { return }
+                    triggerHistoryPreloadIfNeeded()
+                }
+                .onChange(of: viewModel.visibleWindowReplacementVersion) { _, _ in
+                    scheduleBottomPosition(revealMessages: true)
+                }
+                .onChange(of: viewModel.messages.last?.id) { oldID, newID in
+                    guard shouldAutoScrollToBottom(oldLastID: oldID, newLastID: newID) else { return }
+                    guard hasPositionedInitialMessages else {
+                        scheduleInitialMessagePositionIfNeeded()
+                        return
                     }
-                    .defaultScrollAnchor(.bottom)
-                    .coordinateSpace(name: scrollCoordinateSpaceName)
-                    .background(
-                        GeometryReader { geometry in
-                            Color.clear
-                                .preference(
-                                    key: ChatScrollViewportHeightPreferenceKey.self,
-                                    value: geometry.size.height
-                                )
-                        }
-                    )
-                    .onPreferenceChange(ChatScrollViewportHeightPreferenceKey.self) { height in
-                        guard shouldTrackScrollMetrics else { return }
-                        guard abs(scrollViewportHeight - height) > 0.5 else { return }
-                        scrollViewportHeight = height
+                    guard !isUserInteractingWithMessages || latestMessageWasSentByCurrentUser else {
+                        return
                     }
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        inputBar
+                    guard isNearBottom || latestMessageWasSentByCurrentUser else {
+                        return
                     }
-                    .onScrollPhaseChange { _, newPhase in
-                        isUserInteractingWithMessages = newPhase.isScrolling
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onTapGesture {
-                        isInputFocused = false
-                    }
-                    .refreshable {
-                        let anchorID = viewModel.messages.first?.id
-                        await viewModel.loadOlderMessages()
-                        await restoreVisiblePosition(anchorID, with: proxy)
-                    }
-                    .onAppear {
-                        scheduleInitialMessagePositionIfNeeded(with: proxy)
-                    }
-                    .onChange(of: viewModel.visibleWindowReplacementVersion) { _, _ in
-                        scheduleBottomPosition(with: proxy, revealMessages: true)
-                    }
-                    .onChange(of: viewModel.messages.last?.id) { oldID, newID in
-                        guard shouldAutoScrollToBottom(oldLastID: oldID, newLastID: newID) else { return }
-                        guard hasPositionedInitialMessages else {
-                            scheduleInitialMessagePositionIfNeeded(with: proxy)
-                            return
-                        }
-                        guard !isUserInteractingWithMessages || latestMessageWasSentByCurrentUser else {
-                            return
-                        }
-                        guard isNearBottom || latestMessageWasSentByCurrentUser else {
-                            return
-                        }
-                        scrollToBottom(with: proxy, animated: false)
-                    }
-                    .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
-                        scrollWithKeyboardTransition(notification, with: proxy)
-                    }
+                    requestListScrollToBottom(animated: false)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+                    scrollWithKeyboardTransition(notification)
                 }
             }
         }
@@ -991,6 +1061,10 @@ struct ChatRoomView: View {
             viewModel.refreshBotProfiles()
             viewModel.refreshGroupBotProfiles(groupId: context.groupId)
             viewModel.fetchMessages()
+            triggerFixtureImageSendIfNeeded()
+        }
+        .onChange(of: viewModel.connectionState) { _, _ in
+            triggerFixtureImageSendIfNeeded()
         }
         .onDisappear {
             guard loadsMessagesOnAppear else { return }
@@ -1021,6 +1095,13 @@ struct ChatRoomView: View {
         }
         .fullScreenCover(item: $previewMessage) { message in
             ChatImagePreviewScreen(message: message)
+        }
+        .alert(item: $imageSaveStatus) { status in
+            Alert(
+                title: Text(status.title),
+                message: Text(status.message),
+                dismissButton: .default(Text("确定"))
+            )
         }
         .alert(
             "提示",
@@ -1054,6 +1135,43 @@ struct ChatRoomView: View {
                 settingsAffordance
             }
         )
+    }
+
+    @ViewBuilder
+    private var messageList: some View {
+        if ChatRoomV2FeatureFlag.isEnabled {
+            ChatRoomUIKitV2MessageListView(
+                context: context,
+                messages: viewModel.messages,
+                currentUserID: effectiveCurrentUserID,
+                bottomAutoScrollThreshold: bottomAutoScrollThreshold,
+                historyPreloadDistance: historyPreloadDistance,
+                scrollCommand: listScrollCommand,
+                onLoadOlder: triggerHistoryPreloadIfNeeded,
+                onNearBottomChange: { isNearBottom = $0 },
+                onUserScrollChange: { isUserInteractingWithMessages = $0 },
+                onInitialPositioned: { hasPositionedInitialMessages = true },
+                onPreviewImage: { previewMessage = $0 },
+                onSaveImage: saveImage
+            )
+        } else {
+            ChatMessageListView(
+                messages: viewModel.messages,
+                currentUserID: effectiveCurrentUserID,
+                showsSenderInfo: context.isGroup,
+                fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString,
+                bottomMessageClearance: bottomMessageClearance,
+                bottomAutoScrollThreshold: bottomAutoScrollThreshold,
+                historyPreloadDistance: historyPreloadDistance,
+                scrollCommand: listScrollCommand,
+                onPreviewImage: { previewMessage = $0 },
+                onSaveImage: saveImage,
+                onLoadOlder: triggerHistoryPreloadIfNeeded,
+                onNearBottomChange: { isNearBottom = $0 },
+                onUserScrollChange: { isUserInteractingWithMessages = $0 },
+                onInitialPositioned: { hasPositionedInitialMessages = true }
+            )
+        }
     }
 
     private var messageAvatarURLs: [URL] {
@@ -1159,11 +1277,11 @@ struct ChatRoomView: View {
                             scheduleSlashAutocompleteIfNeeded()
                         }
                 }
-                .background(Color.white.opacity(0.92))
+                .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                        .stroke(Color.rcmsHairline, lineWidth: 1)
                 )
 
                 Button(action: {
@@ -1187,7 +1305,7 @@ struct ChatRoomView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .background(Color.white.opacity(0.78))
+        .background(Color.rcmsToolbarSurface)
         .background(.ultraThinMaterial)
     }
 
@@ -1252,11 +1370,11 @@ struct ChatRoomView: View {
                 itemCount: filteredSlashChoices.count,
                 isLoading: filteredSlashChoices.isEmpty && isActiveSlashAutocompletePending
             ))
-            .background(Color.white.opacity(0.96))
+            .background(Color.rcmsSurfaceElevated)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                    .stroke(Color.rcmsHairline, lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
         } else if shouldShowSlashCommands {
@@ -1307,11 +1425,11 @@ struct ChatRoomView: View {
                 }
             }
             .frame(maxHeight: slashSuggestionPanelHeight(itemCount: filteredSlashCommands.count))
-            .background(Color.white.opacity(0.96))
+            .background(Color.rcmsSurfaceElevated)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                    .stroke(Color.rcmsHairline, lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
         }
@@ -1576,18 +1694,47 @@ struct ChatRoomView: View {
         return lineRange
     }
 
-    private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool = true) {
-        scrollToMessage(bottomAnchorID, with: proxy, anchor: .bottom, animated: animated)
+    @MainActor
+    private func loadOlderMessagesPreservingPosition() async {
+        guard !viewModel.isLoadingOlder else { return }
+        await viewModel.loadOlderMessages()
     }
 
-    private func scheduleInitialMessagePositionIfNeeded(with proxy: ScrollViewProxy) {
+    private func triggerHistoryPreloadIfNeeded() {
+        guard hasPositionedInitialMessages else { return }
+        guard !viewModel.messages.isEmpty else { return }
+        guard viewModel.hasMoreHistory else { return }
+        guard !viewModel.isLoadingOlder else { return }
+        guard !isHistoryPreloadScheduled else { return }
+
+        isHistoryPreloadScheduled = true
+        Task { @MainActor in
+            defer { isHistoryPreloadScheduled = false }
+            await loadOlderMessagesPreservingPosition()
+        }
+    }
+
+    private func triggerFixtureImageSendIfNeeded() {
+#if DEBUG
+        guard ChatRoomV2FeatureFlag.autoSendFixtureImage else { return }
+        guard loadsMessagesOnAppear else { return }
+        guard viewModel.connectionState == .connected else { return }
+        guard !hasTriggeredFixtureImageSend else { return }
+        hasTriggeredFixtureImageSend = true
+        Task { @MainActor in
+            await viewModel.sendFixtureImageForUITest()
+        }
+#endif
+    }
+
+    private func scheduleInitialMessagePositionIfNeeded() {
         guard !hasPositionedInitialMessages else { return }
         guard !viewModel.messages.isEmpty else { return }
 
-        scheduleBottomPosition(with: proxy, revealMessages: true)
+        scheduleBottomPosition(revealMessages: true)
     }
 
-    private func scheduleBottomPosition(with proxy: ScrollViewProxy, revealMessages: Bool = false) {
+    private func scheduleBottomPosition(revealMessages: Bool = false) {
         guard !viewModel.messages.isEmpty else {
             if revealMessages {
                 hasPositionedInitialMessages = true
@@ -1597,24 +1744,20 @@ struct ChatRoomView: View {
 
         Task { @MainActor in
             await Task.yield()
-            scrollToBottom(with: proxy, animated: false)
-            await Task.yield()
-            scrollToBottom(with: proxy, animated: false)
-            if revealMessages {
-                hasPositionedInitialMessages = true
-            }
+            requestListScrollToBottom(animated: false)
         }
     }
 
-    private func scrollWithKeyboardTransition(_ notification: Notification, with proxy: ScrollViewProxy) {
+    private func requestListScrollToBottom(animated: Bool) {
+        listScrollCommand = ChatListScrollCommand.scrollToBottom(animated: animated)
+    }
+
+    private func scrollWithKeyboardTransition(_ notification: Notification) {
         guard isInputFocused else { return }
         guard !viewModel.messages.isEmpty else { return }
         guard keyboardOverlapsScreen(notification) else { return }
 
-        withAnimation(keyboardAnimation(from: notification)) {
-            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-        }
-        hasPositionedInitialMessages = true
+        requestListScrollToBottom(animated: true)
         isNearBottom = true
     }
 
@@ -1625,26 +1768,10 @@ struct ChatRoomView: View {
             return false
         }
 
-        return endFrame.minY < UIScreen.main.bounds.maxY
-    }
-
-    private func keyboardAnimation(from notification: Notification) -> Animation {
-        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
-        let curveValue = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int
-        let curve = curveValue.flatMap(UIView.AnimationCurve.init(rawValue:))
-
-        switch curve {
-        case .easeInOut:
-            return .easeInOut(duration: duration)
-        case .easeIn:
-            return .easeIn(duration: duration)
-        case .easeOut:
-            return .easeOut(duration: duration)
-        case .linear:
-            return .linear(duration: duration)
-        default:
-            return .easeOut(duration: duration)
-        }
+        let screenMaxY = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.screen.bounds.maxY }
+            .max() ?? endFrame.maxY
+        return endFrame.minY < screenMaxY
     }
 
     private func shouldAutoScrollToBottom(oldLastID: String?, newLastID: String?) -> Bool {
@@ -1656,52 +1783,698 @@ struct ChatRoomView: View {
         normalizeIdentifier(viewModel.messages.last?.senderId) == normalizeIdentifier(effectiveCurrentUserID)
     }
 
-    private var shouldTrackScrollMetrics: Bool {
-        !isInputFocused || isUserInteractingWithMessages
-    }
-
-    private func handleScrollBottomChange(_ bottomMaxY: CGFloat) {
-        guard shouldTrackScrollMetrics else { return }
-        updateBottomDistance(bottomMaxY)
+    private func saveImage(_ message: Message) {
+        Task { @MainActor in
+            do {
+                try await ChatImageSaver.save(message)
+                imageSaveStatus = ChatImageSaveStatus(title: "已保存", message: "图片已保存到系统相册。")
+            } catch {
+                imageSaveStatus = ChatImageSaveStatus(
+                    title: "保存失败",
+                    message: error.localizedDescription
+                )
+            }
+        }
     }
 
     private func normalizeIdentifier(_ value: String?) -> String {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     }
+}
 
-    @MainActor
-    private func restoreVisiblePosition(_ messageID: String?, with proxy: ScrollViewProxy) async {
-        guard let messageID else { return }
-        await Task.yield()
-        scrollToMessage(messageID, with: proxy, anchor: .top, animated: false)
+struct ChatListScrollCommand: Equatable {
+    enum Kind: Equatable {
+        case none
+        case scrollToBottom(animated: Bool)
     }
 
-    private func scrollToMessage(
-        _ messageID: String,
-        with proxy: ScrollViewProxy,
-        anchor: UnitPoint,
-        animated: Bool
-    ) {
-        if animated {
-            withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo(messageID, anchor: anchor)
+    let id: UUID
+    let kind: Kind
+
+    static let none = ChatListScrollCommand(kind: .none)
+
+    static func scrollToBottom(animated: Bool) -> ChatListScrollCommand {
+        ChatListScrollCommand(kind: .scrollToBottom(animated: animated))
+    }
+
+    private init(kind: Kind) {
+        self.id = UUID()
+        self.kind = kind
+    }
+}
+
+private struct ChatMessageListView: UIViewRepresentable {
+    let messages: [Message]
+    let currentUserID: String?
+    let showsSenderInfo: Bool
+    let fallbackBotAvatarURLString: String?
+    let bottomMessageClearance: CGFloat
+    let bottomAutoScrollThreshold: CGFloat
+    let historyPreloadDistance: CGFloat
+    let scrollCommand: ChatListScrollCommand
+    let onPreviewImage: (Message) -> Void
+    let onSaveImage: (Message) -> Void
+    let onLoadOlder: () -> Void
+    let onNearBottomChange: (Bool) -> Void
+    let onUserScrollChange: (Bool) -> Void
+    let onInitialPositioned: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UITableView {
+        let tableView = ChatTableView(frame: .zero, style: .plain)
+        tableView.backgroundColor = .clear
+        tableView.separatorStyle = .none
+        tableView.showsVerticalScrollIndicator = false
+        tableView.keyboardDismissMode = .interactive
+        tableView.contentInsetAdjustmentBehavior = .never
+        tableView.estimatedRowHeight = 0
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.dataSource = context.coordinator
+        tableView.delegate = context.coordinator
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: Coordinator.cellReuseIdentifier)
+        context.coordinator.installChrome(on: tableView)
+        return tableView
+    }
+
+    func updateUIView(_ tableView: UITableView, context: Context) {
+        context.coordinator.update(parent: self, tableView: tableView)
+    }
+
+    final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate {
+        static let cellReuseIdentifier = "chat-message-cell"
+
+        private struct PendingScrollToBottom {
+            let animated: Bool
+            let notifyInitialPosition: Bool
+        }
+
+        private struct PrependPositionSnapshot {
+            let contentOffsetY: CGFloat
+            let contentHeight: CGFloat
+        }
+
+        private struct MessageHeightCacheKey: Hashable {
+            let signature: MessageRenderSignature
+            let width: Int
+        }
+
+        private var parent: ChatMessageListView
+        private var messages: [Message] = []
+        private var lastScrollCommand = ChatListScrollCommand.none
+        private var hasPositionedInitialMessages = false
+        private var isNearBottom = true
+        private var hasScheduledNearTopRequest = false
+        private var isRestoringPosition = false
+        private var pendingInitialBottomPosition = false
+        private var deferredNeedsReload = false
+        private var pendingScrollToBottom: PendingScrollToBottom?
+        private var footerHeight: CGFloat = 0
+        private var measuredRowHeights: [MessageHeightCacheKey: CGFloat] = [:]
+
+        init(parent: ChatMessageListView) {
+            self.parent = parent
+        }
+
+        func installChrome(on tableView: UITableView) {
+            if let tableView = tableView as? ChatTableView {
+                tableView.onDidMoveToWindow = { [weak self] tableView in
+                    self?.tableViewDidEnterWindow(tableView)
+                }
             }
-        } else {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(messageID, anchor: anchor)
+            tableView.tableHeaderView = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 8))
+            updateFooter(on: tableView)
+        }
+
+        private func tableViewDidEnterWindow(_ tableView: UITableView) {
+            guard isReadyForLayout(tableView) else { return }
+            guard deferredNeedsReload || pendingScrollToBottom != nil else { return }
+            if deferredNeedsReload {
+                deferredNeedsReload = false
+                tableView.reloadData()
+            }
+            drainPendingScrollIfReady(on: tableView)
+            evaluateScrollState(on: tableView)
+        }
+
+        func update(parent: ChatMessageListView, tableView: UITableView) {
+            self.parent = parent
+            updateFooter(on: tableView)
+
+            let previousMessages = messages
+            let previousIDs = previousMessages.map(\.id)
+            let nextIDs = parent.messages.map(\.id)
+            let shouldReloadRows = renderSignatures(for: previousMessages) != renderSignatures(for: parent.messages)
+            let wasNearBottom = isNearBottom
+            let prependCount = prependedRowCount(previousIDs: previousIDs, nextIDs: nextIDs)
+            let appendStart = appendedRowStart(previousIDs: previousIDs, nextIDs: nextIDs)
+            let canLayout = isReadyForLayout(tableView)
+            if canLayout {
+                layoutIfReady(tableView)
+            }
+            let previousVisibleAnchor = canLayout ? visibleAnchor(in: tableView) : nil
+            let prependSnapshot = canLayout ? PrependPositionSnapshot(
+                contentOffsetY: tableView.contentOffset.y,
+                contentHeight: tableView.contentSize.height
+            ) : nil
+
+            messages = parent.messages
+
+            if !canLayout {
+                deferredNeedsReload = true
+                queueInitialBottomPositionIfNeeded()
+                queueScrollCommandIfNeeded(parent.scrollCommand)
+                return
+            }
+
+            if previousMessages.isEmpty || previousIDs.isEmpty || nextIDs.isEmpty {
+                tableView.reloadData()
+                layoutIfReady(tableView)
+            } else if prependCount > 0 {
+                insertPrependedRows(count: prependCount, preserving: prependSnapshot, in: tableView)
+                evaluateScrollState(on: tableView, allowHistoryRequest: false)
+                return
+            } else if let appendStart {
+                insertAppendedRows(start: appendStart, count: nextIDs.count - appendStart, in: tableView)
+                if wasNearBottom {
+                    scrollToBottomAfterLayout(on: tableView, animated: false, notifyInitialPosition: false)
+                }
+            } else if shouldReloadRows {
+                let anchor = previousVisibleAnchor
+                UIView.performWithoutAnimation {
+                    tableView.reloadData()
+                    layoutIfReady(tableView)
+                }
+                if hasPositionedInitialMessages {
+                    if wasNearBottom {
+                        scrollToBottomAfterLayout(on: tableView, animated: false, notifyInitialPosition: false)
+                    } else if let anchor {
+                        restoreAfterLayout(anchor, in: tableView)
+                    }
+                }
+            }
+
+            if queueInitialBottomPositionIfNeeded() {
+                drainPendingScrollIfReady(on: tableView)
+                evaluateScrollState(on: tableView)
+                return
+            }
+
+            if queueScrollCommandIfNeeded(parent.scrollCommand) {
+                drainPendingScrollIfReady(on: tableView)
+            }
+
+            evaluateScrollState(on: tableView)
+        }
+
+        private func isReadyForLayout(_ tableView: UITableView) -> Bool {
+            tableView.window != nil && tableView.bounds.width > 0 && tableView.bounds.height > 0
+        }
+
+        private func layoutIfReady(_ tableView: UITableView) {
+            guard isReadyForLayout(tableView) else { return }
+            tableView.layoutIfNeeded()
+        }
+
+        @discardableResult
+        private func queueInitialBottomPositionIfNeeded() -> Bool {
+            guard !hasPositionedInitialMessages, !messages.isEmpty, !pendingInitialBottomPosition else {
+                return false
+            }
+            pendingInitialBottomPosition = true
+            queueScrollToBottom(animated: false, notifyInitialPosition: true)
+            return true
+        }
+
+        @discardableResult
+        private func queueScrollCommandIfNeeded(_ command: ChatListScrollCommand) -> Bool {
+            guard command != lastScrollCommand else { return false }
+            lastScrollCommand = command
+            switch command.kind {
+            case .none:
+                return false
+            case .scrollToBottom(let animated):
+                queueScrollToBottom(animated: animated, notifyInitialPosition: false)
+                return true
             }
         }
-    }
 
-    private func updateBottomDistance(_ bottomMaxY: CGFloat) {
-        guard scrollViewportHeight > 0 else { return }
+        private func queueScrollToBottom(animated: Bool, notifyInitialPosition: Bool) {
+            let shouldNotifyInitialPosition = notifyInitialPosition || (pendingScrollToBottom?.notifyInitialPosition == true)
+            pendingScrollToBottom = PendingScrollToBottom(
+                animated: animated,
+                notifyInitialPosition: shouldNotifyInitialPosition
+            )
+        }
 
-        let nextIsNearBottom = (bottomMaxY - scrollViewportHeight) <= bottomAutoScrollThreshold
-        if nextIsNearBottom != isNearBottom {
+        private func drainPendingScrollIfReady(on tableView: UITableView) {
+            guard isReadyForLayout(tableView), let pendingScrollToBottom else { return }
+            self.pendingScrollToBottom = nil
+            scrollToBottomAfterLayout(
+                on: tableView,
+                animated: pendingScrollToBottom.animated,
+                notifyInitialPosition: pendingScrollToBottom.notifyInitialPosition
+            )
+        }
+
+        func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+            messages.count
+        }
+
+        func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
+            rowHeight(for: indexPath, in: tableView)
+        }
+
+        func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+            rowHeight(for: indexPath, in: tableView)
+        }
+
+        func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+            let cell = tableView.dequeueReusableCell(withIdentifier: Self.cellReuseIdentifier, for: indexPath)
+            guard messages.indices.contains(indexPath.row) else {
+                cell.contentConfiguration = nil
+                return cell
+            }
+
+            let message = messages[indexPath.row]
+            cell.backgroundColor = .clear
+            cell.contentView.backgroundColor = .clear
+            cell.selectionStyle = .none
+            cell.contentConfiguration = UIHostingConfiguration {
+                ChatBubbleRow(
+                    message: message,
+                    currentUserID: parent.currentUserID,
+                    showsSenderInfo: parent.showsSenderInfo,
+                    fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
+                    onPreviewImage: parent.onPreviewImage
+                )
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+            }
+            .margins(.all, 0)
+            return cell
+        }
+
+        func tableView(
+            _ tableView: UITableView,
+            contextMenuConfigurationForRowAt indexPath: IndexPath,
+            point: CGPoint
+        ) -> UIContextMenuConfiguration? {
+            guard messages.indices.contains(indexPath.row) else { return nil }
+            let message = messages[indexPath.row]
+            var actions: [UIMenuElement] = []
+
+            if let text = message.content.body?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                actions.append(UIAction(title: "复制消息", image: UIImage(systemName: "doc.on.doc")) { _ in
+                    UIPasteboard.general.string = text
+                })
+            }
+
+            if message.content.type.lowercased() == "image" {
+                actions.append(UIAction(title: "保存图片", image: UIImage(systemName: "square.and.arrow.down")) { [parent] _ in
+                    parent.onSaveImage(message)
+                })
+            }
+
+            guard !actions.isEmpty else { return nil }
+            return UIContextMenuConfiguration(identifier: message.id as NSString, previewProvider: nil) { _ in
+                UIMenu(children: actions)
+            }
+        }
+
+        private func rowHeight(for indexPath: IndexPath, in tableView: UITableView) -> CGFloat {
+            guard messages.indices.contains(indexPath.row), tableView.bounds.width > 0 else {
+                return 84
+            }
+
+            let message = messages[indexPath.row]
+            let width = tableView.bounds.width
+            let displayScale = max(tableView.traitCollection.displayScale, 1)
+            let key = MessageHeightCacheKey(
+                signature: MessageRenderSignature(message: message),
+                width: Int((width * displayScale).rounded())
+            )
+            if let cachedHeight = measuredRowHeights[key] {
+                return cachedHeight
+            }
+
+            let measuredHeight = measureRowHeight(for: message, width: width)
+            measuredRowHeights[key] = measuredHeight
+            return measuredHeight
+        }
+
+        private func measureRowHeight(for message: Message, width: CGFloat) -> CGFloat {
+            let content = ChatBubbleRow(
+                message: message,
+                currentUserID: parent.currentUserID,
+                showsSenderInfo: parent.showsSenderInfo,
+                fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
+                onPreviewImage: nil
+            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .frame(width: width)
+
+            let host = UIHostingController(rootView: AnyView(content))
+            host.view.backgroundColor = .clear
+            let targetSize = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+            let measuredSize = host.sizeThatFits(in: targetSize)
+            return max(1, ceil(measuredSize.height))
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            guard !isRestoringPosition else { return }
+            evaluateScrollState(on: scrollView)
+        }
+
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            emit { [parent] in parent.onUserScrollChange(true) }
+        }
+
+        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            if !decelerate {
+                emit { [parent] in parent.onUserScrollChange(false) }
+            }
+        }
+
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            emit { [parent] in parent.onUserScrollChange(false) }
+        }
+
+        private func updateFooter(on tableView: UITableView) {
+            let nextFooterHeight = parent.bottomMessageClearance + 16
+            guard abs(footerHeight - nextFooterHeight) > 0.5 else { return }
+            footerHeight = nextFooterHeight
+            tableView.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: nextFooterHeight))
+        }
+
+        private func renderSignatures(for messages: [Message]) -> [MessageRenderSignature] {
+            messages.map(MessageRenderSignature.init)
+        }
+
+        private func prependedRowCount(previousIDs: [String], nextIDs: [String]) -> Int {
+            guard let previousFirstID = previousIDs.first,
+                  let previousStart = nextIDs.firstIndex(of: previousFirstID),
+                  previousStart > 0,
+                  nextIDs.count == previousStart + previousIDs.count,
+                  Array(nextIDs[previousStart...]) == previousIDs
+            else {
+                return 0
+            }
+            return previousStart
+        }
+
+        private func appendedRowStart(previousIDs: [String], nextIDs: [String]) -> Int? {
+            guard nextIDs.count > previousIDs.count,
+                  Array(nextIDs.prefix(previousIDs.count)) == previousIDs
+            else {
+                return nil
+            }
+            return previousIDs.count
+        }
+
+        private func insertPrependedRows(
+            count: Int,
+            preserving snapshot: PrependPositionSnapshot?,
+            in tableView: UITableView
+        ) {
+            let indexPaths = (0..<count).map { IndexPath(row: $0, section: 0) }
+            UIView.performWithoutAnimation {
+                tableView.performBatchUpdates {
+                    tableView.insertRows(at: indexPaths, with: .none)
+                } completion: { [weak self, weak tableView] _ in
+                    guard let self, let tableView, let snapshot else { return }
+                    self.restoreAfterPrepending(snapshot, in: tableView)
+                }
+                layoutIfReady(tableView)
+                if let snapshot {
+                    restorePrependOffset(snapshot, in: tableView)
+                }
+            }
+        }
+
+        private func insertAppendedRows(start: Int, count: Int, in tableView: UITableView) {
+            guard count > 0 else { return }
+            let indexPaths = (start..<(start + count)).map { IndexPath(row: $0, section: 0) }
+            UIView.performWithoutAnimation {
+                tableView.performBatchUpdates {
+                    tableView.insertRows(at: indexPaths, with: .none)
+                }
+                layoutIfReady(tableView)
+            }
+        }
+
+        private func visibleAnchor(in tableView: UITableView) -> VisibleMessageAnchor? {
+            guard isReadyForLayout(tableView) else { return nil }
+            let visibleTop = tableView.contentOffset.y + tableView.adjustedContentInset.top
+            let indexPaths = (tableView.indexPathsForVisibleRows ?? []).sorted()
+            for indexPath in indexPaths where messages.indices.contains(indexPath.row) {
+                let rect = tableView.rectForRow(at: indexPath)
+                guard rect.maxY > visibleTop + 1 else { continue }
+                return VisibleMessageAnchor(
+                    messageID: messages[indexPath.row].id,
+                    offsetFromVisibleTop: rect.minY - visibleTop
+                )
+            }
+            return nil
+        }
+
+        private func restoreAfterLayout(_ anchor: VisibleMessageAnchor, in tableView: UITableView) {
+            restore(anchor, in: tableView)
+            DispatchQueue.main.async { [weak self, weak tableView] in
+                guard let self, let tableView else { return }
+                self.restore(anchor, in: tableView)
+            }
+        }
+
+        private func restoreAfterPrepending(_ snapshot: PrependPositionSnapshot, in tableView: UITableView) {
+            restorePrependOffset(snapshot, in: tableView)
+            DispatchQueue.main.async { [weak self, weak tableView] in
+                guard let self, let tableView else { return }
+                self.restorePrependOffset(snapshot, in: tableView)
+            }
+        }
+
+        private func restorePrependOffset(_ snapshot: PrependPositionSnapshot, in tableView: UITableView) {
+            guard isReadyForLayout(tableView) else { return }
+            layoutIfReady(tableView)
+            let insertedHeight = tableView.contentSize.height - snapshot.contentHeight
+            guard insertedHeight > 0 else { return }
+            let targetOffsetY = snapshot.contentOffsetY + insertedHeight
+            setContentOffset(
+                CGPoint(x: tableView.contentOffset.x, y: clampedOffsetY(targetOffsetY, in: tableView)),
+                on: tableView,
+                animated: false
+            )
+        }
+
+        private func restore(_ anchor: VisibleMessageAnchor, in tableView: UITableView) {
+            guard isReadyForLayout(tableView) else { return }
+            guard let row = messages.firstIndex(where: { $0.id == anchor.messageID }) else { return }
+            let indexPath = IndexPath(row: row, section: 0)
+            layoutIfReady(tableView)
+            let rect = tableView.rectForRow(at: indexPath)
+            let targetOffsetY = rect.minY - anchor.offsetFromVisibleTop - tableView.adjustedContentInset.top
+            setContentOffset(
+                CGPoint(x: tableView.contentOffset.x, y: clampedOffsetY(targetOffsetY, in: tableView)),
+                on: tableView,
+                animated: false
+            )
+        }
+
+        private func evaluateScrollState(on scrollView: UIScrollView, allowHistoryRequest: Bool = true) {
+            guard scrollView.window != nil, scrollView.bounds.height > 0 else { return }
+            updateNearBottom(on: scrollView)
+            guard allowHistoryRequest else { return }
+            maybeRequestOlderHistory(from: scrollView)
+        }
+
+        private func updateNearBottom(on scrollView: UIScrollView) {
+            let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height - scrollView.adjustedContentInset.bottom
+            let distanceFromBottom = scrollView.contentSize.height - visibleBottom
+            let nextIsNearBottom = distanceFromBottom <= parent.bottomAutoScrollThreshold
+            guard nextIsNearBottom != isNearBottom else { return }
             isNearBottom = nextIsNearBottom
+            emit { [parent] in parent.onNearBottomChange(nextIsNearBottom) }
         }
+
+        private func maybeRequestOlderHistory(from scrollView: UIScrollView) {
+            guard hasPositionedInitialMessages else { return }
+            guard !messages.isEmpty else { return }
+            guard !hasScheduledNearTopRequest else { return }
+
+            let distanceFromTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+            let preloadDistance = max(parent.historyPreloadDistance, scrollView.bounds.height * 2.2)
+            let contentUnderfillsViewport = scrollView.contentSize.height <= scrollView.bounds.height + preloadDistance
+            guard distanceFromTop <= preloadDistance || contentUnderfillsViewport else { return }
+
+            hasScheduledNearTopRequest = true
+            emit { [weak self] in
+                guard let self else { return }
+                self.hasScheduledNearTopRequest = false
+                self.parent.onLoadOlder()
+            }
+        }
+
+        private func scrollToBottomAfterLayout(
+            on tableView: UITableView,
+            animated: Bool,
+            notifyInitialPosition: Bool
+        ) {
+            scrollToBottomAfterLayout(
+                on: tableView,
+                animated: animated,
+                notifyInitialPosition: notifyInitialPosition,
+                attempt: 0
+            )
+        }
+
+        private func scrollToBottomAfterLayout(
+            on tableView: UITableView,
+            animated: Bool,
+            notifyInitialPosition: Bool,
+            attempt: Int
+        ) {
+            DispatchQueue.main.async { [weak self, weak tableView] in
+                guard let self, let tableView else { return }
+                guard tableView.window != nil else {
+                    self.queueScrollToBottom(animated: animated, notifyInitialPosition: notifyInitialPosition)
+                    return
+                }
+                guard tableView.bounds.height > 0 else {
+                    guard attempt < 5 else {
+                        self.queueScrollToBottom(animated: animated, notifyInitialPosition: notifyInitialPosition)
+                        return
+                    }
+                    self.scrollToBottomAfterLayout(
+                        on: tableView,
+                        animated: animated,
+                        notifyInitialPosition: notifyInitialPosition,
+                        attempt: attempt + 1
+                    )
+                    return
+                }
+                guard self.scrollToBottom(on: tableView, animated: animated) else {
+                    self.queueScrollToBottom(animated: animated, notifyInitialPosition: notifyInitialPosition)
+                    return
+                }
+                DispatchQueue.main.async { [weak self, weak tableView] in
+                    guard let self, let tableView else { return }
+                    guard self.scrollToBottom(on: tableView, animated: false) else {
+                        self.queueScrollToBottom(animated: false, notifyInitialPosition: notifyInitialPosition)
+                        return
+                    }
+                    if notifyInitialPosition {
+                        self.pendingInitialBottomPosition = false
+                        self.hasPositionedInitialMessages = true
+                        self.emit { [parent = self.parent] in
+                            parent.onInitialPositioned()
+                        }
+                    }
+                }
+            }
+        }
+
+        @discardableResult
+        private func scrollToBottom(on tableView: UITableView, animated: Bool) -> Bool {
+            guard isReadyForLayout(tableView) else { return false }
+            layoutIfReady(tableView)
+            let minimumOffsetY = -tableView.adjustedContentInset.top
+            let maximumOffsetY = max(
+                minimumOffsetY,
+                tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+            )
+            setContentOffset(CGPoint(x: 0, y: maximumOffsetY), on: tableView, animated: animated)
+            return true
+        }
+
+        private func setContentOffset(_ offset: CGPoint, on tableView: UITableView, animated: Bool) {
+            isRestoringPosition = true
+            tableView.setContentOffset(offset, animated: animated)
+            DispatchQueue.main.async { [weak self] in
+                self?.isRestoringPosition = false
+            }
+        }
+
+        private func clampedOffsetY(_ offsetY: CGFloat, in tableView: UITableView) -> CGFloat {
+            let minimumOffsetY = -tableView.adjustedContentInset.top
+            let maximumOffsetY = max(
+                minimumOffsetY,
+                tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+            )
+            return min(max(offsetY, minimumOffsetY), maximumOffsetY)
+        }
+
+        private func emit(_ action: @escaping () -> Void) {
+            DispatchQueue.main.async(execute: action)
+        }
+    }
+}
+
+private final class ChatTableView: UITableView {
+    var onDidMoveToWindow: ((UITableView) -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        notifyWhenReady()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        notifyWhenReady()
+    }
+
+    private func notifyWhenReady() {
+        guard window != nil else { return }
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, self.bounds.width > 0, self.bounds.height > 0 else { return }
+            self.onDidMoveToWindow?(self)
+        }
+    }
+}
+
+private struct VisibleMessageAnchor {
+    let messageID: String
+    let offsetFromVisibleTop: CGFloat
+}
+
+private struct MessageRenderSignature: Hashable {
+    let id: String
+    let senderId: String
+    let senderType: String
+    let fromName: String?
+    let fromAvatar: String?
+    let toName: String?
+    let toAvatar: String?
+    let contentType: String
+    let contentBody: String?
+    let contentURL: String?
+    let contentName: String?
+    let contentSize: Int?
+    let seq: Int?
+    let timestamp: Int64?
+    let pending: Bool
+
+    nonisolated init(message: Message) {
+        self.id = message.id
+        self.senderId = message.senderId
+        self.senderType = message.senderType
+        self.fromName = message.from.name
+        self.fromAvatar = message.from.avatar
+        self.toName = message.to.name
+        self.toAvatar = message.to.avatar
+        self.contentType = message.content.type
+        self.contentBody = message.content.body
+        self.contentURL = message.content.url
+        self.contentName = message.content.name
+        self.contentSize = message.content.size
+        self.seq = message.seq
+        self.timestamp = message.timestamp
+        self.pending = message.pending
     }
 }
 
@@ -1741,11 +2514,11 @@ private struct ChatChromeHeader<SettingsContent: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.82))
+        .background(Color.rcmsToolbarSurface)
         .background(.ultraThinMaterial)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.black.opacity(0.06))
+                .fill(Color.rcmsHairline)
                 .frame(height: 1)
         }
     }
@@ -1771,9 +2544,9 @@ private struct ChatComposerIconButton: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color.white.opacity(0.92))
+                .fill(Color.rcmsControlSurface)
                 .frame(width: 44, height: 44)
-                .overlay(Circle().stroke(Color.black.opacity(0.06), lineWidth: 1))
+                .overlay(Circle().stroke(Color.rcmsHairline, lineWidth: 1))
 
             if isUploading {
                 ProgressView()
@@ -1787,38 +2560,6 @@ private struct ChatComposerIconButton: View {
             }
         }
         .accessibilityLabel(isUploading ? "Image uploading" : "Choose image")
-    }
-}
-
-private struct ChatScrollBottomReader: View {
-    let coordinateSpaceName: String
-    let onChange: (CGFloat) -> Void
-    @Environment(\.displayScale) private var displayScale
-
-    var body: some View {
-        GeometryReader { geometry in
-            let bottomMaxY = geometry.frame(in: .named(coordinateSpaceName)).maxY
-            let pixelAlignedBottomMaxY = pixelAligned(bottomMaxY)
-
-            Color.clear
-                .task(id: pixelAlignedBottomMaxY) {
-                    await Task.yield()
-                    onChange(pixelAlignedBottomMaxY)
-                }
-        }
-    }
-
-    private func pixelAligned(_ value: CGFloat) -> CGFloat {
-        let scale = max(displayScale, 1)
-        return (value * scale).rounded() / scale
-    }
-}
-
-private struct ChatScrollViewportHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -1836,11 +2577,14 @@ struct MessageMarkdownView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(isMe ? Color.white : Color.rcmsTextPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
         }
     }
 
     private var shouldRenderMarkdown: Bool {
+        Self.shouldRenderMarkdown(text)
+    }
+
+    static func shouldRenderMarkdown(_ text: String) -> Bool {
         text.rangeOfCharacter(from: Self.markdownTriggerCharacters) != nil
     }
 
@@ -1861,13 +2605,17 @@ extension Theme {
             }
             .codeBlock { configuration in
                 VStack(alignment: .leading, spacing: 0) {
-                    if let language = configuration.language?.trimmingCharacters(in: .whitespacesAndNewlines), !language.isEmpty {
-                        Text(language.uppercased())
-                            .font(ChatCodeTypography.labelFont())
-                            .foregroundStyle(isMe ? Color.white.opacity(0.7) : Color.rcmsTextSecondary)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 8)
+                    HStack(alignment: .center, spacing: 8) {
+                        if let language = configuration.language?.trimmingCharacters(in: .whitespacesAndNewlines), !language.isEmpty {
+                            Text(language.uppercased())
+                                .font(ChatCodeTypography.labelFont())
+                                .foregroundStyle(isMe ? Color.white.opacity(0.7) : Color.rcmsTextSecondary)
+                        }
+
+                        Spacer(minLength: 8)
                     }
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .center)
+                    .padding(.horizontal, 10)
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         ChatHighlightedCodeView(
@@ -1878,11 +2626,11 @@ extension Theme {
                             .fixedSize(horizontal: true, vertical: false)
                             .lineSpacing(3)
                             .padding(.horizontal, 10)
-                            .padding(.top, configuration.language == nil ? 10 : 6)
+                            .padding(.top, 6)
                             .padding(.bottom, 10)
                     }
                 }
-                .background(isMe ? Color.black.opacity(0.2) : Color(red: 248/255, green: 250/255, blue: 252/255))
+                .background(isMe ? Color.black.opacity(0.2) : Color.rcmsCodeBlockBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .markdownMargin(top: 8, bottom: 8)
             }
@@ -1942,6 +2690,10 @@ struct ChatBubbleRow: View {
         normalizeIdentifier(message.content.type) == "image"
     }
 
+    private var isAudioMessage: Bool {
+        message.content.isAudio
+    }
+
     private var imageName: String {
         let directName = message.content.name?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let directName, !directName.isEmpty {
@@ -1988,7 +2740,7 @@ struct ChatBubbleRow: View {
         }
 
         return LinearGradient(
-            colors: [Color.white, Color(red: 226/255, green: 232/255, blue: 240/255)],
+            colors: [Color.rcmsSurfaceSolid, Color.rcmsSurfaceMuted],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -2024,21 +2776,14 @@ struct ChatBubbleRow: View {
 
                 if isImageMessage {
                     imageMessageView
+                } else if isAudioMessage {
+                    ChatAudioMessageBubble(message: message, isMe: isMe)
                 } else if let body = message.content.body {
-                    MessageMarkdownView(text: body, isMe: isMe)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(isMe ? Color.rcmsAccent : Color.white.opacity(0.95))
-                        .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
-                        .clipShape(BubbleShape(isMe: isMe))
-                        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+                    messageTextBubble(body)
                 }
 
-                if let messageTimestamp {
-                    Text(messageTimestamp)
-                        .font(.caption2)
-                        .foregroundStyle(Color.rcmsTextSecondary)
-                        .padding(.horizontal, 4)
+                if messageTimestamp != nil || message.pending {
+                    deliveryStatusRow
                 }
             }
             .frame(maxWidth: 300, alignment: isMe ? .trailing : .leading)
@@ -2064,7 +2809,7 @@ struct ChatBubbleRow: View {
         }
         .frame(width: 44, height: 44)
         .clipShape(Circle())
-        .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1))
+        .overlay(Circle().stroke(Color.rcmsAvatarBorder, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 3)
     }
 
@@ -2097,19 +2842,69 @@ struct ChatBubbleRow: View {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     }
 
+    private var deliveryStatusRow: some View {
+        HStack(spacing: 4) {
+            if let messageTimestamp {
+                Text(messageTimestamp)
+            }
+
+            if message.pending {
+                if messageTimestamp != nil {
+                    Text("·")
+                }
+
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.72)
+                    .frame(width: 10, height: 10)
+
+                Text("发送中")
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(message.pending ? Color.rcmsWarning : Color.rcmsTextSecondary)
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(deliveryStatusAccessibilityLabel)
+    }
+
+    private var deliveryStatusAccessibilityLabel: String {
+        let pieces = [messageTimestamp, message.pending ? "发送中" : nil]
+            .compactMap { $0 }
+        return pieces.joined(separator: " ")
+    }
+
     private var imageMessageView: some View {
         VStack(alignment: isMe ? .trailing : .leading, spacing: 8) {
             imageThumbnailView
 
             if let imageCaption {
-                MessageMarkdownView(text: imageCaption, isMe: isMe)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(isMe ? Color.rcmsAccent : Color.white.opacity(0.95))
-                    .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
-                    .clipShape(BubbleShape(isMe: isMe))
-                    .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+                messageTextBubble(imageCaption)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func messageTextBubble(_ text: String) -> some View {
+        let bubbleShape = BubbleShape(isMe: isMe)
+        if MessageMarkdownView.shouldRenderMarkdown(text) {
+            MessageMarkdownView(text: text, isMe: isMe)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
+                .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
+                .clipShape(bubbleShape)
+                .contentShape(bubbleShape)
+                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+        } else {
+            MessageMarkdownView(text: text, isMe: isMe)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
+                .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
+                .clipShape(bubbleShape)
+                .contentShape(bubbleShape)
+                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
         }
     }
 }
@@ -2122,21 +2917,243 @@ private extension ChatBubbleRow {
             .clipShape(RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous)
-                    .stroke(Color.white.opacity(isMe ? 0.2 : 0.65), lineWidth: message.content.isSticker ? 0 : 1)
+                    .stroke(isMe ? Color.white.opacity(0.2) : Color.rcmsImageBorder, lineWidth: message.content.isSticker ? 0 : 1)
             )
             .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
 
         if let onPreviewImage {
-            Button {
-                onPreviewImage(message)
-            } label: {
-                thumbnail
-            }
-            .buttonStyle(.plain)
-            .contentShape(RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous))
+            thumbnail
+                .contentShape(RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous))
+                .onTapGesture {
+                    onPreviewImage(message)
+                }
         } else {
             thumbnail
         }
+    }
+}
+
+private struct ChatAudioMessageBubble: View {
+    let message: Message
+    let isMe: Bool
+
+    @StateObject private var playback = ChatAudioPlaybackController()
+
+    private var durationSeconds: Int? {
+        message.content.audioDurationSeconds
+    }
+
+    private var bubbleWidth: CGFloat {
+        guard let durationSeconds else { return 118 }
+        let clamped = min(max(durationSeconds, 1), 60)
+        return 98 + CGFloat(clamped) * 1.7
+    }
+
+    private var durationLabel: String {
+        if let durationSeconds {
+            return "\(durationSeconds)\""
+        }
+        if let size = message.content.size ?? message.content.asset?.size, size > 0 {
+            return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        }
+        return "语音"
+    }
+
+    private var audioURL: URL? {
+        APIClient.shared.resolvedURL(from: message.content.audioURLString)
+    }
+
+    var body: some View {
+        Button {
+            playback.toggle(url: audioURL)
+        } label: {
+            HStack(spacing: 10) {
+                if !isMe {
+                    playbackIcon
+                    ChatAudioWaveform(isPlaying: playback.isPlaying, isMe: isMe)
+                    Spacer(minLength: 4)
+                    durationText
+                } else {
+                    durationText
+                    Spacer(minLength: 4)
+                    ChatAudioWaveform(isPlaying: playback.isPlaying, isMe: isMe)
+                    playbackIcon
+                }
+            }
+            .frame(width: bubbleWidth, alignment: isMe ? .trailing : .leading)
+            .frame(minHeight: 42)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 9)
+            .background(isMe ? Color.rcmsAccent : Color.rcmsIncomingBubble)
+            .clipShape(BubbleShape(isMe: isMe))
+            .contentShape(BubbleShape(isMe: isMe))
+            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .onDisappear {
+            playback.pause()
+        }
+    }
+
+    private var playbackIcon: some View {
+        ZStack {
+            Circle()
+                .fill(isMe ? Color.white.opacity(0.18) : Color.rcmsAccent.opacity(0.12))
+                .frame(width: 26, height: 26)
+
+            if playback.isLoading {
+                ProgressView()
+                    .tint(isMe ? .white : Color.rcmsAccent)
+                    .scaleEffect(0.72)
+            } else {
+                Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(isMe ? Color.white : Color.rcmsAccent)
+                    .offset(x: playback.isPlaying ? 0 : 1)
+            }
+        }
+    }
+
+    private var durationText: some View {
+        Text(playback.didFail ? "无法播放" : durationLabel)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(isMe ? Color.white.opacity(0.92) : Color.rcmsTextSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(minWidth: 28, alignment: isMe ? .leading : .trailing)
+    }
+
+    private var accessibilityLabel: String {
+        if playback.didFail {
+            return "语音无法播放"
+        }
+        return playback.isPlaying ? "暂停语音消息" : "播放语音消息"
+    }
+}
+
+private struct ChatAudioWaveform: View {
+    let isPlaying: Bool
+    let isMe: Bool
+
+    private let heights: [CGFloat] = [7, 13, 18, 11, 23, 15, 9, 19, 14, 22, 10, 16]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(heights.indices, id: \.self) { index in
+                Capsule()
+                    .fill(isMe ? Color.white.opacity(0.82) : Color.rcmsAccent.opacity(0.72))
+                    .frame(width: 3, height: heights[index])
+                    .opacity(isPlaying ? playingOpacity(for: index) : 0.58)
+                    .animation(
+                        .easeInOut(duration: 0.55)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(index % 4) * 0.06),
+                        value: isPlaying
+                    )
+            }
+        }
+        .frame(width: 69, height: 24)
+    }
+
+    private func playingOpacity(for index: Int) -> Double {
+        index.isMultiple(of: 3) ? 0.48 : 0.94
+    }
+}
+
+private final class ChatAudioPlaybackController: ObservableObject {
+    @Published var isPlaying = false
+    @Published var isLoading = false
+    @Published var didFail = false
+
+    private var player: AVPlayer?
+    private var currentURL: URL?
+    private var statusObservation: NSKeyValueObservation?
+    private var timeControlObservation: NSKeyValueObservation?
+    private var endObserver: NSObjectProtocol?
+
+    func toggle(url: URL?) {
+        guard let url else {
+            markFailed()
+            return
+        }
+
+        if currentURL == url, isPlaying {
+            pause()
+            return
+        }
+
+        if currentURL != url {
+            prepare(url: url)
+        }
+
+        didFail = false
+        isLoading = true
+        player?.play()
+    }
+
+    func pause() {
+        player?.pause()
+        isPlaying = false
+        isLoading = false
+    }
+
+    private func prepare(url: URL) {
+        cleanupObservers()
+        currentURL = url
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        self.player = player
+
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            DispatchQueue.main.async {
+                if item.status == .failed {
+                    self?.markFailed()
+                }
+            }
+        }
+
+        timeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+            DispatchQueue.main.async {
+                self?.isLoading = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                self?.isPlaying = player.timeControlStatus == .playing
+            }
+        }
+
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            self?.finishPlayback()
+        }
+    }
+
+    private func finishPlayback() {
+        player?.seek(to: .zero)
+        isPlaying = false
+        isLoading = false
+    }
+
+    private func markFailed() {
+        player?.pause()
+        didFail = true
+        isPlaying = false
+        isLoading = false
+    }
+
+    private func cleanupObservers() {
+        statusObservation = nil
+        timeControlObservation = nil
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
+    }
+
+    deinit {
+        cleanupObservers()
+        player?.pause()
     }
 }
 
@@ -2171,7 +3188,7 @@ private struct CachedChatImageView: View {
     private var placeholder: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.9))
+                .fill(Color.rcmsSurfaceElevated)
 
             VStack(spacing: 8) {
                 Image(systemName: "photo")
@@ -2195,15 +3212,27 @@ private struct CachedChatImageView: View {
     }
 
     private var displayAspectRatio: CGFloat {
-        if let cachedImage {
-            let width = cachedImage.size.width
-            let height = cachedImage.size.height
-            if width > 0, height > 0 {
-                return width / height
-            }
+        if let asset = message.content.asset,
+           let width = asset.width,
+           let height = asset.height,
+           width > 0,
+           height > 0 {
+            return CGFloat(width) / CGFloat(height)
         }
 
-        return message.content.isSticker ? 1 : (4 / 3)
+        if !message.content.isSticker,
+           let width = message.content.meta?["width"]?.intValue,
+           let height = message.content.meta?["height"]?.intValue,
+           width > 0,
+           height > 0 {
+            return CGFloat(width) / CGFloat(height)
+        }
+
+        if message.content.isSticker {
+            return 1
+        }
+
+        return 4 / 3
     }
 
     @MainActor
@@ -2234,6 +3263,91 @@ private struct CachedChatImageView: View {
         await Task.detached(priority: .userInitiated) {
             UIImage(contentsOfFile: fileURL.path)
         }.value
+    }
+}
+
+private struct ChatImageSaveStatus: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private enum ChatImageSaveError: LocalizedError {
+    case accessDenied
+    case imageUnavailable
+    case saveFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .accessDenied:
+            return "请在系统设置中允许 ClawChat 添加照片，然后再试一次。"
+        case .imageUnavailable:
+            return "图片还没有加载完成，或原图地址不可用。"
+        case .saveFailed:
+            return "系统相册没有完成保存，请稍后再试。"
+        }
+    }
+}
+
+private enum ChatImageSaver {
+    static func save(_ message: Message) async throws {
+        let authorizationStatus = await requestAuthorizationIfNeeded()
+        guard authorizationStatus == .authorized || authorizationStatus == .limited else {
+            throw ChatImageSaveError.accessDenied
+        }
+
+        guard let fileURL = await LocalImageStore.shared.ensureCachedImage(for: message) else {
+            throw ChatImageSaveError.imageUnavailable
+        }
+
+        guard let image = await decodedImage(from: fileURL) else {
+            throw ChatImageSaveError.imageUnavailable
+        }
+
+        try await saveUIImageToPhotoLibrary(image)
+    }
+
+    private static func saveUIImageToPhotoLibrary(_ image: UIImage) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            } completionHandler: { didSave, error in
+                resumeSaveContinuation(continuation, didSave: didSave, error: error)
+            }
+        }
+    }
+
+    private static func resumeSaveContinuation(
+        _ continuation: CheckedContinuation<Void, Error>,
+        didSave: Bool,
+        error: Error?
+    ) {
+        if let error {
+            continuation.resume(throwing: error)
+        } else if didSave {
+            continuation.resume()
+        } else {
+            continuation.resume(throwing: ChatImageSaveError.saveFailed)
+        }
+    }
+
+    private static func decodedImage(from fileURL: URL) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            UIImage(contentsOfFile: fileURL.path)
+        }.value
+    }
+
+    private static func requestAuthorizationIfNeeded() async -> PHAuthorizationStatus {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        guard status == .notDetermined else {
+            return status
+        }
+
+        return await withCheckedContinuation { continuation in
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                continuation.resume(returning: status)
+            }
+        }
     }
 }
 
@@ -2388,10 +3502,12 @@ private struct PendingImageSendScreen: View {
     }
 }
 
-private struct ChatImagePreviewScreen: View {
+struct ChatImagePreviewScreen: View {
     let message: Message
 
     @Environment(\.dismiss) private var dismiss
+    @State private var isSaving = false
+    @State private var saveStatus: ChatImageSaveStatus?
     @State private var zoomScale: CGFloat = 1
     @State private var baseZoomScale: CGFloat = 1
     @State private var contentOffset: CGSize = .zero
@@ -2433,6 +3549,7 @@ private struct ChatImagePreviewScreen: View {
                             .font(.system(size: 28, weight: .medium))
                             .foregroundStyle(.white.opacity(0.92))
                     }
+                    .accessibilityIdentifier("chat.imagePreview.close")
 
                     Spacer()
 
@@ -2440,10 +3557,29 @@ private struct ChatImagePreviewScreen: View {
                         .font(.headline)
                         .foregroundStyle(.white.opacity(0.92))
                         .lineLimit(1)
+                        .accessibilityIdentifier("chat.imagePreview.title")
 
                     Spacer()
 
-                    Color.clear.frame(width: 28, height: 28)
+                    Button {
+                        saveImage()
+                    } label: {
+                        Group {
+                            if isSaving {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 20, weight: .semibold))
+                            }
+                        }
+                        .foregroundStyle(.white.opacity(0.92))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSaving)
+                    .accessibilityIdentifier("chat.imagePreview.save")
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
@@ -2479,6 +3615,13 @@ private struct ChatImagePreviewScreen: View {
             }
         }
         .statusBarHidden()
+        .alert(item: $saveStatus) { status in
+            Alert(
+                title: Text(status.title),
+                message: Text(status.message),
+                dismissButton: .default(Text("确定"))
+            )
+        }
     }
 
     private var magnificationGesture: some Gesture {
@@ -2531,6 +3674,24 @@ private struct ChatImagePreviewScreen: View {
         baseZoomScale = 1
         contentOffset = .zero
         baseContentOffset = .zero
+    }
+
+    private func saveImage() {
+        guard !isSaving else { return }
+
+        isSaving = true
+        Task { @MainActor in
+            defer { isSaving = false }
+            do {
+                try await ChatImageSaver.save(message)
+                saveStatus = ChatImageSaveStatus(title: "已保存", message: "图片已保存到系统相册。")
+            } catch {
+                saveStatus = ChatImageSaveStatus(
+                    title: "保存失败",
+                    message: error.localizedDescription
+                )
+            }
+        }
     }
 }
 
@@ -2798,5 +3959,6 @@ private extension Message {
         self.seq = seq
         self.timestamp = timestamp
         self.createdAt = createdAt
+        self.pending = false
     }
 }

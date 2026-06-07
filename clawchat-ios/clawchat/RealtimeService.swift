@@ -50,6 +50,7 @@ class RealtimeService: NSObject, ObservableObject {
         }
 
         cancelRetry()
+        connectionState = .connecting
         log("bootstrap request started")
 
         fetchBootstrap()
@@ -118,7 +119,7 @@ class RealtimeService: NSObject, ObservableObject {
     }
 
     private func fetchBootstrap() -> AnyPublisher<RealtimeBootstrapResponse, Error> {
-        APIClient.shared.request("/api/v1/realtime/bootstrap")
+        APIClient.shared.fetchRealtimeBootstrap()
     }
 
     private func connect(using bootstrap: RealtimeBootstrapResponse) {
@@ -246,7 +247,7 @@ class RealtimeService: NSObject, ObservableObject {
             seq: nil
         )
 
-        let optimisticMessage = Message(from: payload)
+        let optimisticMessage = Message(from: payload, pending: true)
         let isActiveConversation = normalizeConversationID(activeConversationID) == normalizeConversationID(conversationId)
 
         LocalMessageStore.shared.upsert(messages: [optimisticMessage])

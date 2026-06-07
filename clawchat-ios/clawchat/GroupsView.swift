@@ -8,12 +8,17 @@ class GroupsViewModel: ObservableObject {
 
     private let refreshInterval: TimeInterval = 45
     private var cancellables = Set<AnyCancellable>()
+    private var hasHydratedCache = false
     private var hasLoaded = false
     private var lastRefreshAt: Date?
 
     func refreshIfNeeded(force: Bool = false) {
         if isLoading {
             return
+        }
+
+        if !force {
+            hydrateCachedGroupsIfNeeded()
         }
 
         if !force, hasLoaded, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < refreshInterval {
@@ -26,7 +31,7 @@ class GroupsViewModel: ObservableObject {
     private func fetchGroups() {
         isLoading = true
         errorMessage = nil
-        APIClient.shared.request("/api/v1/groups")
+        APIClient.shared.fetchGroups()
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -34,22 +39,27 @@ class GroupsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (groups: [ChatGroup]) in
+                LocalMessageStore.shared.upsert(groups: groups)
                 self.groups = groups
+                self.hasHydratedCache = true
                 self.hasLoaded = true
                 self.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
     }
 
+    private func hydrateCachedGroupsIfNeeded() {
+        guard !hasHydratedCache else { return }
+
+        let cachedGroups = LocalMessageStore.shared.cachedGroups()
+        if !cachedGroups.isEmpty {
+            groups = cachedGroups
+        }
+        hasHydratedCache = true
+    }
+
     func createGroup(name: String, description: String?, onDone: @escaping () -> Void) {
-        let payload: [String: Any?] = [
-            "name": name,
-            "description": description?.isEmpty == true ? nil : description
-        ]
-
-        let data = try? JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 })
-
-        APIClient.shared.request("/api/v1/groups", method: "POST", body: data)
+        APIClient.shared.createGroup(name: name, description: description)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -128,7 +138,6 @@ struct GroupsView: View {
             }
             .navigationTitle("Groups")
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.light, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
@@ -157,7 +166,7 @@ struct GroupsView: View {
                 .foregroundStyle(Color.rcmsTextPrimary)
         }
         .padding(12)
-        .background(Color(red: 241/255, green: 245/255, blue: 249/255).opacity(0.95))
+        .background(Color.rcmsSurfaceMuted.opacity(0.95))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
@@ -193,23 +202,13 @@ struct GroupRowCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ZStack(alignment: .bottomTrailing) {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(red: 224/255, green: 242/255, blue: 254/255), Color(red: 186/255, green: 230/255, blue: 253/255)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 52, height: 52)
-                    .overlay(Image(systemName: "person.3.fill").foregroundStyle(Color.rcmsAccent))
-
-                Circle()
-                    .fill((group.isActive == true) ? Color.rcmsOnline : Color.rcmsOffline)
-                    .frame(width: 11, height: 11)
-                    .overlay(Circle().stroke(.white, lineWidth: 2.5))
-            }
+            AvatarBadge(
+                name: group.name,
+                imageURL: group.avatarUrl ?? group.avatar,
+                systemImage: "person.3.fill",
+                diameter: 52,
+                statusColor: (group.isActive == true) ? Color.rcmsOnline : Color.rcmsOffline
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(group.name)
@@ -228,7 +227,7 @@ struct GroupRowCard: View {
         .frame(minHeight: 74)
         .padding(.horizontal, 4)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.7))
+        .background(Color.rcmsSurface)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.rcmsDivider)

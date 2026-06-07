@@ -88,11 +88,7 @@ final class LocalImageStore {
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: remoteURL)
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200...299).contains(httpResponse.statusCode) {
-                return nil
-            }
+            let data = try await APIClient.shared.fetchRemoteData(from: remoteURL, acceptHeader: "image/*,*/*;q=0.8")
             return cacheImageData(data, for: message)
         } catch {
             print("Failed to cache image locally: \(error.localizedDescription)")

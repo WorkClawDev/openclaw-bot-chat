@@ -6,6 +6,7 @@ struct ChatHighlightedCodeView: View {
     let language: String?
     let isMe: Bool
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var highlightedText: AttributedString?
 
     private let highlighter = Highlight()
@@ -27,7 +28,8 @@ struct ChatHighlightedCodeView: View {
     }
 
     private var renderKey: String {
-        "\(normalizedLanguage ?? "auto")::\(isMe ? "sent" : "received")::\(code)"
+        let palette = isMe ? "sent" : (colorScheme == .dark ? "received-dark" : "received-light")
+        return "\(normalizedLanguage ?? "auto")::\(palette)::\(code)"
     }
 
     private var normalizedLanguage: String? {
@@ -43,7 +45,7 @@ struct ChatHighlightedCodeView: View {
         }
 
         do {
-            let colors = HighlightColors.custom(css: isMe ? Self.sentCodeCSS : Self.receivedCodeCSS)
+            let colors = HighlightColors.custom(css: highlightCSS)
             let renderedText: AttributedString
 
             if let normalizedLanguage {
@@ -115,4 +117,23 @@ struct ChatHighlightedCodeView: View {
     .hljs-meta, .hljs-meta .hljs-keyword, .hljs-selector-id { color: #dc2626; }
     .hljs-attr, .hljs-attribute, .hljs-property { color: #0f766e; }
     """
+
+    private static let receivedDarkCodeCSS = """
+    .hljs { color: #e2e8f0; }
+    .hljs-comment, .hljs-quote { color: #94a3b8; }
+    .hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #c4b5fd; }
+    .hljs-string, .hljs-doctag, .hljs-regexp { color: #86efac; }
+    .hljs-number, .hljs-symbol, .hljs-bullet { color: #fdba74; }
+    .hljs-title, .hljs-section, .hljs-function .hljs-title { color: #7dd3fc; }
+    .hljs-type, .hljs-class .hljs-title, .hljs-built_in { color: #fda4af; }
+    .hljs-meta, .hljs-meta .hljs-keyword, .hljs-selector-id { color: #f87171; }
+    .hljs-attr, .hljs-attribute, .hljs-property { color: #67e8f9; }
+    """
+
+    private var highlightCSS: String {
+        if isMe {
+            return Self.sentCodeCSS
+        }
+        return colorScheme == .dark ? Self.receivedDarkCodeCSS : Self.receivedCodeCSS
+    }
 }
