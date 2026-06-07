@@ -148,7 +148,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:8080}
     ports:
       - "${FRONTEND_PORT_MAPPING:-3000:3000}"
     depends_on:

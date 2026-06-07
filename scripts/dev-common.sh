@@ -41,7 +41,7 @@ MQTT_WS_PUBLIC_URL=wss://test.iotdevices.site/mqtt
 DEV_TEST_USERNAME=tester
 DEV_TEST_EMAIL=tester@example.com
 DEV_TEST_PASSWORD=test123456
-DEV_TEST_NICKNAME=Test User
+DEV_TEST_NICKNAME="Test User"
 
 # Backend runtime
 APP_MODE=release

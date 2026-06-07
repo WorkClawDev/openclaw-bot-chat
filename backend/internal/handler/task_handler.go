@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"context"
 	"errors"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	"github.com/openclaw-bot-chat/backend/internal/model"
 	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
@@ -116,6 +118,26 @@ func (h *TaskHandler) Reassign(c *gin.Context) {
 	apiresponse.Success(c, responsedto.NewTaskResponse(task))
 }
 
+func (h *TaskHandler) Dispatch(c *gin.Context) {
+	h.userAction(c, h.taskService.Dispatch)
+}
+
+func (h *TaskHandler) Accept(c *gin.Context) {
+	h.userAction(c, h.taskService.Accept)
+}
+
+func (h *TaskHandler) Reject(c *gin.Context) {
+	h.userAction(c, h.taskService.Reject)
+}
+
+func (h *TaskHandler) Retry(c *gin.Context) {
+	h.userAction(c, h.taskService.Retry)
+}
+
+func (h *TaskHandler) Cancel(c *gin.Context) {
+	h.userAction(c, h.taskService.Cancel)
+}
+
 func (h *TaskHandler) Delete(c *gin.Context) {
 	ownerID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -131,6 +153,32 @@ func (h *TaskHandler) Delete(c *gin.Context) {
 		return
 	}
 	apiresponse.Success(c, gin.H{"message": "task deleted"})
+}
+
+func (h *TaskHandler) userAction(
+	c *gin.Context,
+	action func(context.Context, uuid.UUID, uuid.UUID, service.UserTaskActionRequest) (*model.Task, error),
+) {
+	ownerID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	taskID, ok := parseTaskID(c)
+	if !ok {
+		return
+	}
+	var req service.UserTaskActionRequest
+	if err := bindOptionalJSON(c, &req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	task, err := action(c.Request.Context(), ownerID, taskID, req)
+	if err != nil {
+		writeTaskError(c, err)
+		return
+	}
+	apiresponse.Success(c, responsedto.NewTaskResponse(task))
 }
 
 func parseTaskID(c *gin.Context) (uuid.UUID, bool) {

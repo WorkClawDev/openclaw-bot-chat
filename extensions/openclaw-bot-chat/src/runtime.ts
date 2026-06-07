@@ -39,21 +39,39 @@ export type BotChatTask = {
   [key: string]: unknown;
 };
 
+export type BotChatTaskCreatePayload = Record<string, unknown>;
+
 export type BotChatTaskExecutionResult =
   | string
-  | {
+  | ({
+      summary?: string;
       note?: string;
       latestStatusNote?: string;
       latest_status_note?: string;
       output?: string;
       result?: string;
       text?: string;
-    }
+      artifacts?: unknown;
+      metadata?: Record<string, unknown>;
+    } & Record<string, unknown>)
   | void;
+
+export interface BotChatTaskExecutionContext {
+  progress(progress: number, note?: string): Promise<BotChatTask | undefined>;
+  progress(note: string, progress?: number): Promise<BotChatTask | undefined>;
+  createTask(payload: BotChatTaskCreatePayload): Promise<BotChatTask>;
+}
+
+export type BotChatTaskClient = {
+  createTask(payload: BotChatTaskCreatePayload): Promise<BotChatTask>;
+};
 
 export interface RuntimeHooks {
   emitMessage?: (message: BotChatMessage) => Promise<void>;
-  runTask?: (task: BotChatTask) => Promise<BotChatTaskExecutionResult>;
+  runTask?: (
+    task: BotChatTask,
+    context: BotChatTaskExecutionContext,
+  ) => Promise<BotChatTaskExecutionResult>;
 }
 
 interface BootstrapResponse {
@@ -1122,6 +1140,17 @@ export async function runBotChatTaskPollOnceForTest(params: {
   });
 }
 
+export function createBotChatTaskClient(params: {
+  backendUrl: string;
+  botKey: string;
+}): BotChatTaskClient {
+  return {
+    createTask(payload) {
+      return createBotChatTask(params.backendUrl, params.botKey, payload);
+    },
+  };
+}
+
 async function pollBotChatTasksOnce(params: {
   backendUrl: string;
   botKey: string;
@@ -1170,13 +1199,22 @@ async function pollBotChatTasksOnce(params: {
       }
     }
 
-    const result = await runTask(activeTask);
-    await postBotChatTaskTransition(params.backendUrl, params.botKey, activeTask.id, "complete", {
-      latest_status_note: summarizeTaskExecutionResult(result) ?? "Robot completed task",
+    const context = createBotChatTaskExecutionContext({
+      backendUrl: params.backendUrl,
+      botKey: params.botKey,
+      getActiveTask: () => activeTask,
+      updateActiveTask(task) {
+        if (task) {
+          activeTask = task;
+        }
+      },
     });
+    const result = await runTask(activeTask, context);
+    await postBotChatTaskResult(params.backendUrl, params.botKey, activeTask.id, result);
   } catch (error) {
     await postBotChatTaskTransition(params.backendUrl, params.botKey, activeTask.id, "fail", {
       latest_status_note: error instanceof Error ? error.message : String(error),
+      error: serializeTaskError(error),
     });
   } finally {
     params.executingTaskIds.delete(task.id);
@@ -1203,6 +1241,22 @@ function selectRunnableBotChatTask(
 }
 
 async function fetchBotChatTasks(backendUrl: string, botKey: string): Promise<BotChatTask[]> {
+  const queueResponse = await fetch(buildBotChatRuntimeTaskQueueUrl(backendUrl), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "X-Bot-Key": botKey,
+    },
+  });
+
+  if (queueResponse.ok) {
+    return parseBotChatTaskList(await queueResponse.json());
+  }
+
+  if (queueResponse.status !== 404 && queueResponse.status !== 405) {
+    throw new Error(`task queue failed: ${queueResponse.status}`);
+  }
+
   const response = await fetch(buildBotChatRuntimeTaskUrl(backendUrl), {
     method: "GET",
     headers: {
@@ -1213,15 +1267,19 @@ async function fetchBotChatTasks(backendUrl: string, botKey: string): Promise<Bo
   if (!response.ok) {
     throw new Error(`task list failed: ${response.status}`);
   }
-  const json = (await response.json()) as { data?: unknown };
-  return Array.isArray(json.data) ? json.data.map(toBotChatTask).filter((task): task is BotChatTask => Boolean(task)) : [];
+  return parseBotChatTaskList(await response.json());
+}
+
+function parseBotChatTaskList(json: unknown): BotChatTask[] {
+  const data = isRecord(json) ? json.data : undefined;
+  return Array.isArray(data) ? data.map(toBotChatTask).filter((task): task is BotChatTask => Boolean(task)) : [];
 }
 
 async function postBotChatTaskTransition(
   backendUrl: string,
   botKey: string,
   taskId: string,
-  action: "claim" | "progress" | "complete" | "fail",
+  action: "claim" | "progress" | "complete" | "fail" | "result",
   body: Record<string, unknown>,
 ): Promise<BotChatTask | undefined> {
   const response = await fetch(buildBotChatRuntimeTaskUrl(backendUrl, taskId, action), {
@@ -1243,16 +1301,156 @@ async function postBotChatTaskTransition(
   return toBotChatTask(json.data);
 }
 
+async function postBotChatTaskResult(
+  backendUrl: string,
+  botKey: string,
+  taskId: string,
+  result: BotChatTaskExecutionResult,
+): Promise<BotChatTask | undefined> {
+  const body = buildBotChatTaskResultBody(result);
+  const response = await fetch(buildBotChatRuntimeTaskUrl(backendUrl, taskId, "result"), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Bot-Key": botKey,
+    },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 404 || response.status === 405) {
+    return postBotChatTaskTransition(backendUrl, botKey, taskId, "complete", body);
+  }
+  if (!response.ok) {
+    if (response.status === 409) {
+      return undefined;
+    }
+    throw new Error(`task result failed: ${response.status}`);
+  }
+  const json = (await response.json()) as { data?: unknown };
+  return toBotChatTask(json.data);
+}
+
+async function createBotChatTask(
+  backendUrl: string,
+  botKey: string,
+  payload: BotChatTaskCreatePayload,
+): Promise<BotChatTask> {
+  const response = await fetch(buildBotChatRuntimeTaskUrl(backendUrl), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Bot-Key": botKey,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`task create failed: ${response.status}`);
+  }
+  const json = (await response.json()) as { data?: unknown };
+  const task = toBotChatTask(json.data);
+  if (!task) {
+    throw new Error("task create returned an invalid task");
+  }
+  return task;
+}
+
 function buildBotChatRuntimeTaskUrl(
   backendUrl: string,
   taskId?: string,
-  action?: "claim" | "progress" | "complete" | "fail",
+  action?: "claim" | "progress" | "complete" | "fail" | "result",
 ): string {
   const base = `${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/tasks`;
   if (!taskId) {
     return base;
   }
   return `${base}/${encodeURIComponent(taskId)}/${action}`;
+}
+
+function buildBotChatRuntimeTaskQueueUrl(backendUrl: string): string {
+  return `${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/tasks/queue`;
+}
+
+function createBotChatTaskExecutionContext(params: {
+  backendUrl: string;
+  botKey: string;
+  getActiveTask: () => BotChatTask;
+  updateActiveTask: (task: BotChatTask | undefined) => void;
+}): BotChatTaskExecutionContext {
+  return {
+    async progress(first: number | string, second?: number | string) {
+      const body = normalizeTaskProgressBody(first, second);
+      const task = await postBotChatTaskTransition(
+        params.backendUrl,
+        params.botKey,
+        params.getActiveTask().id,
+        "progress",
+        body,
+      );
+      params.updateActiveTask(task);
+      return task;
+    },
+    createTask(payload) {
+      return createBotChatTask(params.backendUrl, params.botKey, {
+        parent_task_id: params.getActiveTask().id,
+        ...payload,
+      });
+    },
+  };
+}
+
+function normalizeTaskProgressBody(
+  first: number | string,
+  second?: number | string,
+): Record<string, unknown> {
+  let progress: number | undefined;
+  let note: string | undefined;
+
+  if (typeof first === "number") {
+    progress = first;
+    note = readString(second);
+  } else {
+    note = readString(first);
+    progress = typeof second === "number" ? second : undefined;
+  }
+
+  const body: Record<string, unknown> = {};
+  if (progress !== undefined && Number.isFinite(progress)) {
+    body.progress = progress;
+  }
+  if (note) {
+    body.latest_status_note = note;
+  }
+  if (!("progress" in body) && !("latest_status_note" in body)) {
+    throw new Error("task progress requires a progress number or status note");
+  }
+  return body;
+}
+
+function buildBotChatTaskResultBody(result: BotChatTaskExecutionResult): Record<string, unknown> {
+  const latestStatusNote = summarizeTaskExecutionResult(result) ?? "Robot completed task";
+  return {
+    result: normalizeTaskExecutionResult(result, latestStatusNote),
+    latest_status_note: latestStatusNote,
+  };
+}
+
+function normalizeTaskExecutionResult(
+  result: BotChatTaskExecutionResult,
+  fallbackSummary: string,
+): Record<string, unknown> {
+  if (typeof result === "string") {
+    return {
+      summary: result,
+      output: result,
+    };
+  }
+  if (isRecord(result)) {
+    return { ...result };
+  }
+  return {
+    summary: fallbackSummary,
+  };
 }
 
 function toBotChatTask(value: unknown): BotChatTask | undefined {
@@ -1285,6 +1483,7 @@ function summarizeTaskExecutionResult(result: BotChatTaskExecutionResult): strin
     return undefined;
   }
   return (
+    readString(result.summary) ??
     readString(result.latestStatusNote) ??
     readString(result.latest_status_note) ??
     readString(result.note) ??
@@ -1292,6 +1491,28 @@ function summarizeTaskExecutionResult(result: BotChatTaskExecutionResult): strin
     readString(result.result) ??
     readString(result.text)
   );
+}
+
+function serializeTaskError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    const serialized: Record<string, unknown> = {
+      name: error.name,
+      message: error.message,
+    };
+    if (error.stack) {
+      serialized.stack = error.stack;
+    }
+    const maybeCode = isRecord(error) ? error.code : undefined;
+    const code = readString(maybeCode);
+    if (code) {
+      serialized.code = code;
+    }
+    return serialized;
+  }
+  return {
+    name: "Error",
+    message: String(error),
+  };
 }
 
 function delay(ms: number): Promise<void> {

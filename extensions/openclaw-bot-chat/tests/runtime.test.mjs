@@ -501,11 +501,68 @@ test('task polling executes an assigned claimed task and reports completion', as
 
   assert.equal(executed.length, 1);
   assert.equal(fetchCalls.length, 3);
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/tasks/queue');
   assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/tasks/task-1/progress');
-  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-1/complete');
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-1/result');
   assert.deepEqual(JSON.parse(fetchCalls[2].init.body), {
+    result: {
+      note: 'done:Assigned task',
+    },
     latest_status_note: 'done:Assigned task',
   });
+});
+
+test('task polling falls back to the legacy task list endpoint when queue is unavailable', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (String(url).endsWith('/queue')) {
+      return jsonResponse({ error: 'not found' }, 404);
+    }
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-fallback',
+            title: 'Legacy task',
+            status: 'claimed',
+            assignee_bot_id: 'bot-a',
+            progress: 0,
+          },
+        ],
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    return jsonResponse({
+      data: {
+        id: 'task-fallback',
+        title: 'Legacy task',
+        status: action === 'progress' ? 'in_progress' : 'completed',
+        assignee_bot_id: 'bot-a',
+        progress: action === 'progress' ? 1 : 100,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask() {
+          return 'legacy complete';
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/tasks/queue');
+  assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/tasks');
+  assert.equal(fetchCalls[3].url, 'http://backend/api/v1/bot-runtime/tasks/task-fallback/result');
 });
 
 test('task polling claims an available task before execution', async () => {
@@ -554,12 +611,222 @@ test('task polling claims an available task before execution', async () => {
   }
 
   assert.equal(fetchCalls.length, 4);
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/tasks/queue');
   assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/claim');
   assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/progress');
-  assert.equal(fetchCalls[3].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/complete');
+  assert.equal(fetchCalls[3].url, 'http://backend/api/v1/bot-runtime/tasks/task-2/result');
 });
 
-test('task polling reports executor failures back to the task', async () => {
+test('task polling supports progress context overloads and multiple progress updates', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-progress',
+            title: 'Progress task',
+            status: 'claimed',
+            assignee_bot_id: 'bot-a',
+            progress: 0,
+          },
+        ],
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    const requestBody = init.body ? JSON.parse(init.body) : {};
+    return jsonResponse({
+      data: {
+        id: 'task-progress',
+        title: 'Progress task',
+        status: action === 'result' ? 'completed' : 'in_progress',
+        assignee_bot_id: 'bot-a',
+        progress: requestBody.progress ?? 1,
+        latest_status_note: requestBody.latest_status_note ?? null,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask(task, context) {
+          await context.progress(25, `working:${task.id}`);
+          await context.progress('halfway there', 50);
+          return 'progress complete';
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls.length, 5);
+  assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/tasks/task-progress/progress');
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-progress/progress');
+  assert.equal(fetchCalls[3].url, 'http://backend/api/v1/bot-runtime/tasks/task-progress/progress');
+  assert.deepEqual(JSON.parse(fetchCalls[2].init.body), {
+    progress: 25,
+    latest_status_note: 'working:task-progress',
+  });
+  assert.deepEqual(JSON.parse(fetchCalls[3].init.body), {
+    progress: 50,
+    latest_status_note: 'halfway there',
+  });
+  assert.equal(fetchCalls[4].url, 'http://backend/api/v1/bot-runtime/tasks/task-progress/result');
+});
+
+test('task polling context can create child tasks', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  const created = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-parent',
+            title: 'Parent task',
+            status: 'claimed',
+            assignee_bot_id: 'bot-a',
+            progress: 0,
+          },
+        ],
+      });
+    }
+    if (String(url) === 'http://backend/api/v1/bot-runtime/tasks' && init.method === 'POST') {
+      const body = JSON.parse(init.body);
+      created.push(body);
+      return jsonResponse({
+        data: {
+          id: 'task-child',
+          title: body.title,
+          status: 'available',
+          assignee_bot_id: null,
+          progress: 0,
+        },
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    return jsonResponse({
+      data: {
+        id: 'task-parent',
+        title: 'Parent task',
+        status: action === 'result' ? 'completed' : 'in_progress',
+        assignee_bot_id: 'bot-a',
+        progress: action === 'result' ? 100 : 1,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask(_task, context) {
+          const child = await context.createTask({
+            title: 'Child task',
+            description: 'Spawned from parent',
+            metadata: { parent_task_id: 'task-parent' },
+          });
+          return { summary: `created:${child.id}`, metadata: { child_task_id: child.id } };
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(created, [
+    {
+      parent_task_id: 'task-parent',
+      title: 'Child task',
+      description: 'Spawned from parent',
+      metadata: { parent_task_id: 'task-parent' },
+    },
+  ]);
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks');
+  assert.equal(fetchCalls[3].url, 'http://backend/api/v1/bot-runtime/tasks/task-parent/result');
+  assert.deepEqual(JSON.parse(fetchCalls[3].init.body), {
+    result: {
+      summary: 'created:task-child',
+      metadata: { child_task_id: 'task-child' },
+    },
+    latest_status_note: 'created:task-child',
+  });
+});
+
+test('task polling posts full object results to the result endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'GET') {
+      return jsonResponse({
+        data: [
+          {
+            id: 'task-result',
+            title: 'Object result task',
+            status: 'claimed',
+            assignee_bot_id: 'bot-a',
+            progress: 0,
+          },
+        ],
+      });
+    }
+    const action = String(url).split('/').at(-1);
+    return jsonResponse({
+      data: {
+        id: 'task-result',
+        title: 'Object result task',
+        status: action === 'result' ? 'completed' : 'in_progress',
+        assignee_bot_id: 'bot-a',
+        progress: action === 'result' ? 100 : 1,
+      },
+    });
+  };
+
+  try {
+    await runBotChatTaskPollOnceForTest({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+      hooks: {
+        async runTask() {
+          return {
+            summary: 'finished summary',
+            output: 'full output',
+            artifacts: [{ type: 'text', name: 'notes.txt' }],
+            metadata: { model: 'test-model' },
+          };
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-result/result');
+  assert.deepEqual(JSON.parse(fetchCalls[2].init.body), {
+    result: {
+      summary: 'finished summary',
+      output: 'full output',
+      artifacts: [{ type: 'text', name: 'notes.txt' }],
+      metadata: { model: 'test-model' },
+    },
+    latest_status_note: 'finished summary',
+  });
+});
+
+test('task polling reports executor failures back to the task with structured errors', async () => {
   const originalFetch = globalThis.fetch;
   const fetchCalls = [];
   globalThis.fetch = async (url, init = {}) => {
@@ -606,9 +873,11 @@ test('task polling reports executor failures back to the task', async () => {
 
   assert.equal(fetchCalls.length, 3);
   assert.equal(fetchCalls[2].url, 'http://backend/api/v1/bot-runtime/tasks/task-3/fail');
-  assert.deepEqual(JSON.parse(fetchCalls[2].init.body), {
-    latest_status_note: 'executor exploded',
-  });
+  const body = JSON.parse(fetchCalls[2].init.body);
+  assert.equal(body.latest_status_note, 'executor exploded');
+  assert.equal(body.error.name, 'Error');
+  assert.equal(body.error.message, 'executor exploded');
+  assert.equal(typeof body.error.stack, 'string');
 });
 
 test('diagnostics report errors and warnings without leaking secrets', () => {

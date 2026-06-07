@@ -1392,12 +1392,12 @@ function resolveBotChatTaskRunner(channelRuntime: unknown): RuntimeHooks["runTas
   const runtime = readRecord(channelRuntime);
   const directRunner = runtime?.runTask;
   if (typeof directRunner === "function") {
-    return async (task) => directRunner(task);
+    return async (task, context) => directRunner(task, context);
   }
   const tasks = readRecord(runtime?.tasks);
   const taskRunner = tasks?.runTask;
   if (typeof taskRunner === "function") {
-    return async (task) => taskRunner(task);
+    return async (task, context) => taskRunner(task, context);
   }
   return undefined;
 }

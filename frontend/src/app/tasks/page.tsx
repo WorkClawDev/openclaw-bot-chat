@@ -1,13 +1,14 @@
 'use client'
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AppLayout } from '@/components/AppLayout'
 import { useAuth } from '@/contexts/AuthContext'
 import { botsApi, tasksApi } from '@/lib/api'
-import type { Bot, Task, TaskPriority, TaskStatus } from '@/lib/types'
+import type { Bot, Task, TaskEvent, TaskPriority, TaskStatus } from '@/lib/types'
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+const WEEK_MS = 7 * DAY_MS
 const GROUP_HEIGHT = 36
 const TASK_HEIGHT = 38
 const VISIBLE_WEEKS = 14
@@ -27,14 +28,17 @@ type IconName =
   | 'x'
 
 type ZoomMode = 'day' | 'week' | 'month'
-type TaskFilter = 'all' | 'active' | 'completed' | 'blocked'
+type TaskFilter = 'all' | 'ready' | 'dispatched' | 'running' | 'review' | 'done' | 'failed'
 type TaskView = 'board' | 'timeline' | 'list' | 'calendar'
+type DragMode = 'move' | 'resize'
 
-interface ProjectGroup {
-  id: 'planning' | 'design' | 'qa' | 'launch'
+interface StatusLane {
+  id: TaskFilter
   label: string
+  shortLabel: string
   color: string
   soft: string
+  statuses: TaskStatus[]
 }
 
 interface TimelineRow {
@@ -42,17 +46,46 @@ interface TimelineRow {
   kind: 'group' | 'task'
   top: number
   height: number
-  group: ProjectGroup
+  lane: StatusLane
   task?: Task
   taskNumber?: number
 }
 
-const PROJECT_GROUPS: ProjectGroup[] = [
-  { id: 'planning', label: 'Planning', color: '#1682f0', soft: '#dbeafe' },
-  { id: 'design', label: 'Design & Dev', color: '#8b5cf6', soft: '#ede9fe' },
-  { id: 'qa', label: 'Testing & QA', color: '#20ae83', soft: '#d1fae5' },
-  { id: 'launch', label: 'Launch', color: '#f97316', soft: '#ffedd5' },
+interface TimelineBar {
+  task: Task
+  lane: StatusLane
+  left: number
+  top: number
+  width: number
+  start: Date
+  end: Date
+}
+
+interface DragState {
+  taskId: string
+  mode: DragMode
+  originX: number
+  originalStart: Date
+  originalEnd: Date
+  didMove: boolean
+}
+
+interface DragPreview {
+  taskId: string
+  start: Date
+  end: Date
+}
+
+const STATUS_LANES: StatusLane[] = [
+  { id: 'ready', label: 'Ready', shortLabel: 'Ready', color: '#1682f0', soft: '#dbeafe', statuses: ['pending', 'available'] },
+  { id: 'dispatched', label: 'Dispatched', shortLabel: 'Dispatched', color: '#7c3aed', soft: '#ede9fe', statuses: ['claimed'] },
+  { id: 'running', label: 'Running', shortLabel: 'Running', color: '#f59e0b', soft: '#fef3c7', statuses: ['in_progress'] },
+  { id: 'review', label: 'Needs Review', shortLabel: 'Review', color: '#0f9f8f', soft: '#ccfbf1', statuses: ['awaiting_review'] },
+  { id: 'done', label: 'Done', shortLabel: 'Done', color: '#10a878', soft: '#d1fae5', statuses: ['completed'] },
+  { id: 'failed', label: 'Failed', shortLabel: 'Failed', color: '#ef5a74', soft: '#ffe4e6', statuses: ['failed', 'rejected', 'cancelled', 'blocked'] },
 ]
+
+const PRIORITIES: TaskPriority[] = ['low', 'normal', 'high', 'critical']
 
 export default function TasksPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
@@ -90,6 +123,32 @@ export default function TasksPage() {
     }
   }, [])
 
+  const saveTaskSchedule = useCallback(async (taskId: string, start: Date, end: Date) => {
+    const estimated_start_at = start.toISOString()
+    const estimated_end_at = end.toISOString()
+    let previousTask: Task | null = null
+
+    setTasks((current) =>
+      current.map((task) => {
+        if (task.id !== taskId) return task
+        previousTask = task
+        return { ...task, estimated_start_at, estimated_end_at }
+      })
+    )
+
+    try {
+      const updated = await tasksApi.update(taskId, { estimated_start_at, estimated_end_at })
+      setTasks((current) => current.map((task) => (task.id === taskId ? updated : task)))
+      setLastUpdated(new Date())
+    } catch (err) {
+      if (previousTask) {
+        setTasks((current) => current.map((task) => (task.id === taskId ? previousTask as Task : task)))
+      }
+      setError(err instanceof Error ? err.message : 'Failed to save timeline change')
+      throw err
+    }
+  }, [])
+
   useEffect(() => {
     if (!authLoading && !isAuthenticated) window.location.href = '/login'
   }, [authLoading, isAuthenticated])
@@ -107,21 +166,20 @@ export default function TasksPage() {
   const filteredTasks = useMemo(
     () =>
       tasks.filter((task) => {
-        const matchesQuery = `${task.title} ${task.description || ''}`.toLowerCase().includes(query.toLowerCase())
+        const haystack = `${task.title} ${task.description || ''} ${task.latest_status_note || ''}`.toLowerCase()
+        const matchesQuery = haystack.includes(query.toLowerCase())
         if (!matchesQuery) return false
-        if (filter === 'completed') return task.status === 'completed'
-        if (filter === 'blocked') return task.status === 'blocked' || task.status === 'failed'
-        if (filter === 'active') return !['completed', 'failed'].includes(task.status)
-        return true
+        if (filter === 'all') return true
+        return laneForTask(task).id === filter
       }),
     [filter, query, tasks]
   )
+
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) || null
-  const averageProgress = tasks.length
-    ? Math.round(tasks.reduce((sum, task) => sum + task.progress, 0) / tasks.length)
-    : 0
-  const onTrack = tasks.filter((task) => !['blocked', 'failed'].includes(task.status)).length
-  const blockedTasks = tasks.filter((task) => task.status === 'blocked' || task.status === 'failed')
+  const readyCount = tasks.filter((task) => laneForTask(task).id === 'ready').length
+  const runningCount = tasks.filter((task) => laneForTask(task).id === 'running').length
+  const reviewCount = tasks.filter((task) => laneForTask(task).id === 'review').length
+  const alertTasks = tasks.filter((task) => ['awaiting_review', 'failed', 'rejected', 'cancelled', 'blocked'].includes(task.status))
 
   if (authLoading) return <LoadingState />
   if (!isAuthenticated) return null
@@ -133,9 +191,9 @@ export default function TasksPage() {
           <header className="tasks-header border-b border-slate-200/80 px-4 pt-4 md:px-7 md:pt-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="text-sm font-medium text-slate-500">
-                <span className="text-[#0875df]">Projects</span>
+                <span className="text-[#0875df]">Claw</span>
                 <span className="px-3 text-slate-300">/</span>
-                <span>Product Operations</span>
+                <span>Dispatch Console</span>
               </div>
               <div className="flex items-center gap-4">
                 <MemberStack bots={bots} />
@@ -143,18 +201,18 @@ export default function TasksPage() {
                   <button
                     className="relative grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white/80 text-slate-600 shadow-sm transition hover:border-sky-200 hover:text-sky-600"
                     aria-expanded={showNotifications}
-                    aria-label="Notifications"
+                    aria-label="Execution alerts"
                     onClick={() => setShowNotifications((current) => !current)}
                   >
                     <Icon name="bell" className="h-5 w-5" />
-                    {blockedTasks.length ? <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full border border-white bg-[#0e91e9]" /> : null}
+                    {alertTasks.length ? <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full border border-white bg-[#0e91e9]" /> : null}
                   </button>
                   {showNotifications ? (
                     <div className="absolute right-0 top-12 z-50 w-72 rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-xl">
-                      <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">Task alerts</p>
-                      {blockedTasks.length ? (
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">Execution alerts</p>
+                      {alertTasks.length ? (
                         <div className="mt-3 space-y-2">
-                          {blockedTasks.slice(0, 4).map((task) => (
+                          {alertTasks.slice(0, 4).map((task) => (
                             <button
                               key={task.id}
                               className="w-full rounded-lg border border-slate-100 bg-slate-50 p-3 text-left transition hover:border-sky-200 hover:bg-sky-50"
@@ -164,12 +222,12 @@ export default function TasksPage() {
                               }}
                             >
                               <span className="block font-semibold text-slate-700">{task.title}</span>
-                              <span className="mt-1 block text-xs capitalize text-slate-500">{task.status.replace('_', ' ')}</span>
+                              <span className="mt-1 block text-xs text-slate-500">{executionStateLabel(task)}</span>
                             </button>
                           ))}
                         </div>
                       ) : (
-                        <p className="mt-3 text-sm text-slate-500">No blocked or failed tasks.</p>
+                        <p className="mt-3 text-sm text-slate-500">No review or failure alerts.</p>
                       )}
                     </div>
                   ) : null}
@@ -181,13 +239,13 @@ export default function TasksPage() {
             </div>
 
             <h1 className="mt-2 text-[25px] font-bold tracking-[-0.7px] text-slate-800 md:text-[28px]">
-              Product Operations <span className="text-slate-400">—</span> Q3 2026
+              Claw Dispatch Console
             </h1>
 
             <div className="mt-4 grid max-w-[920px] grid-cols-1 gap-3 sm:grid-cols-3">
-              <StatCard icon="clipboard" value={tasks.length} label="Tasks" tone="blue" />
-              <StatCard icon="target" value={`${averageProgress}%`} label="Complete" tone="violet" />
-              <StatCard icon="trend" value={onTrack} label="On Track" tone="green" />
+              <StatCard icon="clipboard" value={readyCount} label="Ready" tone="blue" />
+              <StatCard icon="trend" value={runningCount} label="Running" tone="violet" />
+              <StatCard icon="target" value={reviewCount} label="Needs Review" tone="green" />
             </div>
 
             <nav className="mt-3 flex gap-6 text-sm font-medium text-slate-600">
@@ -233,6 +291,7 @@ export default function TasksPage() {
                 selectedTaskId={selectedTaskId}
                 view={view}
                 zoom={zoom}
+                onScheduleChange={saveTaskSchedule}
                 onSelect={setSelectedTaskId}
               />
             )}
@@ -240,16 +299,12 @@ export default function TasksPage() {
 
           <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/80 bg-white/80 px-5 py-3 text-xs text-slate-500">
             <div className="flex flex-wrap items-center gap-4">
-              {PROJECT_GROUPS.map((group) => (
-                <span key={group.id} className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: group.color }} />
-                  {group.label}
+              {STATUS_LANES.map((lane) => (
+                <span key={lane.id} className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: lane.color }} />
+                  {lane.label}
                 </span>
               ))}
-              <span className="flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rotate-45 bg-rose-500" />
-                Milestone
-              </span>
             </div>
             <button onClick={() => void refresh(false)} className="flex items-center gap-2 transition hover:text-sky-600">
               <Icon name="refresh" className="h-4 w-4" />
@@ -274,8 +329,13 @@ export default function TasksPage() {
         <TaskInspector
           task={selectedTask}
           bots={bots}
+          tasks={tasks}
           onClose={() => setSelectedTaskId(null)}
           onChanged={() => refresh(false)}
+          onDeleted={async () => {
+            setSelectedTaskId(null)
+            await refresh(false)
+          }}
         />
       ) : null}
     </AppLayout>
@@ -287,44 +347,39 @@ function TaskViewPanel({
   selectedTaskId,
   view,
   zoom,
+  onScheduleChange,
   onSelect,
 }: {
   tasks: Task[]
   selectedTaskId: string | null
   view: TaskView
   zoom: ZoomMode
+  onScheduleChange: (taskId: string, start: Date, end: Date) => Promise<void>
   onSelect: (taskId: string) => void
 }) {
   if (view === 'board') return <TaskBoard tasks={tasks} selectedTaskId={selectedTaskId} onSelect={onSelect} />
   if (view === 'list') return <TaskList tasks={tasks} selectedTaskId={selectedTaskId} onSelect={onSelect} />
   if (view === 'calendar') return <TaskCalendar tasks={tasks} selectedTaskId={selectedTaskId} onSelect={onSelect} />
-  return <GanttBoard tasks={tasks} selectedTaskId={selectedTaskId} zoom={zoom} onSelect={onSelect} />
+  return <GanttBoard tasks={tasks} selectedTaskId={selectedTaskId} zoom={zoom} onScheduleChange={onScheduleChange} onSelect={onSelect} />
 }
 
 function TaskBoard({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; selectedTaskId: string | null; onSelect: (taskId: string) => void }) {
-  const columns = [
-    { id: 'available', label: 'Ready', statuses: ['pending', 'available'] },
-    { id: 'active', label: 'Active', statuses: ['claimed', 'in_progress'] },
-    { id: 'blocked', label: 'Blocked', statuses: ['blocked', 'failed'] },
-    { id: 'completed', label: 'Done', statuses: ['completed'] },
-  ]
-
   return (
-    <div className="min-w-[980px] bg-white/55 p-5">
-      <div className="grid grid-cols-4 gap-4">
-        {columns.map((column) => {
-          const columnTasks = tasks.filter((task) => column.statuses.includes(task.status))
+    <div className="min-w-[1180px] bg-white/55 p-5">
+      <div className="grid grid-cols-6 gap-4">
+        {STATUS_LANES.map((lane) => {
+          const laneTasks = tasks.filter((task) => lane.statuses.includes(task.status))
           return (
-            <section key={column.id} className="min-h-[360px] rounded-xl border border-slate-200 bg-white/80">
+            <section key={lane.id} className="min-h-[360px] rounded-xl border border-slate-200 bg-white/80">
               <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-                <h2 className="text-sm font-bold text-slate-700">{column.label}</h2>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-500">{columnTasks.length}</span>
+                <h2 className="text-sm font-bold text-slate-700">{lane.shortLabel}</h2>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-500">{laneTasks.length}</span>
               </header>
               <div className="space-y-3 p-3">
-                {columnTasks.map((task) => (
+                {laneTasks.map((task) => (
                   <TaskCardButton key={task.id} task={task} selected={selectedTaskId === task.id} onSelect={onSelect} />
                 ))}
-                {!columnTasks.length ? <p className="rounded-lg border border-dashed border-slate-200 p-4 text-center text-sm text-slate-400">No tasks</p> : null}
+                {!laneTasks.length ? <p className="rounded-lg border border-dashed border-slate-200 p-4 text-center text-sm text-slate-400">No tasks</p> : null}
               </div>
             </section>
           )
@@ -336,11 +391,12 @@ function TaskBoard({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; selecte
 
 function TaskList({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; selectedTaskId: string | null; onSelect: (taskId: string) => void }) {
   return (
-    <div className="min-w-[960px] bg-white/55 p-5">
+    <div className="min-w-[1080px] bg-white/55 p-5">
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white/85">
-        <div className="grid grid-cols-[1.5fr_120px_120px_120px_160px] border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black uppercase tracking-[0.12em] text-slate-400">
+        <div className="grid grid-cols-[1.5fr_140px_140px_120px_150px_160px] border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black uppercase tracking-[0.12em] text-slate-400">
           <span>Task</span>
-          <span>Status</span>
+          <span>State</span>
+          <span>Executor</span>
           <span>Priority</span>
           <span>Progress</span>
           <span>Schedule</span>
@@ -349,7 +405,7 @@ function TaskList({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; selected
           <button
             key={task.id}
             onClick={() => onSelect(task.id)}
-            className={`grid w-full grid-cols-[1.5fr_120px_120px_120px_160px] items-center border-b border-slate-100 px-4 py-3 text-left text-sm transition last:border-b-0 ${
+            className={`grid w-full grid-cols-[1.5fr_140px_140px_120px_150px_160px] items-center border-b border-slate-100 px-4 py-3 text-left text-sm transition last:border-b-0 ${
               selectedTaskId === task.id ? 'bg-sky-50' : 'hover:bg-slate-50'
             }`}
           >
@@ -357,7 +413,8 @@ function TaskList({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; selected
               <span className="block truncate font-semibold text-slate-700">{task.title}</span>
               <span className="mt-0.5 block truncate text-xs text-slate-400">{task.description || 'No description'}</span>
             </span>
-            <span className="capitalize text-slate-600">{task.status.replace('_', ' ')}</span>
+            <span className="text-slate-600">{laneForTask(task).label}</span>
+            <span className="truncate text-slate-600">{executorLabel(task)}</span>
             <span className="capitalize text-slate-600">{task.priority}</span>
             <span className="font-semibold text-slate-700">{task.progress}%</span>
             <span className="text-xs text-slate-500">{formatRange(task)}</span>
@@ -373,8 +430,10 @@ function TaskCalendar({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; sele
   const groups = useMemo(() => {
     const grouped = new Map<string, Task[]>()
     tasks.forEach((task) => {
-      const start = parseDate(task.estimated_start_at || task.created_at)
-      const key = start ? start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : 'Unscheduled'
+      const lane = laneForTask(task)
+      const start = parseDate(task.estimated_start_at || task.dispatched_at || task.created_at)
+      const dateLabel = start ? start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : 'Unscheduled'
+      const key = `${lane.label} - ${dateLabel}`
       grouped.set(key, [...(grouped.get(key) || []), task])
     })
     return [...grouped.entries()]
@@ -401,6 +460,7 @@ function TaskCalendar({ tasks, selectedTaskId, onSelect }: { tasks: Task[]; sele
 }
 
 function TaskCardButton({ task, selected, onSelect }: { task: Task; selected: boolean; onSelect: (taskId: string) => void }) {
+  const lane = laneForTask(task)
   return (
     <button
       onClick={() => onSelect(task.id)}
@@ -409,11 +469,15 @@ function TaskCardButton({ task, selected, onSelect }: { task: Task; selected: bo
       }`}
     >
       <span className="block truncate text-sm font-semibold text-slate-700">{task.title}</span>
-      <span className="mt-2 flex items-center justify-between text-xs text-slate-500">
-        <span className="capitalize">{task.status.replace('_', ' ')}</span>
+      <span className="mt-2 flex items-center justify-between gap-2 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: lane.color }} />
+          {lane.label}
+        </span>
         <span>{task.progress}%</span>
       </span>
-      <span className="mt-2 block text-xs text-slate-400">{formatRange(task)}</span>
+      <span className="mt-2 block truncate text-xs text-slate-400">{executorLabel(task)}</span>
+      <span className="mt-1 block text-xs text-slate-400">{formatRange(task)}</span>
     </button>
   )
 }
@@ -446,20 +510,23 @@ function Toolbar({
       <div className="flex flex-wrap items-center gap-3">
         <button onClick={onCreate} className="flex h-10 items-center gap-2 rounded-lg bg-[#0875df] px-4 text-sm font-semibold text-white shadow-[0_5px_12px_rgba(14,145,233,0.24)] transition hover:bg-[#0768d9]">
           <Icon name="plus" className="h-4 w-4" />
-          Add Task
+          New Task
         </button>
         <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm text-slate-600 shadow-sm">
           <Icon name="filter" className="h-4 w-4" />
           <select value={filter} onChange={(event) => onFilter(event.target.value as TaskFilter)} className="bg-transparent outline-none">
-            <option value="all">All tasks</option>
-            <option value="active">Active</option>
-            <option value="completed">Completed</option>
-            <option value="blocked">Blocked</option>
+            <option value="all">All states</option>
+            <option value="ready">Ready</option>
+            <option value="dispatched">Dispatched</option>
+            <option value="running">Running</option>
+            <option value="review">Needs Review</option>
+            <option value="done">Done</option>
+            <option value="failed">Failed</option>
           </select>
         </label>
         <label className="flex h-10 min-w-[220px] items-center gap-2 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm text-slate-500 shadow-sm md:min-w-[260px]">
           <Icon name="search" className="h-4 w-4" />
-          <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Search tasks..." className="min-w-0 flex-1 bg-transparent text-slate-700 outline-none placeholder:text-slate-400" />
+          <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Search dispatch tasks..." className="min-w-0 flex-1 bg-transparent text-slate-700 outline-none placeholder:text-slate-400" />
         </label>
       </div>
       <div className="flex items-center gap-3">
@@ -486,23 +553,77 @@ function GanttBoard({
   tasks,
   selectedTaskId,
   zoom,
+  onScheduleChange,
   onSelect,
 }: {
   tasks: Task[]
   selectedTaskId: string | null
   zoom: ZoomMode
+  onScheduleChange: (taskId: string, start: Date, end: Date) => Promise<void>
   onSelect: (taskId: string) => void
 }) {
   const weekWidth = zoom === 'day' ? 118 : zoom === 'month' ? 58 : 76
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<ProjectGroup['id']>>(new Set())
-  const timeline = useMemo(() => buildTimeline(tasks, weekWidth, collapsedGroups), [collapsedGroups, tasks, weekWidth])
-  const toggleGroup = (groupId: ProjectGroup['id']) => {
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<TaskFilter>>(new Set())
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const timeline = useMemo(() => buildTimeline(tasks, weekWidth, collapsedGroups, dragPreview), [collapsedGroups, dragPreview, tasks, weekWidth])
+
+  const toggleGroup = (laneId: TaskFilter) => {
     setCollapsedGroups((current) => {
       const next = new Set(current)
-      if (next.has(groupId)) next.delete(groupId)
-      else next.add(groupId)
+      if (next.has(laneId)) next.delete(laneId)
+      else next.add(laneId)
       return next
     })
+  }
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+      const dx = event.clientX - drag.originX
+      const nextDates = draggedDates(drag, dx, weekWidth)
+      dragRef.current = { ...drag, didMove: drag.didMove || Math.abs(dx) > 3 }
+      setDragPreview({ taskId: drag.taskId, ...nextDates })
+    }
+
+    const onPointerUp = (event: PointerEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+      dragRef.current = null
+      setDragPreview(null)
+
+      if (!drag.didMove && Math.abs(event.clientX - drag.originX) <= 3) {
+        onSelect(drag.taskId)
+        return
+      }
+
+      const nextDates = draggedDates(drag, event.clientX - drag.originX, weekWidth)
+      void onScheduleChange(drag.taskId, nextDates.start, nextDates.end).catch(() => undefined)
+    }
+
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerUp)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerUp)
+    }
+  }, [onScheduleChange, onSelect, weekWidth])
+
+  const beginDrag = (event: React.PointerEvent, bar: TimelineBar, mode: DragMode) => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragRef.current = {
+      taskId: bar.task.id,
+      mode,
+      originX: event.clientX,
+      originalStart: bar.start,
+      originalEnd: bar.end,
+      didMove: false,
+    }
+    setDragPreview({ taskId: bar.task.id, start: bar.start, end: bar.end })
   }
 
   return (
@@ -510,7 +631,7 @@ function GanttBoard({
       <div className="gantt-header sticky top-0 z-30 flex border-b border-slate-200 backdrop-blur-xl">
         <div className="grid w-[430px] shrink-0 grid-cols-[1fr_92px_105px] items-end px-5 pb-3 pt-7 text-[11px] font-bold text-slate-600">
           <span>Task</span>
-          <span>Assignee</span>
+          <span>Executor</span>
           <span>Dates</span>
         </div>
         <div className="relative border-l border-slate-200" style={{ width: timeline.width }}>
@@ -535,13 +656,13 @@ function GanttBoard({
         <div className="gantt-sidebar w-[430px] shrink-0 border-r border-slate-200">
           {timeline.rows.map((row) =>
             row.kind === 'group' ? (
-              <button key={row.key} onClick={() => toggleGroup(row.group.id)} className="grid w-full grid-cols-[1fr_92px_105px] items-center border-b border-slate-200 px-3 text-left text-xs font-bold text-slate-700 transition hover:bg-slate-100" style={{ height: row.height }} aria-expanded={!collapsedGroups.has(row.group.id)}>
+              <button key={row.key} onClick={() => toggleGroup(row.lane.id)} className="grid w-full grid-cols-[1fr_92px_105px] items-center border-b border-slate-200 px-3 text-left text-xs font-bold text-slate-700 transition hover:bg-slate-100" style={{ height: row.height }} aria-expanded={!collapsedGroups.has(row.lane.id)}>
                 <span className="flex items-center gap-2">
-                  <Icon name="chevron" className={`h-3.5 w-3.5 transition ${collapsedGroups.has(row.group.id) ? '' : 'rotate-90'}`} />
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.group.color }} />
-                  {row.group.label}
+                  <Icon name="chevron" className={`h-3.5 w-3.5 transition ${collapsedGroups.has(row.lane.id) ? '' : 'rotate-90'}`} />
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.lane.color }} />
+                  {row.lane.label}
                 </span>
-                <span className="font-medium text-slate-500">{timeline.groupCounts.get(row.group.id) || 0} tasks</span>
+                <span className="font-medium text-slate-500">{timeline.groupCounts.get(row.lane.id) || 0} tasks</span>
                 <span />
               </button>
             ) : (
@@ -558,7 +679,7 @@ function GanttBoard({
                   <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor(row.task!.status) }} />
                   <span className="truncate font-medium text-slate-700">{row.task!.title}</span>
                 </span>
-                <span><BotAvatar bot={row.task!.assignee_bot || undefined} fallback="—" size="sm" /></span>
+                <span><BotAvatar bot={executorBot(row.task!)} fallback="-" size="sm" /></span>
                 <span className="text-[10px] text-slate-500">{formatRange(row.task!)}</span>
               </button>
             )
@@ -591,40 +712,46 @@ function GanttBoard({
           </svg>
 
           {timeline.bars.map((bar) => (
-            <button
+            <div
               key={bar.task.id}
-              onClick={() => onSelect(bar.task.id)}
-              className={`absolute z-20 overflow-hidden rounded-md border px-2 text-left text-[10px] font-semibold shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') onSelect(bar.task.id)
+              }}
+              onPointerDown={(event) => beginDrag(event, bar, 'move')}
+              className={`gantt-task-bar absolute z-20 overflow-hidden rounded-md border px-2 text-left text-[10px] font-semibold shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
                 selectedTaskId === bar.task.id ? 'ring-2 ring-sky-400 ring-offset-1' : ''
               }`}
               style={{
-                backgroundColor: bar.group.soft,
-                borderColor: bar.group.color,
-                color: bar.group.color,
+                backgroundColor: bar.lane.soft,
+                borderColor: bar.lane.color,
+                color: bar.lane.color,
                 height: 22,
                 left: bar.left,
                 top: bar.top,
                 width: bar.width,
               }}
-              title={`${bar.task.title}: ${bar.task.progress}%`}
+              title={`${bar.task.title}: drag to move, resize from the right edge`}
             >
-              <span className="absolute inset-y-0 left-0 opacity-25" style={{ backgroundColor: bar.group.color, width: `${bar.task.progress}%` }} />
-              <span className="relative flex justify-between gap-2">
+              <span className="absolute inset-y-0 left-0 opacity-25" style={{ backgroundColor: bar.lane.color, width: `${bar.task.progress}%` }} />
+              <span className="relative flex justify-between gap-2 pr-2">
                 <span className="truncate">{bar.task.title}</span>
                 <span>{bar.task.progress}%</span>
               </span>
-            </button>
-          ))}
-
-          {timeline.milestones.map((milestone) => (
-            <div key={milestone.id} className="absolute z-20 h-3 w-3 rotate-45 border border-white shadow-sm" style={{ backgroundColor: milestone.color, left: milestone.left, top: milestone.top }} title={milestone.label} />
+              <span
+                className="gantt-resize-handle absolute inset-y-0 right-0 w-3 cursor-ew-resize"
+                onPointerDown={(event) => beginDrag(event, bar, 'resize')}
+                aria-hidden="true"
+              />
+            </div>
           ))}
 
           {tasks.length === 0 ? (
             <div className="absolute inset-0 grid place-items-center">
               <div className="gantt-empty-state rounded-2xl border border-dashed px-6 py-5 text-center shadow-sm">
                 <p className="text-sm font-semibold text-slate-700">No matching tasks</p>
-                <p className="mt-1 text-xs text-slate-400">Add a task or change the active filter.</p>
+                <p className="mt-1 text-xs text-slate-400">Create a task or change the active state filter.</p>
               </div>
             </div>
           ) : null}
@@ -634,12 +761,45 @@ function GanttBoard({
   )
 }
 
-function TaskInspector({ task, bots, onClose, onChanged }: { task: Task; bots: Bot[]; onClose: () => void; onChanged: () => Promise<void> }) {
-  const [assignee, setAssignee] = useState(task.assignee_bot_id || '')
+function TaskInspector({
+  task,
+  bots,
+  tasks,
+  onClose,
+  onChanged,
+  onDeleted,
+}: {
+  task: Task
+  bots: Bot[]
+  tasks: Task[]
+  onClose: () => void
+  onChanged: () => Promise<void>
+  onDeleted: () => Promise<void>
+}) {
+  const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description || '')
+  const [priority, setPriority] = useState<TaskPriority>(task.priority)
+  const [assignee, setAssignee] = useState(task.assignee_bot_id || task.claimed_by_bot_id || '')
+  const [start, setStart] = useState(toDateTimeLocal(task.estimated_start_at))
+  const [end, setEnd] = useState(toDateTimeLocal(task.estimated_end_at))
+  const [dependencies, setDependencies] = useState<string[]>(dependencyIds(task))
+  const [note, setNote] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [actionName, setActionName] = useState<string | null>(null)
   const [error, setError] = useState('')
 
-  useEffect(() => setAssignee(task.assignee_bot_id || ''), [task.assignee_bot_id])
+  useEffect(() => {
+    setTitle(task.title)
+    setDescription(task.description || '')
+    setPriority(task.priority)
+    setAssignee(task.assignee_bot_id || task.claimed_by_bot_id || '')
+    setStart(toDateTimeLocal(task.estimated_start_at))
+    setEnd(toDateTimeLocal(task.estimated_end_at))
+    setDependencies(dependencyIds(task))
+    setNote('')
+    setError('')
+  }, [task])
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -648,58 +808,148 @@ function TaskInspector({ task, bots, onClose, onChanged }: { task: Task; bots: B
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
-  const saveAssignee = async () => {
+  const saveTask = async () => {
     setIsSaving(true)
     setError('')
     try {
-      await tasksApi.reassign(task.id, {
+      await tasksApi.update(task.id, {
+        title,
+        description: description || null,
+        priority,
         assignee_bot_id: assignee || null,
-        latest_status_note: assignee ? 'Assigned from timeline' : 'Returned to shared pool',
+        estimated_start_at: toIsoOrNull(start),
+        estimated_end_at: toIsoOrNull(end),
+        dependency_ids: dependencies,
+        latest_status_note: note || undefined,
       })
       await onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save assignment')
+      setError(err instanceof Error ? err.message : 'Failed to save task')
     } finally {
       setIsSaving(false)
     }
   }
 
+  const runAction = async (name: 'dispatch' | 'cancel' | 'accept' | 'reject' | 'retry' | 'delete') => {
+    if (name === 'delete' && !window.confirm('Delete this task?')) return
+    if (name === 'cancel' && !window.confirm('Cancel this task?')) return
+
+    setActionName(name)
+    setError('')
+    try {
+      const payload = {
+        assignee_bot_id: assignee || null,
+        note: note || undefined,
+      }
+      if (name === 'dispatch') await tasksApi.dispatch(task.id, payload)
+      if (name === 'cancel') await tasksApi.cancel(task.id, payload)
+      if (name === 'accept') await tasksApi.accept(task.id, payload)
+      if (name === 'reject') await tasksApi.reject(task.id, { ...payload, reason: note || undefined })
+      if (name === 'retry') await tasksApi.retry(task.id, payload)
+      if (name === 'delete') {
+        await tasksApi.delete(task.id)
+        await onDeleted()
+        return
+      }
+      await onChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to ${name} task`)
+    } finally {
+      setActionName(null)
+    }
+  }
+
+  const childTasks = tasks.filter((candidate) => candidate.parent_task_id === task.id)
+
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900/20 backdrop-blur-[2px]" onMouseDown={onClose}>
-      <aside className="absolute inset-y-0 right-0 w-full max-w-[390px] overflow-y-auto border-l border-slate-200 bg-white p-6 shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+      <aside className="absolute inset-y-0 right-0 w-full max-w-[520px] overflow-y-auto border-l border-slate-200 bg-white p-6 shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-700">{task.status.replace('_', ' ')}</span>
+            <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-700">{laneForTask(task).label}</span>
             <h2 className="mt-3 text-xl font-bold text-slate-800">{task.title}</h2>
+            <p className="mt-1 text-xs text-slate-400">{executionStateLabel(task)}</p>
           </div>
           <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-400 transition hover:bg-slate-50 hover:text-slate-700" aria-label="Close inspector">
             <Icon name="x" className="h-4 w-4" />
           </button>
         </div>
-        <p className="mt-3 text-sm leading-6 text-slate-500">{task.description || 'No description provided.'}</p>
+
+        <section className="mt-5 grid gap-3">
+          <label className="text-xs font-bold text-slate-500">Title
+            <input value={title} onChange={(event) => setTitle(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none transition focus:border-sky-400" />
+          </label>
+          <label className="text-xs font-bold text-slate-500">Description
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none transition focus:border-sky-400" />
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-bold text-slate-500">Priority
+              <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none">
+                {PRIORITIES.map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-bold text-slate-500">Assignee
+              <select value={assignee} onChange={(event) => setAssignee(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none">
+                <option value="">Shared pool</option>
+                {bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-bold text-slate-500">Start
+              <input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none" />
+            </label>
+            <label className="text-xs font-bold text-slate-500">End
+              <input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none" />
+            </label>
+          </div>
+          <label className="text-xs font-bold text-slate-500">Dependencies
+            <select multiple value={dependencies} onChange={(event) => setDependencies([...event.target.selectedOptions].map((option) => option.value))} className="mt-1 min-h-24 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none">
+              {tasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-bold text-slate-500">Action note
+            <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note for save or action" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal outline-none transition focus:border-sky-400" />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => void saveTask()} disabled={isSaving} className="rounded-lg bg-[#0875df] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#0768d9] disabled:opacity-60">
+              {isSaving ? 'Saving...' : 'Save'}
+            </button>
+            <ActionButton label="Dispatch" active={actionName === 'dispatch'} onClick={() => void runAction('dispatch')} />
+            <ActionButton label="Cancel" active={actionName === 'cancel'} onClick={() => void runAction('cancel')} />
+            <ActionButton label="Accept" active={actionName === 'accept'} onClick={() => void runAction('accept')} />
+            <ActionButton label="Reject" active={actionName === 'reject'} onClick={() => void runAction('reject')} />
+            <ActionButton label="Retry" active={actionName === 'retry'} onClick={() => void runAction('retry')} />
+            <button onClick={() => void runAction('delete')} disabled={Boolean(actionName)} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:opacity-60">
+              {actionName === 'delete' ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+          {error ? <p className="text-xs font-medium text-red-600">{error}</p> : null}
+        </section>
 
         <section className="mt-6">
           <div className="flex justify-between text-xs font-bold text-slate-500"><span>Progress</span><span>{task.progress}%</span></div>
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#0e91e9]" style={{ width: `${task.progress}%` }} /></div>
         </section>
 
-        <section className="mt-6 space-y-2">
-          <label className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Assignee</label>
-          <select value={assignee} onChange={(event) => setAssignee(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-sky-400">
-            <option value="">Shared pool</option>
-            {bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
-          </select>
-          <button onClick={() => void saveAssignee()} disabled={isSaving} className="rounded-lg bg-[#0875df] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#0768d9] disabled:opacity-60">
-            {isSaving ? 'Saving...' : 'Save assignment'}
-          </button>
-          {error ? <p className="text-xs font-medium text-red-600">{error}</p> : null}
+        <section className="mt-6 rounded-xl border border-slate-100 bg-slate-50 p-4">
+          <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Current executor</h3>
+          <div className="mt-3 flex items-center gap-3">
+            <BotAvatar bot={executorBot(task)} fallback="-" />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-700">{executorLabel(task)}</p>
+              <p className="mt-0.5 text-xs text-slate-400">Dispatched {formatDate(dispatchTime(task))} | Claimed {formatDate(claimTime(task))}</p>
+            </div>
+          </div>
         </section>
 
-        <InspectorDetail label="Priority" value={task.priority} />
         <InspectorDetail label="Estimated schedule" value={`${formatDate(task.estimated_start_at)} - ${formatDate(task.estimated_end_at)}`} />
-        <InspectorDetail label="Execution state" value={executionStateLabel(task)} />
-        <InspectorDetail label="Execution result" value={executionResultLabel(task)} />
+        <InspectorDetail label="Actual schedule" value={`${formatDate(task.actual_start_at)} - ${formatDate(task.actual_end_at)}`} />
         <InspectorDetail label="Latest note" value={task.latest_status_note || 'No status note.'} />
+
+        <JsonSection label="Result" value={task.result} empty="No structured result posted yet." />
+        <JsonSection label="Error" value={task.error} empty="No structured error posted." />
+        <JsonSection label="Review" value={task.review} empty="No review payload posted yet." />
 
         <section className="mt-6">
           <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Dependencies</h3>
@@ -711,18 +961,35 @@ function TaskInspector({ task, bots, onClose, onChanged }: { task: Task; bots: B
         </section>
 
         <section className="mt-6">
-          <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">History</h3>
+          <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Bot spawned work</h3>
           <div className="mt-2 space-y-2">
-            {task.events.map((event) => (
-              <div key={event.id} className="rounded-xl border border-slate-100 p-3">
-                <p className="text-xs font-bold capitalize text-slate-600">{event.status.replace('_', ' ')} · {event.progress}%</p>
-                <p className="mt-1 text-[11px] text-slate-400">{event.note || event.actor_type} · {formatDate(event.created_at)}</p>
+            {childTasks.length ? childTasks.map((child) => (
+              <div key={child.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <p className="text-sm font-semibold text-slate-700">{child.title}</p>
+                <p className="mt-1 text-xs text-slate-400">{statusLabel(child.status)} | {child.progress}%</p>
               </div>
-            ))}
+            )) : <p className="text-sm text-slate-400">No child tasks created by the runtime.</p>}
+          </div>
+        </section>
+
+        <section className="mt-6">
+          <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Event history</h3>
+          <div className="mt-2 space-y-2">
+            {task.events.length ? task.events.map((event) => (
+              <EventBlock key={event.id} event={event} />
+            )) : <p className="text-sm text-slate-400">No events yet.</p>}
           </div>
         </section>
       </aside>
     </div>
+  )
+}
+
+function ActionButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} disabled={active} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-60">
+      {active ? `${label}...` : label}
+    </button>
   )
 }
 
@@ -772,8 +1039,8 @@ function CreateTaskModal({ bots, tasks, onClose, onCreated }: { bots: Bot[]; tas
       <form onSubmit={submit} onMouseDown={(event) => event.stopPropagation()} className="w-full max-w-[650px] rounded-3xl border border-white/70 bg-white p-6 shadow-2xl">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#0875df]">Timeline</p>
-            <h2 className="mt-1 text-xl font-bold text-slate-800">Add task</h2>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#0875df]">Dispatch</p>
+            <h2 className="mt-1 text-xl font-bold text-slate-800">Create task</h2>
           </div>
           <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-400 transition hover:bg-slate-50 hover:text-slate-700" aria-label="Close create form">
             <Icon name="x" className="h-4 w-4" />
@@ -783,7 +1050,7 @@ function CreateTaskModal({ bots, tasks, onClose, onCreated }: { bots: Bot[]; tas
           <input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-sky-400 md:col-span-2" />
           <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Description" rows={3} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-sky-400 md:col-span-2" />
           <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none">
-            <option value="low">Low priority</option><option value="normal">Normal priority</option><option value="high">High priority</option><option value="critical">Critical priority</option>
+            {PRIORITIES.map((value) => <option key={value} value={value}>{titleCase(value)} priority</option>)}
           </select>
           <select value={assignee} onChange={(event) => setAssignee(event.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none">
             <option value="">Shared pool</option>{bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
@@ -816,7 +1083,7 @@ function MemberStack({ bots }: { bots: Bot[] }) {
   )
 }
 
-function BotAvatar({ bot, fallback = 'SP', size = 'md' }: { bot?: Bot; fallback?: string; size?: 'sm' | 'md' }) {
+function BotAvatar({ bot, fallback = 'SP', size = 'md' }: { bot?: Bot | null; fallback?: string; size?: 'sm' | 'md' }) {
   const label = bot ? initials(bot.name) : fallback
   return <span title={bot?.name || 'Shared pool'} className={`grid place-items-center rounded-full border-2 border-white font-bold text-white shadow-sm ${size === 'sm' ? 'h-7 w-7 text-[9px]' : '-ml-2 h-9 w-9 text-[11px]'}`} style={{ backgroundColor: bot ? colorFor(bot.id) : '#94a3b8' }}>{label}</span>
 }
@@ -839,28 +1106,45 @@ function InspectorDetail({ label, value }: { label: string; value: string }) {
   return <section className="mt-6"><h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{label}</h3><p className="mt-2 text-sm text-slate-600">{value}</p></section>
 }
 
+function JsonSection({ label, value, empty }: { label: string; value: unknown; empty: string }) {
+  return (
+    <section className="mt-6">
+      <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{label}</h3>
+      {hasStructuredValue(value) ? (
+        <pre className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-100 bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">{stringifyPayload(value)}</pre>
+      ) : (
+        <p className="mt-2 text-sm text-slate-400">{empty}</p>
+      )}
+    </section>
+  )
+}
+
+function EventBlock({ event }: { event: TaskEvent }) {
+  return (
+    <div className="rounded-xl border border-slate-100 p-3">
+      <p className="text-xs font-bold capitalize text-slate-600">{statusLabel(event.status)} | {event.progress}%</p>
+      <p className="mt-1 text-[11px] text-slate-400">{event.note || event.event_type || event.type || event.actor_type} | {formatDate(event.created_at)}</p>
+      {hasStructuredValue(event.payload) ? (
+        <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-950 p-2 text-[10px] leading-4 text-slate-100">{stringifyPayload(event.payload)}</pre>
+      ) : null}
+    </div>
+  )
+}
+
 function executionStateLabel(task: Task) {
   const labels: Record<TaskStatus, string> = {
-    pending: 'Pending release',
-    available: 'Available to claim',
-    claimed: 'Assigned; waiting for runtime progress',
-    in_progress: 'In progress',
-    completed: 'Completed',
-    failed: 'Failed',
+    pending: 'Ready for dispatch',
+    available: 'Ready for dispatch',
+    claimed: 'Claimed by an executor',
+    in_progress: 'Executor is running',
+    awaiting_review: 'Waiting for human review',
+    completed: 'Accepted and completed',
+    failed: 'Execution failed',
+    rejected: 'Review rejected',
+    cancelled: 'Cancelled before completion',
     blocked: 'Blocked by dependencies',
   }
   return labels[task.status]
-}
-
-function executionResultLabel(task: Task) {
-  const terminalEvent = [...task.events]
-    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
-    .find((event) => event.status === 'completed' || event.status === 'failed')
-  const resultNote = task.latest_status_note || terminalEvent?.note
-
-  if (task.status === 'completed') return resultNote || 'Completed without a result note.'
-  if (task.status === 'failed') return resultNote || 'Failed without a result note.'
-  return resultNote || 'No result posted yet.'
 }
 
 function LoadingState() {
@@ -884,7 +1168,7 @@ function Icon({ name, className = '' }: { name: IconName; className?: string }) 
   return <svg className={className} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">{paths[name]}</svg>
 }
 
-function buildTimeline(tasks: Task[], weekWidth: number, collapsedGroups: Set<ProjectGroup['id']> = new Set()) {
+function buildTimeline(tasks: Task[], weekWidth: number, collapsedGroups: Set<TaskFilter> = new Set(), dragPreview: DragPreview | null = null) {
   const rangeStart = startOfWeek(new Date(Date.now() - 2 * WEEK_MS))
   const width = VISIBLE_WEEKS * weekWidth
   const weeks = Array.from({ length: VISIBLE_WEEKS }, (_, index) => {
@@ -892,34 +1176,35 @@ function buildTimeline(tasks: Task[], weekWidth: number, collapsedGroups: Set<Pr
     return { key: date.toISOString(), date }
   })
   const months = monthSegments(weeks, weekWidth)
-  const grouped = new Map(PROJECT_GROUPS.map((group) => [group.id, [] as Task[]]))
-  tasks.forEach((task) => grouped.get(groupForTask(task).id)!.push(task))
+  const grouped = new Map(STATUS_LANES.map((lane) => [lane.id, [] as Task[]]))
+  tasks.forEach((task) => grouped.get(laneForTask(task).id)!.push(task))
 
   const rows: TimelineRow[] = []
-  const groupCounts = new Map<ProjectGroup['id'], number>()
+  const groupCounts = new Map<TaskFilter, number>()
   let taskNumber = 0
   let top = 0
-  PROJECT_GROUPS.forEach((group) => {
-    const groupTasks = grouped.get(group.id) || []
-    groupCounts.set(group.id, groupTasks.length)
-    rows.push({ key: `group-${group.id}`, kind: 'group', top, height: GROUP_HEIGHT, group })
+  STATUS_LANES.forEach((lane) => {
+    const laneTasks = grouped.get(lane.id) || []
+    groupCounts.set(lane.id, laneTasks.length)
+    rows.push({ key: `group-${lane.id}`, kind: 'group', top, height: GROUP_HEIGHT, lane })
     top += GROUP_HEIGHT
-    if (collapsedGroups.has(group.id)) return
-    groupTasks.forEach((task) => {
+    if (collapsedGroups.has(lane.id)) return
+    laneTasks.forEach((task) => {
       taskNumber += 1
-      rows.push({ key: task.id, kind: 'task', top, height: TASK_HEIGHT, group, task, taskNumber })
+      rows.push({ key: task.id, kind: 'task', top, height: TASK_HEIGHT, lane, task, taskNumber })
       top += TASK_HEIGHT
     })
   })
 
   const taskRows = rows.filter((row): row is TimelineRow & { task: Task } => Boolean(row.task))
-  const bars = taskRows.map((row, index) => {
-    const start = taskStart(row.task, index, rangeStart)
-    const end = taskEnd(row.task, start)
+  const bars = taskRows.map((row, index): TimelineBar => {
+    const preview = dragPreview?.taskId === row.task.id ? dragPreview : null
+    const start = preview?.start || taskStart(row.task, index, rangeStart)
+    const end = preview?.end || taskEnd(row.task, start)
     const rawLeft = ((start.getTime() - rangeStart.getTime()) / WEEK_MS) * weekWidth
     const rawRight = ((end.getTime() - rangeStart.getTime()) / WEEK_MS) * weekWidth
     const left = clamp(rawLeft, 4, width - 34)
-    return { task: row.task, group: row.group, left, top: row.top + 8, width: clamp(rawRight - rawLeft, 52, width - left - 4) }
+    return { task: row.task, lane: row.lane, left, top: row.top + 8, width: clamp(rawRight - rawLeft, 52, width - left - 4), start, end }
   })
   const barsById = new Map(bars.map((bar) => [bar.task.id, bar]))
   const arrows = taskRows.flatMap((row) => row.task.dependencies.map((dependency) => {
@@ -928,19 +1213,12 @@ function buildTimeline(tasks: Task[], weekWidth: number, collapsedGroups: Set<Pr
     if (!source || !target) return null
     return { id: dependency.id, x1: source.left + source.width, y1: source.top + 11, x2: target.left, y2: target.top + 11 }
   }).filter(Boolean)) as Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>
-  const milestones = PROJECT_GROUPS.flatMap((group) => {
-    const groupBars = bars.filter((bar) => bar.group.id === group.id)
-    if (!groupBars.length) return []
-    const last = groupBars.reduce((current, candidate) => candidate.left + candidate.width > current.left + current.width ? candidate : current)
-    return [{ id: `milestone-${group.id}`, label: `${group.label} milestone`, color: group.id === 'launch' ? '#ef5a74' : group.color, left: Math.min(width - 16, last.left + last.width + 8), top: last.top + 5 }]
-  })
 
   return {
     arrows,
     bars,
     groupCounts,
     height: top,
-    milestones,
     months,
     rows,
     todayLeft: ((Date.now() - rangeStart.getTime()) / WEEK_MS) * weekWidth,
@@ -960,31 +1238,69 @@ function monthSegments(weeks: Array<{ key: string; date: Date }>, weekWidth: num
   return segments
 }
 
-function groupForTask(task: Task) {
-  const content = `${task.title} ${task.description || ''}`.toLowerCase()
-  if (/launch|release|deploy|go-live|rollout|monitor/.test(content)) return PROJECT_GROUPS[3]
-  if (/test|qa|bug|regression|acceptance|verify|validation/.test(content)) return PROJECT_GROUPS[2]
-  if (/design|develop|build|implement|frontend|backend|api|ux|ui/.test(content)) return PROJECT_GROUPS[1]
-  if (task.status === 'in_progress' || task.status === 'claimed') return PROJECT_GROUPS[1]
-  if (task.status === 'completed') return PROJECT_GROUPS[2]
-  return PROJECT_GROUPS[0]
+function laneForTask(task: Task) {
+  return STATUS_LANES.find((lane) => lane.statuses.includes(task.status)) || STATUS_LANES[0]
 }
 
 function taskStart(task: Task, index: number, rangeStart: Date) {
-  const parsed = parseDate(task.estimated_start_at || task.created_at)
+  const parsed = parseDate(task.estimated_start_at || task.dispatched_at || task.created_at)
   if (parsed) return parsed
   return new Date(rangeStart.getTime() + (index % 6) * WEEK_MS)
 }
 
 function taskEnd(task: Task, start: Date) {
-  const parsed = parseDate(task.estimated_end_at)
+  const parsed = parseDate(task.estimated_end_at || task.actual_end_at)
   if (parsed && parsed.getTime() > start.getTime()) return parsed
   const duration = task.priority === 'critical' ? 3 : task.priority === 'high' ? 2.4 : task.priority === 'low' ? 1.2 : 1.8
   return new Date(start.getTime() + duration * WEEK_MS)
 }
 
+function draggedDates(drag: DragState, dx: number, weekWidth: number) {
+  const deltaMs = Math.round(((dx / weekWidth) * WEEK_MS) / DAY_MS) * DAY_MS
+  if (drag.mode === 'resize') {
+    const end = new Date(Math.max(drag.originalStart.getTime() + DAY_MS, drag.originalEnd.getTime() + deltaMs))
+    return { start: drag.originalStart, end }
+  }
+  const duration = drag.originalEnd.getTime() - drag.originalStart.getTime()
+  const start = new Date(drag.originalStart.getTime() + deltaMs)
+  return { start, end: new Date(start.getTime() + duration) }
+}
+
 function statusColor(status: TaskStatus) {
-  return { pending: '#94a3b8', available: '#1682f0', claimed: '#8b5cf6', in_progress: '#f59e0b', completed: '#20ae83', failed: '#ef5a74', blocked: '#ef5a74' }[status]
+  return {
+    pending: '#94a3b8',
+    available: '#1682f0',
+    claimed: '#f59e0b',
+    in_progress: '#f59e0b',
+    awaiting_review: '#0f9f8f',
+    completed: '#20ae83',
+    failed: '#ef5a74',
+    rejected: '#ef5a74',
+    cancelled: '#64748b',
+    blocked: '#ef5a74',
+  }[status]
+}
+
+function executorBot(task: Task) {
+  return task.current_executor_bot || task.executor_bot || task.claimed?.bot || task.claimed_by_bot || task.assignee_bot || undefined
+}
+
+function executorLabel(task: Task) {
+  const bot = executorBot(task)
+  if (bot?.name) return bot.name
+  return task.current_executor_bot_id || task.executor_bot_id || task.claimed?.bot_id || task.claimed_by_bot_id || task.assignee_bot_id || 'Shared pool'
+}
+
+function dispatchTime(task: Task) {
+  return task.dispatched_at || task.dispatched?.at || null
+}
+
+function claimTime(task: Task) {
+  return task.claimed_at || task.claimed?.at || null
+}
+
+function dependencyIds(task: Task) {
+  return task.dependencies.map((dependency) => dependency.depends_on_task_id)
 }
 
 function startOfWeek(value: Date) {
@@ -1001,14 +1317,25 @@ function parseDate(value?: string | null) {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
+function toDateTimeLocal(value?: string | null) {
+  const date = parseDate(value)
+  if (!date) return ''
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000)
+  return offsetDate.toISOString().slice(0, 16)
+}
+
+function toIsoOrNull(value: string) {
+  return value ? new Date(value).toISOString() : null
+}
+
 function formatDate(value?: string | null) {
   const date = parseDate(value)
   return date ? date.toLocaleString() : 'Not set'
 }
 
 function formatRange(task: Task) {
-  const start = parseDate(task.estimated_start_at || task.created_at)
-  const end = parseDate(task.estimated_end_at)
+  const start = parseDate(task.estimated_start_at || task.dispatched_at || task.created_at)
+  const end = parseDate(task.estimated_end_at || task.actual_end_at)
   if (!start) return 'Not set'
   const left = start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   const right = end?.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -1016,8 +1343,8 @@ function formatRange(task: Task) {
 }
 
 function formatWeek(date: Date) {
-  const end = new Date(date.getTime() + 6 * 24 * 60 * 60 * 1000)
-  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}–${end.getDate()}`
+  const end = new Date(date.getTime() + 6 * DAY_MS)
+  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}-${end.getDate()}`
 }
 
 function formatRelative(value: Date | null) {
@@ -1026,6 +1353,30 @@ function formatRelative(value: Date | null) {
   if (seconds < 10) return 'just now'
   if (seconds < 60) return `${seconds}s ago`
   return `${Math.floor(seconds / 60)}m ago`
+}
+
+function statusLabel(status: TaskStatus) {
+  return status.replace(/_/g, ' ')
+}
+
+function titleCase(value: string) {
+  return value.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function hasStructuredValue(value: unknown) {
+  if (value === null || typeof value === 'undefined') return false
+  if (typeof value === 'string') return value.trim().length > 0
+  return true
+}
+
+function stringifyPayload(value: unknown) {
+  if (typeof value === 'undefined' || value === null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 function initials(name: string) {

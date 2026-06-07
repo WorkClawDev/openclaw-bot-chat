@@ -343,6 +343,7 @@ export const tasksApi = {
     description?: string
     priority?: TaskPriority
     status?: TaskStatus
+    parent_task_id?: string
     assignee_bot_id?: string
     estimated_start_at?: string
     estimated_end_at?: string
@@ -357,6 +358,36 @@ export const tasksApi = {
   update: (id: string, data: Partial<Task> & { dependency_ids?: string[] }) =>
     request<Task>(`/api/v1/tasks/${id}`, {
       method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  dispatch: (id: string, data: { assignee_bot_id?: string | null; note?: string; payload?: unknown } = {}) =>
+    request<Task>(`/api/v1/tasks/${id}/dispatch`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  accept: (id: string, data: { note?: string; payload?: unknown } = {}) =>
+    request<Task>(`/api/v1/tasks/${id}/accept`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  reject: (id: string, data: { note?: string; reason?: string; payload?: unknown } = {}) =>
+    request<Task>(`/api/v1/tasks/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  cancel: (id: string, data: { note?: string; reason?: string; payload?: unknown } = {}) =>
+    request<Task>(`/api/v1/tasks/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  retry: (id: string, data: { assignee_bot_id?: string | null; note?: string; payload?: unknown } = {}) =>
+    request<Task>(`/api/v1/tasks/${id}/retry`, {
+      method: 'POST',
       body: JSON.stringify(data),
     }),
 

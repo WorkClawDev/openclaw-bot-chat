@@ -91,20 +91,31 @@ HTTP 接口（除 `/health`）统一返回：
 - `GET /api/v1/tasks/:id`
 - `PUT /api/v1/tasks/:id`
 - `POST /api/v1/tasks/:id/reassign`
+- `POST /api/v1/tasks/:id/dispatch`
+- `POST /api/v1/tasks/:id/accept`
+- `POST /api/v1/tasks/:id/reject`
+- `POST /api/v1/tasks/:id/retry`
+- `POST /api/v1/tasks/:id/cancel`
 - `DELETE /api/v1/tasks/:id`
+
+`dispatch` 将 `pending/available/blocked/rejected` 任务放入 runtime 队列；有 `assignee_bot_id` 时任务状态为 `claimed`，无 assignee 的共享池任务状态为 `available`。runtime 上报 `result` 后任务进入 `awaiting_review`，用户 `accept` 后才进入最终 `completed`；`reject` 保留结构化结果并允许再次 `dispatch`，`retry` 可从 `failed/rejected/cancelled` 重新派发。
 
 ### Bot Runtime 接口
 
 以下接口使用 `X-Bot-Key` 鉴权：
 
-- `GET /api/v1/bot-runtime/tasks`
+- `GET /api/v1/bot-runtime/tasks/queue`（runtime 默认轮询队列）
+- `GET /api/v1/bot-runtime/tasks`（旧 runtime 列表兼容）
 - `POST /api/v1/bot-runtime/tasks`
 - `POST /api/v1/bot-runtime/tasks/:id/claim`
 - `POST /api/v1/bot-runtime/tasks/:id/progress`
-- `POST /api/v1/bot-runtime/tasks/:id/complete`
+- `POST /api/v1/bot-runtime/tasks/:id/result`
+- `POST /api/v1/bot-runtime/tasks/:id/complete`（旧 runtime 完成兼容）
 - `POST /api/v1/bot-runtime/tasks/:id/fail`
 
-`POST /api/v1/bot-runtime/tasks` 接受与用户创建任务相同的 payload。创建事件会记录当前 bot 作为 actor。
+`GET /queue` 只返回当前 bot 可执行的任务：未指定 assignee 的共享 `available` 任务，以及已指定给当前 bot 的 `claimed/in_progress` 任务。共享任务需要先 `claim`，后端会用行锁保证只被一个 bot 抢到。
+
+`POST /api/v1/bot-runtime/tasks` 接受与用户创建任务相同的 payload，并支持 `parent_task_id` 用于记录子任务归属。创建事件会记录当前 bot 作为 actor。runtime 执行器可通过 `runTask(task, context)` 的 `context.progress(...)` 多次更新进度，并用 `context.createTask(payload)` 创建子任务；该 helper 会默认把当前执行任务写入 `parent_task_id`，前端据此展示 bot spawned work。执行成功时建议向 `result` 上报 `{ result: { summary, output, artifacts, metadata }, latest_status_note }`；执行失败时向 `fail` 上报 `{ latest_status_note, error }`，其中 `error` 为结构化错误对象。`complete` 仅作为旧 runtime 兼容入口，内部同样进入 `awaiting_review`，需要用户确认后完成。
 
 ## 历史与会话
 

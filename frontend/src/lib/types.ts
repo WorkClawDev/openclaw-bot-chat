@@ -188,8 +188,20 @@ export interface GroupMembersResponse {
   bots: GroupMember[]
 }
 
-export type TaskStatus = 'pending' | 'available' | 'claimed' | 'in_progress' | 'completed' | 'failed' | 'blocked'
+export type TaskStatus =
+  | 'pending'
+  | 'available'
+  | 'claimed'
+  | 'in_progress'
+  | 'awaiting_review'
+  | 'completed'
+  | 'failed'
+  | 'rejected'
+  | 'cancelled'
+  | 'blocked'
 export type TaskPriority = 'low' | 'normal' | 'high' | 'critical'
+
+export type TaskPayload = Record<string, unknown> | unknown[] | string | number | boolean | null
 
 export interface TaskDependency {
   id: string
@@ -204,12 +216,38 @@ export interface TaskDependency {
 
 export interface TaskEvent {
   id: string
-  actor_type: 'user' | 'bot' | 'system'
+  actor_type: 'user' | 'bot' | 'system' | 'worker'
   actor_id?: string | null
   status: TaskStatus
   progress: number
   note?: string | null
+  event_type?: string
+  type?: string
+  payload?: TaskPayload
   created_at: string
+}
+
+export interface TaskDispatchInfo {
+  at?: string | null
+  by_id?: string | null
+  topic?: string | null
+  payload?: TaskPayload
+}
+
+export interface TaskClaimInfo {
+  at?: string | null
+  bot_id?: string | null
+  worker_id?: string | null
+  bot?: Bot | null
+}
+
+export interface TaskReviewInfo {
+  status?: 'pending' | 'accepted' | 'rejected'
+  reviewer_id?: string | null
+  note?: string | null
+  payload?: TaskPayload
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export interface Task {
@@ -219,12 +257,26 @@ export interface Task {
   description?: string | null
   priority: TaskPriority
   status: TaskStatus
+  parent_task_id?: string | null
   assignee_bot_id?: string | null
   assignee_bot?: Bot | null
   estimated_start_at?: string | null
   estimated_end_at?: string | null
   actual_start_at?: string | null
   actual_end_at?: string | null
+  dispatched_at?: string | null
+  claimed_at?: string | null
+  dispatched?: TaskDispatchInfo | null
+  claimed?: TaskClaimInfo | null
+  claimed_by_bot_id?: string | null
+  claimed_by_bot?: Bot | null
+  current_executor_bot_id?: string | null
+  current_executor_bot?: Bot | null
+  executor_bot_id?: string | null
+  executor_bot?: Bot | null
+  result?: TaskPayload
+  error?: TaskPayload
+  review?: TaskReviewInfo | TaskPayload
   progress: number
   latest_status_note?: string | null
   dependencies: TaskDependency[]

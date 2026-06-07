@@ -70,3 +70,51 @@ func TestSetupRoutesRegistersBotRuntimeTaskCreate(t *testing.T) {
 		t.Fatalf("expected unauthenticated request to return 401, got %d", recorder.Code)
 	}
 }
+
+func TestSetupRoutesRegistersTaskReviewLoopRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	setupRoutes(
+		router,
+		&handler.AuthHandler{},
+		&handler.BotHandler{},
+		&handler.MessageHandler{},
+		&handler.RealtimeHandler{},
+		&handler.AssetHandler{},
+		&handler.BotRuntimeHandler{},
+		&handler.GroupHandler{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	taskID := "00000000-0000-4000-8000-000000000001"
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/tasks/" + taskID + "/dispatch"},
+		{http.MethodPost, "/api/v1/tasks/" + taskID + "/accept"},
+		{http.MethodPost, "/api/v1/tasks/" + taskID + "/reject"},
+		{http.MethodPost, "/api/v1/tasks/" + taskID + "/retry"},
+		{http.MethodPost, "/api/v1/tasks/" + taskID + "/cancel"},
+		{http.MethodGet, "/api/v1/bot-runtime/tasks/queue"},
+		{http.MethodPost, "/api/v1/bot-runtime/tasks/" + taskID + "/result"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+
+			if recorder.Code == http.StatusNotFound {
+				t.Fatalf("expected route to be registered, got %d", recorder.Code)
+			}
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected unauthenticated request to return 401, got %d", recorder.Code)
+			}
+		})
+	}
+}

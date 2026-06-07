@@ -158,6 +158,20 @@ body.bg-theme-minimal {
   border-color: var(--gantt-empty-border);
 }
 
+.gantt-task-bar {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.gantt-task-bar:active {
+  cursor: grabbing;
+}
+
+.gantt-resize-handle {
+  background: linear-gradient(90deg, transparent, rgba(15, 23, 42, 0.12));
+}
+
 /* Dark background theme component adjustments */
 body.bg-theme-dark .bg-slate-100 { background-color: #1e293b; }
 body.bg-theme-dark .bg-slate-50 { background-color: #334155; }

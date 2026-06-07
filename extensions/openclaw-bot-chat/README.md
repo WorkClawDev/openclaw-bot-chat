@@ -99,14 +99,21 @@ The extension uses the BotChat bot-runtime contract:
 
 - `GET /api/v1/bot-runtime/bootstrap` with `X-Bot-Key`
 - `GET /api/v1/bot-runtime/messages/<conversation_id>?limit=<n>&after_seq=<seq>` with `X-Bot-Key`
-- `GET /api/v1/bot-runtime/tasks` with `X-Bot-Key`
+- `GET /api/v1/bot-runtime/tasks/queue` with `X-Bot-Key`; older backends can still be read through `GET /api/v1/bot-runtime/tasks`
 - `POST /api/v1/bot-runtime/tasks` with `X-Bot-Key`
-- `POST /api/v1/bot-runtime/tasks/<task_id>/{claim|progress|complete|fail}` with `X-Bot-Key`
+- `POST /api/v1/bot-runtime/tasks/<task_id>/{claim|progress|result|fail}` with `X-Bot-Key`; `result` falls back to legacy `complete` when unavailable
 - MQTT publish topics that BotChat can persist:
   - DM: `chat/dm/user/<userId>/bot/<botId>`
   - Group: `chat/group/<groupId>`
 
-Task assignment does not execute a task by itself. A running bot process must consume the task runtime API and post progress, completion, or failure. The extension polls runnable tasks when the OpenClaw host supplies `channelRuntime.runTask` or `channelRuntime.tasks.runTask`; without that hook it leaves task state unchanged instead of claiming work it cannot execute. Completed output is stored on the task as the latest status note and in the task history shown by the `/tasks` inspector.
+Task assignment does not execute a task by itself. A running bot process must consume the task runtime API and post progress, result, or failure. The extension polls runnable tasks from `/tasks/queue` when the OpenClaw host supplies `channelRuntime.runTask` or `channelRuntime.tasks.runTask`; without that hook it leaves task state unchanged instead of claiming work it cannot execute. For compatibility it falls back to the older task list endpoint when `/tasks/queue` is unavailable.
+
+`runTask(task, context)` receives a task plus helpers:
+
+- `context.progress(progress, note)` or `context.progress(note, progress)` posts progress updates.
+- `context.createTask(payload)` posts `POST /api/v1/bot-runtime/tasks`, so a runtime can create child tasks. The helper automatically adds the current task as `parent_task_id` unless the payload overrides it.
+
+When `runTask` returns an object, the extension posts it as `result` to `/bot-runtime/tasks/<task_id>/result` together with `latest_status_note`. Fields such as `summary`, `output`, `artifacts`, and `metadata` are preserved. Thrown errors are reported to `/fail` with both `latest_status_note` and a structured `error` object.
 
 ## Target Mapping
 

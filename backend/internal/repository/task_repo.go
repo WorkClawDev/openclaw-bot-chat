@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
@@ -19,6 +20,9 @@ func NewTaskRepository(db *gorm.DB) *TaskRepository {
 
 func (r *TaskRepository) Create(ctx context.Context, task *model.Task, dependencyIDs []uuid.UUID, event *model.TaskEvent) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if task.ID == uuid.Nil {
+			task.ID = uuid.New()
+		}
 		if err := tx.Create(task).Error; err != nil {
 			return err
 		}
@@ -27,6 +31,7 @@ func (r *TaskRepository) Create(ctx context.Context, task *model.Task, dependenc
 		}
 		if event != nil {
 			event.TaskID = task.ID
+			prepareTaskEvent(event)
 			return tx.Create(event).Error
 		}
 		return nil
@@ -49,6 +54,20 @@ func (r *TaskRepository) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]
 	err := r.taskQuery(ctx).
 		Where("tasks.owner_id = ?", ownerID).
 		Order("tasks.created_at DESC").
+		Find(&tasks).Error
+	return tasks, err
+}
+
+func (r *TaskRepository) ListRuntimeQueue(ctx context.Context, ownerID, botID uuid.UUID) ([]model.Task, error) {
+	var tasks []model.Task
+	err := r.taskQuery(ctx).
+		Where("tasks.owner_id = ?", ownerID).
+		Where(
+			r.db.Where("tasks.status = ? AND tasks.assignee_bot_id IS NULL", model.TaskStatusAvailable).
+				Or("tasks.status = ? AND tasks.assignee_bot_id = ?", model.TaskStatusClaimed, botID).
+				Or("tasks.status = ? AND tasks.assignee_bot_id = ?", model.TaskStatusInProgress, botID),
+		).
+		Order("tasks.created_at ASC").
 		Find(&tasks).Error
 	return tasks, err
 }
@@ -114,6 +133,7 @@ func (r *TaskRepository) Update(ctx context.Context, task *model.Task, dependenc
 		}
 		if event != nil {
 			event.TaskID = task.ID
+			prepareTaskEvent(event)
 			return tx.Create(event).Error
 		}
 		return nil
@@ -129,6 +149,7 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, task *model.Task, eve
 		}
 		if event != nil {
 			event.TaskID = task.ID
+			prepareTaskEvent(event)
 			return tx.Create(event).Error
 		}
 		return nil
@@ -143,7 +164,16 @@ func (r *TaskRepository) Claim(ctx context.Context, taskID, ownerID, botID uuid.
 			First(&task).Error; err != nil {
 			return err
 		}
-		if task.Status != model.TaskStatusAvailable || task.AssigneeBotID != nil {
+		if task.Status == model.TaskStatusAvailable {
+			if task.AssigneeBotID != nil {
+				return ErrTaskUnavailable
+			}
+			task.AssigneeBotID = &botID
+		} else if task.Status == model.TaskStatusClaimed {
+			if task.AssigneeBotID == nil || *task.AssigneeBotID != botID || task.ClaimedAt != nil {
+				return ErrTaskUnavailable
+			}
+		} else {
 			return ErrTaskUnavailable
 		}
 		var incomplete int64
@@ -156,20 +186,24 @@ func (r *TaskRepository) Claim(ctx context.Context, taskID, ownerID, botID uuid.
 		if incomplete > 0 {
 			return ErrTaskUnavailable
 		}
+		now := time.Now()
 		task.Status = model.TaskStatusClaimed
-		task.AssigneeBotID = &botID
+		task.ClaimedAt = &now
 		task.LatestStatusNote = note
 		if err := tx.Save(&task).Error; err != nil {
 			return err
 		}
-		return tx.Create(&model.TaskEvent{
+		event := &model.TaskEvent{
 			TaskID:    task.ID,
 			ActorType: "bot",
 			ActorID:   &botID,
+			EventType: "task.claimed",
 			Status:    task.Status,
 			Progress:  task.Progress,
 			Note:      note,
-		}).Error
+		}
+		prepareTaskEvent(event)
+		return tx.Create(event).Error
 	})
 	if err != nil {
 		return nil, err
@@ -205,6 +239,7 @@ func replaceTaskDependencies(tx *gorm.DB, taskID uuid.UUID, dependencyIDs []uuid
 	}
 	for _, dependencyID := range dependencyIDs {
 		if err := tx.Create(&model.TaskDependency{
+			ID:              uuid.New(),
 			TaskID:          taskID,
 			DependsOnTaskID: dependencyID,
 		}).Error; err != nil {
@@ -212,4 +247,16 @@ func replaceTaskDependencies(tx *gorm.DB, taskID uuid.UUID, dependencyIDs []uuid
 		}
 	}
 	return nil
+}
+
+func prepareTaskEvent(event *model.TaskEvent) {
+	if event.ID == uuid.Nil {
+		event.ID = uuid.New()
+	}
+	if event.EventType == "" {
+		event.EventType = "status_changed"
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now()
+	}
 }

@@ -55,6 +55,20 @@ func (h *TaskRuntimeHandler) List(c *gin.Context) {
 	apiresponse.Success(c, responsedto.NewTaskResponses(tasks))
 }
 
+func (h *TaskRuntimeHandler) Queue(c *gin.Context) {
+	bot, ok := middleware.GetBot(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	tasks, err := h.taskService.RuntimeQueue(c.Request.Context(), bot)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
+	}
+	apiresponse.Success(c, responsedto.NewTaskResponses(tasks))
+}
+
 func (h *TaskRuntimeHandler) Claim(c *gin.Context) {
 	bot, ok := middleware.GetBot(c)
 	if !ok {
@@ -102,17 +116,14 @@ func (h *TaskRuntimeHandler) Progress(c *gin.Context) {
 }
 
 func (h *TaskRuntimeHandler) Complete(c *gin.Context) {
-	h.transitionWithNote(c, h.taskService.RuntimeComplete)
+	h.result(c, h.taskService.RuntimeComplete)
 }
 
-func (h *TaskRuntimeHandler) Fail(c *gin.Context) {
-	h.transitionWithNote(c, h.taskService.RuntimeFail)
+func (h *TaskRuntimeHandler) Result(c *gin.Context) {
+	h.result(c, h.taskService.RuntimeResult)
 }
 
-func (h *TaskRuntimeHandler) transitionWithNote(
-	c *gin.Context,
-	transition func(context.Context, *model.Bot, uuid.UUID, service.RuntimeTaskNoteRequest) (*model.Task, error),
-) {
+func (h *TaskRuntimeHandler) result(c *gin.Context, submit func(context.Context, *model.Bot, uuid.UUID, service.RuntimeTaskResultRequest) (*model.Task, error)) {
 	bot, ok := middleware.GetBot(c)
 	if !ok {
 		apiresponse.Unauthorized(c, "unauthorized")
@@ -122,12 +133,35 @@ func (h *TaskRuntimeHandler) transitionWithNote(
 	if !ok {
 		return
 	}
-	var req service.RuntimeTaskNoteRequest
+	var req service.RuntimeTaskResultRequest
 	if err := bindOptionalJSON(c, &req); err != nil {
 		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
-	task, err := transition(c.Request.Context(), bot, taskID, req)
+	task, err := submit(c.Request.Context(), bot, taskID, req)
+	if err != nil {
+		writeTaskError(c, err)
+		return
+	}
+	apiresponse.Success(c, responsedto.NewTaskResponse(task))
+}
+
+func (h *TaskRuntimeHandler) Fail(c *gin.Context) {
+	bot, ok := middleware.GetBot(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	taskID, ok := parseTaskID(c)
+	if !ok {
+		return
+	}
+	var req service.RuntimeTaskFailRequest
+	if err := bindOptionalJSON(c, &req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	task, err := h.taskService.RuntimeFail(c.Request.Context(), bot, taskID, req)
 	if err != nil {
 		writeTaskError(c, err)
 		return

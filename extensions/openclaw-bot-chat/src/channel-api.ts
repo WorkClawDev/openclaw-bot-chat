@@ -167,9 +167,23 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
         metadata?: Record<string, unknown>;
       }) => Promise<void>;
       tasks?: {
-        runTask?: (task: Record<string, unknown>) => Promise<unknown>;
+        runTask?: (
+          task: Record<string, unknown>,
+          context: {
+            progress(progress: number, note?: string): Promise<unknown>;
+            progress(note: string, progress?: number): Promise<unknown>;
+            createTask(payload: Record<string, unknown>): Promise<unknown>;
+          },
+        ) => Promise<unknown>;
       };
-      runTask?: (task: Record<string, unknown>) => Promise<unknown>;
+      runTask?: (
+        task: Record<string, unknown>,
+        context: {
+          progress(progress: number, note?: string): Promise<unknown>;
+          progress(note: string, progress?: number): Promise<unknown>;
+          createTask(payload: Record<string, unknown>): Promise<unknown>;
+        },
+      ) => Promise<unknown>;
       reply?: {
         dispatchReplyWithBufferedBlockDispatcher?: (params: {
           ctx: Record<string, unknown>;

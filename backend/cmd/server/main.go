@@ -247,9 +247,11 @@ func setupRoutes(
 		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
 		botRuntime.POST("/assets/audio/import", botRuntimeHandler.ImportAudio)
 		botRuntime.GET("/tasks", taskRuntimeHandler.List)
+		botRuntime.GET("/tasks/queue", taskRuntimeHandler.Queue)
 		botRuntime.POST("/tasks", taskRuntimeHandler.Create)
 		botRuntime.POST("/tasks/:id/claim", taskRuntimeHandler.Claim)
 		botRuntime.POST("/tasks/:id/progress", taskRuntimeHandler.Progress)
+		botRuntime.POST("/tasks/:id/result", taskRuntimeHandler.Result)
 		botRuntime.POST("/tasks/:id/complete", taskRuntimeHandler.Complete)
 		botRuntime.POST("/tasks/:id/fail", taskRuntimeHandler.Fail)
 	}
@@ -304,6 +306,11 @@ func setupRoutes(
 		protected.GET("/tasks/:id", taskHandler.Get)
 		protected.PUT("/tasks/:id", taskHandler.Update)
 		protected.POST("/tasks/:id/reassign", taskHandler.Reassign)
+		protected.POST("/tasks/:id/dispatch", taskHandler.Dispatch)
+		protected.POST("/tasks/:id/accept", taskHandler.Accept)
+		protected.POST("/tasks/:id/reject", taskHandler.Reject)
+		protected.POST("/tasks/:id/retry", taskHandler.Retry)
+		protected.POST("/tasks/:id/cancel", taskHandler.Cancel)
 		protected.DELETE("/tasks/:id", taskHandler.Delete)
 	}
 

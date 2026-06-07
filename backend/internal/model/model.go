@@ -238,13 +238,16 @@ func (BotGroupMember) TableName() string { return "bot_group_members" }
 type TaskStatus string
 
 const (
-	TaskStatusPending    TaskStatus = "pending"
-	TaskStatusAvailable  TaskStatus = "available"
-	TaskStatusClaimed    TaskStatus = "claimed"
-	TaskStatusInProgress TaskStatus = "in_progress"
-	TaskStatusCompleted  TaskStatus = "completed"
-	TaskStatusFailed     TaskStatus = "failed"
-	TaskStatusBlocked    TaskStatus = "blocked"
+	TaskStatusPending        TaskStatus = "pending"
+	TaskStatusAvailable      TaskStatus = "available"
+	TaskStatusClaimed        TaskStatus = "claimed"
+	TaskStatusInProgress     TaskStatus = "in_progress"
+	TaskStatusAwaitingReview TaskStatus = "awaiting_review"
+	TaskStatusCompleted      TaskStatus = "completed"
+	TaskStatusFailed         TaskStatus = "failed"
+	TaskStatusBlocked        TaskStatus = "blocked"
+	TaskStatusRejected       TaskStatus = "rejected"
+	TaskStatusCancelled      TaskStatus = "cancelled"
 )
 
 type TaskPriority string
@@ -263,17 +266,25 @@ type Task struct {
 	Description      *string      `gorm:"type:text"`
 	Priority         TaskPriority `gorm:"type:varchar(16);not null;default:'normal';index"`
 	Status           TaskStatus   `gorm:"type:varchar(32);not null;default:'pending';index"`
+	ParentTaskID     *uuid.UUID   `gorm:"type:uuid;index"`
 	AssigneeBotID    *uuid.UUID   `gorm:"type:uuid;index"`
 	EstimatedStartAt *time.Time
 	EstimatedEndAt   *time.Time
 	ActualStartAt    *time.Time
 	ActualEndAt      *time.Time
-	Progress         int            `gorm:"not null;default:0"`
-	LatestStatusNote *string        `gorm:"type:text"`
+	Progress         int     `gorm:"not null;default:0"`
+	LatestStatusNote *string `gorm:"type:text"`
+	Result           JSONMap `gorm:"type:jsonb"`
+	Error            JSONMap `gorm:"type:jsonb"`
+	DispatchedAt     *time.Time
+	ClaimedAt        *time.Time
+	ReviewedAt       *time.Time
+	ReviewedBy       *uuid.UUID     `gorm:"type:uuid"`
 	CreatedAt        time.Time      `gorm:"not null;default:now()"`
 	UpdatedAt        time.Time      `gorm:"not null;default:now()"`
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
 	Owner            *User          `gorm:"foreignKey:OwnerID"`
+	ParentTask       *Task          `gorm:"foreignKey:ParentTaskID"`
 	AssigneeBot      *Bot           `gorm:"foreignKey:AssigneeBotID"`
 	Dependencies     []TaskDependency
 	Events           []TaskEvent
@@ -296,9 +307,11 @@ type TaskEvent struct {
 	TaskID    uuid.UUID  `gorm:"type:uuid;not null;index"`
 	ActorType string     `gorm:"type:varchar(16);not null"`
 	ActorID   *uuid.UUID `gorm:"type:uuid"`
+	EventType string     `gorm:"type:varchar(64);not null;default:'status_changed';index"`
 	Status    TaskStatus `gorm:"type:varchar(32);not null"`
 	Progress  int        `gorm:"not null;default:0"`
 	Note      *string    `gorm:"type:text"`
+	Payload   JSONMap    `gorm:"type:jsonb"`
 	CreatedAt time.Time  `gorm:"not null;default:now();index"`
 }
 

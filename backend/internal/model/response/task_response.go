@@ -14,6 +14,7 @@ type TaskResponse struct {
 	Description      *string                  `json:"description,omitempty"`
 	Priority         model.TaskPriority       `json:"priority"`
 	Status           model.TaskStatus         `json:"status"`
+	ParentTaskID     *uuid.UUID               `json:"parent_task_id,omitempty"`
 	AssigneeBotID    *uuid.UUID               `json:"assignee_bot_id,omitempty"`
 	AssigneeBot      *BotResponse             `json:"assignee_bot,omitempty"`
 	EstimatedStartAt *time.Time               `json:"estimated_start_at,omitempty"`
@@ -22,6 +23,12 @@ type TaskResponse struct {
 	ActualEndAt      *time.Time               `json:"actual_end_at,omitempty"`
 	Progress         int                      `json:"progress"`
 	LatestStatusNote *string                  `json:"latest_status_note,omitempty"`
+	Result           model.JSONMap            `json:"result,omitempty"`
+	Error            model.JSONMap            `json:"error,omitempty"`
+	DispatchedAt     *time.Time               `json:"dispatched_at,omitempty"`
+	ClaimedAt        *time.Time               `json:"claimed_at,omitempty"`
+	ReviewedAt       *time.Time               `json:"reviewed_at,omitempty"`
+	ReviewedBy       *uuid.UUID               `json:"reviewed_by,omitempty"`
 	Dependencies     []TaskDependencyResponse `json:"dependencies"`
 	Events           []TaskEventResponse      `json:"events"`
 	CreatedAt        time.Time                `json:"created_at"`
@@ -45,9 +52,11 @@ type TaskEventResponse struct {
 	ID        uuid.UUID        `json:"id"`
 	ActorType string           `json:"actor_type"`
 	ActorID   *uuid.UUID       `json:"actor_id,omitempty"`
+	EventType string           `json:"event_type"`
 	Status    model.TaskStatus `json:"status"`
 	Progress  int              `json:"progress"`
 	Note      *string          `json:"note,omitempty"`
+	Payload   model.JSONMap    `json:"payload,omitempty"`
 	CreatedAt time.Time        `json:"created_at"`
 }
 
@@ -78,9 +87,11 @@ func NewTaskResponse(task *model.Task) *TaskResponse {
 			ID:        event.ID,
 			ActorType: event.ActorType,
 			ActorID:   event.ActorID,
+			EventType: event.EventType,
 			Status:    event.Status,
 			Progress:  event.Progress,
 			Note:      event.Note,
+			Payload:   event.Payload,
 			CreatedAt: event.CreatedAt,
 		})
 	}
@@ -91,6 +102,7 @@ func NewTaskResponse(task *model.Task) *TaskResponse {
 		Description:      task.Description,
 		Priority:         task.Priority,
 		Status:           task.Status,
+		ParentTaskID:     task.ParentTaskID,
 		AssigneeBotID:    task.AssigneeBotID,
 		AssigneeBot:      NewBotResponse(task.AssigneeBot),
 		EstimatedStartAt: task.EstimatedStartAt,
@@ -99,6 +111,12 @@ func NewTaskResponse(task *model.Task) *TaskResponse {
 		ActualEndAt:      task.ActualEndAt,
 		Progress:         task.Progress,
 		LatestStatusNote: task.LatestStatusNote,
+		Result:           task.Result,
+		Error:            task.Error,
+		DispatchedAt:     task.DispatchedAt,
+		ClaimedAt:        task.ClaimedAt,
+		ReviewedAt:       task.ReviewedAt,
+		ReviewedBy:       task.ReviewedBy,
 		Dependencies:     dependencies,
 		Events:           events,
 		CreatedAt:        task.CreatedAt,

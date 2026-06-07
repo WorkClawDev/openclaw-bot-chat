@@ -7,6 +7,18 @@ interface RequestOptions {
 
 type JsonRecord = Record<string, unknown>;
 
+export interface BotChatRuntimeTask {
+  id: string;
+  title: string;
+  status: string;
+  assignee_bot_id?: string | null;
+  progress?: number;
+  latest_status_note?: string | null;
+  [key: string]: unknown;
+}
+
+export type BotChatTaskCreatePayload = Record<string, unknown>;
+
 export class BotChatHttpError extends Error {
   readonly status: number;
   readonly responseBody: unknown;
@@ -28,6 +40,68 @@ export class BotChatHttpClient {
 
   async bootstrap(): Promise<BootstrapResponse> {
     return this.request<BootstrapResponse>("GET", "/api/v1/bot-runtime/bootstrap");
+  }
+
+  async tasks(options: { queue?: boolean } = {}): Promise<BotChatRuntimeTask[]> {
+    const useQueue = options.queue ?? true;
+    if (useQueue) {
+      try {
+        return normalizeTasks(
+          await this.request<unknown>("GET", "/api/v1/bot-runtime/tasks/queue"),
+        );
+      } catch (error) {
+        if (!isMissingCompatEndpoint(error)) {
+          throw error;
+        }
+      }
+    }
+
+    return normalizeTasks(
+      await this.request<unknown>("GET", "/api/v1/bot-runtime/tasks"),
+    );
+  }
+
+  async createTask(payload: BotChatTaskCreatePayload): Promise<BotChatRuntimeTask> {
+    return normalizeTask(
+      await this.request<unknown>("POST", "/api/v1/bot-runtime/tasks", {
+        body: payload,
+      }),
+    );
+  }
+
+  async claimTask(
+    taskId: string,
+    body: Record<string, unknown> = {},
+  ): Promise<BotChatRuntimeTask> {
+    return this.postTaskAction(taskId, "claim", body);
+  }
+
+  async progressTask(
+    taskId: string,
+    body: { progress?: number; latest_status_note?: string },
+  ): Promise<BotChatRuntimeTask> {
+    return this.postTaskAction(taskId, "progress", body);
+  }
+
+  async resultTask(
+    taskId: string,
+    body: { result?: unknown; latest_status_note?: string },
+  ): Promise<BotChatRuntimeTask> {
+    try {
+      return await this.postTaskAction(taskId, "result", body);
+    } catch (error) {
+      if (!isMissingCompatEndpoint(error)) {
+        throw error;
+      }
+      return this.postTaskAction(taskId, "complete", body);
+    }
+  }
+
+  async failTask(
+    taskId: string,
+    body: { latest_status_note?: string; error?: unknown },
+  ): Promise<BotChatRuntimeTask> {
+    return this.postTaskAction(taskId, "fail", body);
   }
 
   async getConversationMessages(
@@ -63,6 +137,22 @@ export class BotChatHttpClient {
     }
 
     return [];
+  }
+
+  private async postTaskAction(
+    taskId: string,
+    action: "claim" | "progress" | "result" | "complete" | "fail",
+    body: Record<string, unknown>,
+  ): Promise<BotChatRuntimeTask> {
+    return normalizeTask(
+      await this.request<unknown>(
+        "POST",
+        `/api/v1/bot-runtime/tasks/${encodeURIComponent(taskId)}/${action}`,
+        {
+          body,
+        },
+      ),
+    );
   }
 
   private async request<T>(
@@ -133,6 +223,53 @@ function parseJson(value: string): unknown {
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeTasks(value: unknown): BotChatRuntimeTask[] {
+  if (Array.isArray(value)) {
+    return value.map(normalizeTask);
+  }
+  if (isRecord(value)) {
+    const tasks = value["tasks"] ?? value["items"];
+    if (Array.isArray(tasks)) {
+      return tasks.map(normalizeTask);
+    }
+  }
+  return [];
+}
+
+function normalizeTask(value: unknown): BotChatRuntimeTask {
+  if (!isRecord(value)) {
+    throw new Error("BotChat task response is not an object");
+  }
+  const id = readString(value["id"]);
+  const title = readString(value["title"]);
+  const status = readString(value["status"]);
+  if (!id || !title || !status) {
+    throw new Error("BotChat task response is missing id, title, or status");
+  }
+  const progress = readNumber(value["progress"]);
+  return {
+    ...value,
+    id,
+    title,
+    status,
+    assignee_bot_id: readString(value["assignee_bot_id"]) ?? null,
+    latest_status_note: readString(value["latest_status_note"]) ?? null,
+    ...(progress !== undefined ? { progress } : {}),
+  };
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isMissingCompatEndpoint(error: unknown): boolean {
+  return error instanceof BotChatHttpError && (error.status === 404 || error.status === 405);
 }
 
 function encodeConversationPath(conversationId: string): string {

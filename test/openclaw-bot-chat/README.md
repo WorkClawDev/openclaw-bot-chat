@@ -17,6 +17,12 @@ OpenClaw 侧 bot runtime 插件，采用 broker-first 模式：
 5. 将回复直接 publish 到 broker
 6. 重连后按 `after_seq` 补拉历史
 
+任务 runtime 辅助：
+
+- `BotChatHttpClient.tasks()` 默认读取 `GET /api/v1/bot-runtime/tasks/queue`，遇到旧后端的 404/405 会回退到 `GET /api/v1/bot-runtime/tasks`
+- `createTask(payload)` 可创建任务或子任务；执行上下文中的 helper 会自动补当前任务的 `parent_task_id`
+- `claimTask(id)`, `progressTask(id, body)`, `resultTask(id, body)`, `failTask(id, body)` 对应 runtime 任务状态上报；`resultTask` 在旧后端缺少 `/result` 时会回退到 `/complete`
+
 ## 快速启动（测试）
 
 在仓库根目录：

@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     description         TEXT,
     priority            VARCHAR(16)  NOT NULL DEFAULT 'normal',
     status              VARCHAR(32)  NOT NULL DEFAULT 'pending',
+    parent_task_id      UUID         REFERENCES tasks(id) ON DELETE SET NULL,
     assignee_bot_id     UUID         REFERENCES bots(id) ON DELETE SET NULL,
     estimated_start_at  TIMESTAMPTZ,
     estimated_end_at    TIMESTAMPTZ,
@@ -200,6 +201,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     actual_end_at       TIMESTAMPTZ,
     progress            INTEGER      NOT NULL DEFAULT 0,
     latest_status_note  TEXT,
+    result              JSONB,
+    error               JSONB,
+    dispatched_at       TIMESTAMPTZ,
+    claimed_at          TIMESTAMPTZ,
+    reviewed_at         TIMESTAMPTZ,
+    reviewed_by         UUID         REFERENCES users(id) ON DELETE SET NULL,
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     deleted_at          TIMESTAMPTZ
@@ -208,6 +215,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX idx_tasks_owner_id ON tasks(owner_id);
 CREATE INDEX idx_tasks_status ON tasks(status);
 CREATE INDEX idx_tasks_priority ON tasks(priority);
+CREATE INDEX idx_tasks_parent_task_id ON tasks(parent_task_id);
 CREATE INDEX idx_tasks_assignee_bot_id ON tasks(assignee_bot_id);
 
 CREATE TABLE IF NOT EXISTS task_dependencies (
@@ -226,13 +234,16 @@ CREATE TABLE IF NOT EXISTS task_events (
     task_id     UUID        NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     actor_type  VARCHAR(16) NOT NULL,
     actor_id    UUID,
+    event_type  VARCHAR(64) NOT NULL DEFAULT 'status_changed',
     status      VARCHAR(32) NOT NULL,
     progress    INTEGER     NOT NULL DEFAULT 0,
     note        TEXT,
+    payload     JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_task_events_task_id ON task_events(task_id);
+CREATE INDEX idx_task_events_event_type ON task_events(event_type);
 CREATE INDEX idx_task_events_created_at ON task_events(created_at);
 
 -- ============================================================
