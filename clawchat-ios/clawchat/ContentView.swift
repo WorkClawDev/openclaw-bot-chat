@@ -15,6 +15,15 @@ struct ContentView: View {
                 ChatRoomV2ImagePreviewFixtureView(context: uiTestChatContext)
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2LiveBridge" {
                 ChatRoomV2LiveBridgeFixtureView(context: uiTestChatContext)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2StatusStability" {
+                ChatRoomV2StatusStabilityFixtureView(context: uiTestChatContext)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2Keyboard" {
+                ChatRoomView(
+                    previewContext: uiTestChatContext,
+                    messages: uiTestKeyboardMessages,
+                    connectionState: .connected,
+                    currentUserID: "fixture-user"
+                )
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
                 ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
             } else if ChatRoomV2FeatureFlag.uiTestMode?.hasPrefix("ipadWorkspace") == true {
@@ -48,6 +57,41 @@ struct ContentView: View {
             memberCount: nil,
             avatarURLString: nil
         )
+    }
+
+    private var uiTestKeyboardMessages: [Message] {
+        (41...100).map { sequence in
+            let isOutgoing = sequence.isMultiple(of: 4)
+            let sender = MessagePeerPayload(
+                type: isOutgoing ? "user" : "bot",
+                id: isOutgoing ? "fixture-user" : "fixture-bot",
+                name: isOutgoing ? "Fixture User" : "Fixture Bot",
+                avatar: nil
+            )
+            let receiver = MessagePeerPayload(
+                type: isOutgoing ? "bot" : "user",
+                id: isOutgoing ? "fixture-bot" : "fixture-user",
+                name: nil,
+                avatar: nil
+            )
+            return Message(from: RealtimeMessagePayload(
+                id: "keyboard-fixture-\(sequence)",
+                topic: uiTestChatContext.id,
+                conversationId: uiTestChatContext.id,
+                timestamp: Int64(1_800_000_000 + sequence),
+                from: sender,
+                to: receiver,
+                content: RealtimeContentPayload(
+                    type: "text",
+                    body: "#\(sequence) Keyboard fixture message keeps V2 anchored while the composer appears and hides.",
+                    url: nil,
+                    name: nil,
+                    size: nil,
+                    meta: nil
+                ),
+                seq: Int64(sequence)
+            ))
+        }
     }
 }
 

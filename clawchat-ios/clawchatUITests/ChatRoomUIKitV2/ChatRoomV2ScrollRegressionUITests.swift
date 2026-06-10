@@ -95,6 +95,29 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
     }
 
     @MainActor
+    func testFailedLocalMessageKeepsSlotWhenRemoteRefreshAppends() throws {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-uiTestMode", "chatRoomV2StatusStability"
+        ]
+        app.launch()
+
+        let collection = app.collectionViews["chatRoomV2.collectionView"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 10))
+
+        let failed = collection.cells["chatRoomV2.message.failed-local"]
+        let pending = collection.cells["chatRoomV2.message.pending-local"]
+        XCTAssertTrue(failed.waitForExistence(timeout: 10))
+        XCTAssertTrue(pending.waitForExistence(timeout: 10))
+        XCTAssertLessThan(failed.frame.minY, pending.frame.minY)
+
+        let remoteRefresh = collection.cells["chatRoomV2.message.remote-101"]
+        XCTAssertTrue(remoteRefresh.waitForExistence(timeout: 10))
+        XCTAssertLessThan(failed.frame.minY, remoteRefresh.frame.minY)
+        XCTAssertLessThan(pending.frame.minY, remoteRefresh.frame.minY)
+    }
+
+    @MainActor
     func testImageBlockOpensPreviewWithoutRelayout() throws {
         let app = XCUIApplication()
         app.launchArguments = [
@@ -240,6 +263,35 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
         XCTAssertTrue(diagnosticText.contains("restores=1"))
         XCTAssertTrue(diagnosticText.contains("keyboardOverlap=0"))
         XCTAssertLessThanOrEqual(driftValue(in: diagnosticText), 1.0)
+    }
+
+    @MainActor
+    func testKeyboardShowHideKeepsV2ListStable() throws {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-uiTestMode", "chatRoomV2",
+            "-fixture", "textPrependStress",
+            "-chatRoomV2AutoKeyboardShowHide"
+        ]
+        app.launch()
+
+        let collection = app.collectionViews["chatRoomV2.collectionView"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 10))
+
+        let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
+
+        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "keyboardRestores=2", "keyboardRestores=2")
+        expectation(for: completed, evaluatedWith: diagnostics)
+        waitForExpectations(timeout: 10)
+
+        let diagnosticText = diagnostics.value as? String ?? diagnostics.label
+        XCTAssertTrue(diagnosticText.contains("messages=60"))
+        XCTAssertTrue(diagnosticText.contains("prepends=0"))
+        XCTAssertTrue(diagnosticText.contains("restores=0"))
+        XCTAssertTrue(diagnosticText.contains("reloads=0"))
+        XCTAssertTrue(diagnosticText.contains("keyboardOverlap=0"))
+        XCTAssertTrue(diagnosticText.contains("keyboardRestores=2"))
     }
 
     private func driftValue(in diagnosticText: String) -> Double {

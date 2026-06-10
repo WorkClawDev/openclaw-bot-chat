@@ -23,7 +23,8 @@ struct ChatRoomV2LiveBridgeFixtureView: View {
             onUserScrollChange: { isUserScrolling = $0 },
             onInitialPositioned: scheduleLiveBridgePrepend,
             onPreviewImage: { _ in },
-            onSaveImage: { _ in }
+            onSaveImage: { _ in },
+            onTapList: {}
         )
         .accessibilityIdentifier("chatRoomV2.liveBridgeFixture")
     }

@@ -53,8 +53,10 @@ class ChatRoomViewModel: ObservableObject {
 
     private let initialPageSize = 50
     private let historyPageSize = 24
+    private let pendingConfirmationTimeout: TimeInterval = 20
     private var cancellables = Set<AnyCancellable>()
     private var syncTask: Task<Void, Never>?
+    private var pendingConfirmationRefreshTask: Task<Void, Never>?
     private var botProfilesByID: [String: ChatPeerProfile] = [:]
 #if DEBUG
     private static let isMessageTraceLoggingEnabled = false
@@ -70,6 +72,9 @@ class ChatRoomViewModel: ObservableObject {
         self.messages = sortMessages(initialMessages)
         if let initialConnectionState {
             self.connectionState = initialConnectionState
+        }
+        if !observesRealtime, !initialMessages.isEmpty {
+            self.hasMoreHistory = false
         }
 
         if observesRealtime {
@@ -97,12 +102,16 @@ class ChatRoomViewModel: ObservableObject {
 
     deinit {
         syncTask?.cancel()
+        pendingConfirmationRefreshTask?.cancel()
     }
 
     func fetchMessages() {
         errorMessage = nil
         loadCachedBotProfiles()
-        messages = sortMessages(enrichMessages(LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: initialPageSize)))
+        let cachedMessages = markStalePendingMessagesFailedIfNeeded(
+            LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: initialPageSize)
+        )
+        messages = sortMessages(enrichMessages(cachedMessages))
         updateHistoryAvailability()
         isLoading = messages.isEmpty
 
@@ -140,6 +149,7 @@ class ChatRoomViewModel: ObservableObject {
         do {
             let remoteOlderMessages = try await fetchRemoteMessages(limit: historyPageSize, beforeSeq: beforeSequence)
             if !remoteOlderMessages.isEmpty {
+                RealtimeService.shared.acknowledgeDeliveredMessages(remoteOlderMessages)
                 LocalMessageStore.shared.upsert(messages: remoteOlderMessages)
                 messages = mergeMessages(messages, with: remoteOlderMessages)
             }
@@ -155,6 +165,9 @@ class ChatRoomViewModel: ObservableObject {
             "MQTT TRACE ui accepted message_id=\(message.id) conversation_id=\(message.conversationId) topic=\(message.topic) current_conversation=\(conversationId)"
         )
         messages = mergeMessages(messages, with: [enrichMessage(message)])
+        if message.pending, message.seq == nil {
+            schedulePendingConfirmationRefresh()
+        }
     }
 
     @MainActor
@@ -175,10 +188,14 @@ class ChatRoomViewModel: ObservableObject {
             remoteMessages.append(contentsOf: latestMessages)
 
             if !remoteMessages.isEmpty {
+                RealtimeService.shared.acknowledgeDeliveredMessages(remoteMessages)
                 LocalMessageStore.shared.upsert(messages: remoteMessages)
                 if shouldReplaceVisibleWindow(withLatestPage: latestMessages) {
-                    messages = sortMessages(latestMessages)
-                    visibleWindowReplacementVersion += 1
+                    let localStatusMessages = messages.filter { $0.seq == nil && ($0.pending || $0.failed) }
+                    messages = mergeMessages(latestMessages, with: localStatusMessages)
+                    if localStatusMessages.isEmpty {
+                        visibleWindowReplacementVersion += 1
+                    }
                 } else {
                     messages = mergeMessages(messages, with: remoteMessages)
                 }
@@ -320,6 +337,40 @@ class ChatRoomViewModel: ObservableObject {
             result[message.id] = enrichMessage(message)
         }
         return sortMessages(Array(merged.values))
+    }
+
+    private func markStalePendingMessagesFailedIfNeeded(_ items: [Message]) -> [Message] {
+        let now = Date()
+        var changedMessages: [Message] = []
+        let updated = items.map { message -> Message in
+            guard message.pending, !message.failed, message.seq == nil else {
+                return message
+            }
+            let sentAt = message.createdAt ?? message.timestamp.map { Date(timeIntervalSince1970: Double($0)) } ?? .distantPast
+            guard now.timeIntervalSince(sentAt) >= pendingConfirmationTimeout else {
+                return message
+            }
+
+            var failedMessage = message
+            failedMessage.pending = false
+            failedMessage.failed = true
+            changedMessages.append(failedMessage)
+            return failedMessage
+        }
+
+        if !changedMessages.isEmpty {
+            LocalMessageStore.shared.upsert(messages: changedMessages)
+        }
+        return updated
+    }
+
+    private func schedulePendingConfirmationRefresh() {
+        pendingConfirmationRefreshTask?.cancel()
+        pendingConfirmationRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.refreshLatestMessages()
+        }
     }
 
     private func shouldReplaceVisibleWindow(withLatestPage latestMessages: [Message]) -> Bool {
@@ -1152,7 +1203,8 @@ private struct ChatRoomLegacyView: View {
                 onUserScrollChange: { isUserInteractingWithMessages = $0 },
                 onInitialPositioned: { hasPositionedInitialMessages = true },
                 onPreviewImage: { previewMessage = $0 },
-                onSaveImage: saveImage
+                onSaveImage: saveImage,
+                onTapList: { isInputFocused = false }
             )
         } else {
             ChatMessageListView(
@@ -1264,14 +1316,19 @@ private struct ChatRoomLegacyView: View {
 
                 HStack(alignment: .bottom, spacing: 8) {
                     TextField(composerPlaceholder, text: $viewModel.inputText, axis: .vertical)
+                        .accessibilityIdentifier("chat.composer.input")
                         .focused($isInputFocused)
                         .lineLimit(1...5)
                         .textInputAutocapitalization(activeSlashQuery == nil ? .sentences : .never)
                         .autocorrectionDisabled(activeSlashQuery != nil)
+                        .submitLabel(.done)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 10)
                         .foregroundStyle(Color.rcmsTextPrimary)
                         .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+                        .onSubmit {
+                            isInputFocused = false
+                        }
                         .onChange(of: slashSuggestionIdentity) { _, _ in
                             selectedSlashCommandIndex = 0
                             scheduleSlashAutocompleteIfNeeded()
@@ -1753,6 +1810,7 @@ private struct ChatRoomLegacyView: View {
     }
 
     private func scrollWithKeyboardTransition(_ notification: Notification) {
+        guard !ChatRoomV2FeatureFlag.isEnabled else { return }
         guard isInputFocused else { return }
         guard !viewModel.messages.isEmpty else { return }
         guard keyboardOverlapsScreen(notification) else { return }
@@ -2458,6 +2516,7 @@ private struct MessageRenderSignature: Hashable {
     let seq: Int?
     let timestamp: Int64?
     let pending: Bool
+    let failed: Bool
 
     nonisolated init(message: Message) {
         self.id = message.id
@@ -2475,6 +2534,7 @@ private struct MessageRenderSignature: Hashable {
         self.seq = message.seq
         self.timestamp = message.timestamp
         self.pending = message.pending
+        self.failed = message.failed
     }
 }
 
@@ -2782,7 +2842,7 @@ struct ChatBubbleRow: View {
                     messageTextBubble(body)
                 }
 
-                if messageTimestamp != nil || message.pending {
+                if messageTimestamp != nil || message.pending || message.failed {
                     deliveryStatusRow
                 }
             }
@@ -2848,28 +2908,22 @@ struct ChatBubbleRow: View {
                 Text(messageTimestamp)
             }
 
-            if message.pending {
+            if message.pending || message.failed {
                 if messageTimestamp != nil {
                     Text("·")
                 }
-
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.72)
-                    .frame(width: 10, height: 10)
-
-                Text("发送中")
+                Text(message.failed ? "Failed" : "Sending")
             }
         }
         .font(.caption2)
-        .foregroundStyle(message.pending ? Color.rcmsWarning : Color.rcmsTextSecondary)
+        .foregroundStyle(Color.rcmsTextSecondary)
         .padding(.horizontal, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(deliveryStatusAccessibilityLabel)
     }
 
     private var deliveryStatusAccessibilityLabel: String {
-        let pieces = [messageTimestamp, message.pending ? "发送中" : nil]
+        let pieces = [messageTimestamp, message.failed ? "Failed" : (message.pending ? "Sending" : nil)]
             .compactMap { $0 }
         return pieces.joined(separator: " ")
     }
@@ -3960,5 +4014,6 @@ private extension Message {
         self.timestamp = timestamp
         self.createdAt = createdAt
         self.pending = false
+        self.failed = false
     }
 }

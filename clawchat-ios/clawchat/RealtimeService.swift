@@ -27,6 +27,8 @@ class RealtimeService: NSObject, ObservableObject {
     private var subscribedTopics = Set<String>()
     private var retryWorkItem: DispatchWorkItem?
     private let retryDelay: TimeInterval = 3
+    private var deliveryConfirmationTasks: [String: Task<Void, Never>] = [:]
+    private let deliveryConfirmationTimeout: UInt64 = 20_000_000_000
 #if DEBUG
     private static let isHighFrequencyLoggingEnabled = false
 #endif
@@ -247,6 +249,11 @@ class RealtimeService: NSObject, ObservableObject {
             seq: nil
         )
 
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            log("publish blocked: failed to encode payload id=\(payload.id) topic=\(topic)")
+            return false
+        }
+
         let optimisticMessage = Message(from: payload, pending: true)
         let isActiveConversation = normalizeConversationID(activeConversationID) == normalizeConversationID(conversationId)
 
@@ -262,13 +269,14 @@ class RealtimeService: NSObject, ObservableObject {
             self.lastMessagesByConversation[conversationId] = optimisticMessage
         }
 
-        guard let jsonData = try? JSONEncoder().encode(payload) else {
-            log("publish blocked: failed to encode payload id=\(payload.id) topic=\(topic)")
-            return false
-        }
         log(
             "publish topic=\(topic) conversation_id=\(conversationId) message_id=\(payload.id) to=\(target.type)/\(target.id) bytes=\(jsonData.count) subscribed=\(subscribedTopics.contains(topic))",
             highFrequency: true
+        )
+        scheduleDeliveryFailureIfUnconfirmed(
+            optimisticMessage,
+            currentUserID: user.id.uuidString,
+            isActiveConversation: isActiveConversation
         )
         mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1)
         return true
@@ -349,6 +357,12 @@ class RealtimeService: NSObject, ObservableObject {
         "\(commandName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()):\(argIndex):\(partial.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
     }
 
+    func acknowledgeDeliveredMessages(_ messages: [Message]) {
+        for message in messages where message.seq != nil {
+            cancelDeliveryFailure(forMessageID: message.id)
+        }
+    }
+
     private func handleRealtimePayload(_ payload: RealtimeMessagePayload) {
         if handleSlashAutocompleteResponseIfNeeded(payload) {
             return
@@ -361,6 +375,15 @@ class RealtimeService: NSObject, ObservableObject {
             "message decoded id=\(payload.id) topic=\(payload.topic) conversation_id=\(payload.conversationId) from=\(payload.from.type)/\(payload.from.id) to=\(payload.to.type)/\(payload.to.id) seq=\(payload.seq.map(String.init) ?? "<nil>")",
             highFrequency: true
         )
+        if payload.seq == nil, deliveryConfirmationTasks[payload.id] != nil {
+            log("receive pending echo ignored until backend seq confirmation id=\(payload.id)", highFrequency: true)
+            return
+        }
+
+        if payload.seq != nil {
+            cancelDeliveryFailure(forMessageID: payload.id)
+        }
+
         let message = Message(from: payload)
         LocalMessageStore.shared.upsert(messages: [message])
         LocalMessageStore.shared.syncConversationPreview(
@@ -372,6 +395,45 @@ class RealtimeService: NSObject, ObservableObject {
             self.messagePublisher.send(message)
             self.lastMessagesByConversation[message.conversationId] = message
         }
+    }
+
+    private func scheduleDeliveryFailureIfUnconfirmed(_ message: Message, currentUserID: String?, isActiveConversation: Bool) {
+        deliveryConfirmationTasks[message.id]?.cancel()
+        deliveryConfirmationTasks[message.id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: self?.deliveryConfirmationTimeout ?? 20_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.markDeliveryFailedIfStillUnconfirmed(
+                    message,
+                    currentUserID: currentUserID,
+                    isActiveConversation: isActiveConversation
+                )
+            }
+        }
+    }
+
+    private func cancelDeliveryFailure(forMessageID messageID: String) {
+        deliveryConfirmationTasks[messageID]?.cancel()
+        deliveryConfirmationTasks[messageID] = nil
+    }
+
+    @MainActor
+    private func markDeliveryFailedIfStillUnconfirmed(_ message: Message, currentUserID: String?, isActiveConversation: Bool) {
+        guard deliveryConfirmationTasks[message.id] != nil else { return }
+        deliveryConfirmationTasks[message.id]?.cancel()
+        deliveryConfirmationTasks[message.id] = nil
+
+        var failedMessage = message
+        failedMessage.pending = false
+        failedMessage.failed = true
+        LocalMessageStore.shared.upsert(messages: [failedMessage])
+        LocalMessageStore.shared.syncConversationPreview(
+            for: failedMessage,
+            currentUserID: currentUserID,
+            isActiveConversation: isActiveConversation
+        )
+        messagePublisher.send(failedMessage)
+        lastMessagesByConversation[failedMessage.conversationId] = failedMessage
     }
 
     private func handleSlashCommandCatalogIfNeeded(_ payload: RealtimeMessagePayload) -> Bool {

@@ -416,7 +416,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         label.accessibilityLabel = status.displayText
         label.font = .systemFont(ofSize: 11)
         label.textAlignment = isOutgoing ? .right : .left
-        label.textColor = status.isPending ? .systemOrange : .secondaryLabel
+        label.textColor = .secondaryLabel
         label.text = status.displayText
         return label
     }

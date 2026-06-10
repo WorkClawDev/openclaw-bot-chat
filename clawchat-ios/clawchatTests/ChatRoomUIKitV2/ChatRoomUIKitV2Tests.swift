@@ -21,6 +21,31 @@ struct ChatRoomUIKitV2Tests {
         #expect(store.earliestSequence == 1)
     }
 
+    @Test func storeNormalizesMessagesBeforeDiffingPendingUpdates() {
+        let layout = MessageLayoutV2(itemSize: CGSize(width: 320, height: 44), blockLayouts: [])
+        let messages = [
+            RenderedMessageV2(id: "confirmed", sequence: 7, text: "confirmed", isOutgoing: false, layout: layout),
+            RenderedMessageV2(id: "pending-now-confirmed", sequence: 6, text: "confirmed pending", isOutgoing: true, layout: layout),
+            RenderedMessageV2(id: "older", sequence: 5, text: "older", isOutgoing: false, layout: layout)
+        ]
+
+        let normalized = ChatMessageStoreV2.normalized(messages)
+
+        #expect(normalized.map(\.id) == ["older", "pending-now-confirmed", "confirmed"])
+    }
+
+    @Test func pendingStatusUsesSubduedEnglishText() {
+        let status = MessageStatusPresentationV2(timestampText: "09:31", isPending: true)
+
+        #expect(status.displayText == "09:31 · Sending")
+    }
+
+    @Test func failedStatusUsesStableSubduedText() {
+        let status = MessageStatusPresentationV2(timestampText: "09:31", isPending: false, isFailed: true)
+
+        #expect(status.displayText == "09:31 · Failed")
+    }
+
     @Test func rendererPrecomputesExactTextGeometryBeforeInsertion() {
         let renderer = MessageRenderCoordinatorV2()
         let raw = ChatMessageV2(
@@ -408,29 +433,28 @@ struct ChatRoomUIKitV2Tests {
         #expect(coordinator.state.loadingBlockID == nil)
     }
 
-    @Test func optimisticMessagesUseSequenceAfterRemoteHistory() {
+    @Test func liveMessagesUseSourceOrderForPendingAndFailedRows() {
         let remote = message(id: "remote-100", sequence: 100, body: "remote")
+        let failed = message(id: "failed", sequence: nil, body: "failed", failed: true)
         let optimistic = message(id: "pending", sequence: nil, body: "pending", pending: true)
-        let maxRemoteSequence = [remote, optimistic].compactMap(\.seq).max() ?? 0
-        var optimisticSequenceOffset = 0
 
-        let rendered = [remote, optimistic].enumerated().map { index, message in
-            let fallbackSequence: Int
-            if message.seq == nil {
-                optimisticSequenceOffset += 1
-                fallbackSequence = maxRemoteSequence + optimisticSequenceOffset
-            } else {
-                fallbackSequence = index
-            }
-            return ChatMessageV2(message: message, currentUserID: "user", fallbackSequence: fallbackSequence)
+        let rendered = [remote, failed, optimistic].enumerated().map { index, message in
+            ChatMessageV2(
+                message: message,
+                currentUserID: "user",
+                fallbackSequence: index,
+                preservesSourceOrder: true
+            )
         }
 
-        #expect(rendered.map(\.sequence) == [100, 101])
+        #expect(rendered.map(\.sequence) == [0, 1, 2])
+        #expect(rendered.map(\.id) == ["remote-100", "failed", "pending"])
+        #expect(rendered[1].status?.displayText.contains("Failed") == true)
         #expect(rendered.last?.id == "pending")
     }
 
-    private func message(id: String, sequence: Int?, body: String, pending: Bool = false) -> Message {
-        Message(
+    private func message(id: String, sequence: Int?, body: String, pending: Bool = false, failed: Bool = false) -> Message {
+        var message = Message(
             from: RealtimeMessagePayload(
                 id: id,
                 topic: "chat/dm/user/user/bot/bot",
@@ -443,5 +467,7 @@ struct ChatRoomUIKitV2Tests {
             ),
             pending: pending
         )
+        message.failed = failed
+        return message
     }
 }

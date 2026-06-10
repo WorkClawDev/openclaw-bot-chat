@@ -26,7 +26,8 @@ struct ChatRoomV2ImagePreviewFixtureView: View {
             onUserScrollChange: { _ in },
             onInitialPositioned: {},
             onPreviewImage: { previewMessage = $0 },
-            onSaveImage: { _ in }
+            onSaveImage: { _ in },
+            onTapList: {}
         )
         .accessibilityIdentifier("chatRoomV2.imagePreviewFixture")
         .fullScreenCover(item: $previewMessage) { message in

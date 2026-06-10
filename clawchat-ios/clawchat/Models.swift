@@ -253,9 +253,10 @@ struct Message: Codable, Identifiable {
     var timestamp: Int64?
     var createdAt: Date?
     var pending: Bool
+    var failed: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, from, to, content, seq, timestamp, pending
+        case id, from, to, content, seq, timestamp, pending, failed
         case conversationId = "conversation_id"
         case topic = "mqtt_topic"
         case senderId = "sender_id"
@@ -282,6 +283,7 @@ struct Message: Codable, Identifiable {
         timestamp = try container.decodeIfPresent(Int64.self, forKey: .timestamp)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         pending = try container.decodeIfPresent(Bool.self, forKey: .pending) ?? false
+        failed = try container.decodeIfPresent(Bool.self, forKey: .failed) ?? false
         
         if let sId = try? container.decodeIfPresent(String.self, forKey: .senderId) {
             senderId = sId
@@ -861,7 +863,7 @@ extension MessageContent {
 }
 
 extension Message {
-    init(from payload: RealtimeMessagePayload, pending: Bool = false) {
+    init(from payload: RealtimeMessagePayload, pending: Bool = false, failed: Bool = false) {
         self.id = payload.id
         self.conversationId = payload.conversationId
         self.topic = payload.topic
@@ -874,6 +876,7 @@ extension Message {
         self.timestamp = payload.timestamp
         self.createdAt = Date(timeIntervalSince1970: Double(payload.timestamp))
         self.pending = pending
+        self.failed = failed
     }
 }
 

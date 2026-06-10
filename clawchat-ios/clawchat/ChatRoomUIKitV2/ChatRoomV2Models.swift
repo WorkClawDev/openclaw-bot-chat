@@ -40,6 +40,10 @@ enum ChatRoomV2FeatureFlag {
         ProcessInfo.processInfo.arguments.contains("-chatRoomV2AutoKeyboardDuringPrepend")
     }
 
+    static var autoKeyboardShowHide: Bool {
+        ProcessInfo.processInfo.arguments.contains("-chatRoomV2AutoKeyboardShowHide")
+    }
+
     static var autoRapidSnapshotBurst: Bool {
         ProcessInfo.processInfo.arguments.contains("-chatRoomV2AutoRapidSnapshotBurst")
     }
@@ -113,13 +117,14 @@ extension ChatMessageV2 {
         message: Message,
         currentUserID: String?,
         fallbackSequence: Int,
+        preservesSourceOrder: Bool = false,
         showsSenderInfo: Bool = false,
         fallbackBotAvatarURLString: String? = nil
     ) {
         let isOutgoing = Self.normalizeIdentifier(message.senderId) == Self.normalizeIdentifier(currentUserID)
         self.init(
             id: message.id,
-            sequence: message.seq ?? fallbackSequence,
+            sequence: preservesSourceOrder ? fallbackSequence : (message.seq ?? fallbackSequence),
             isOutgoing: isOutgoing,
             blocks: Self.blocks(for: message),
             sender: isOutgoing ? nil : Self.sender(for: message, showsSenderInfo: showsSenderInfo, fallbackBotAvatarURLString: fallbackBotAvatarURLString),
@@ -230,8 +235,8 @@ extension ChatMessageV2 {
 
     private static func status(for message: Message) -> MessageStatusPresentationV2? {
         let timestamp = message.displayDate.map(statusFormatter.string(from:))
-        guard timestamp != nil || message.pending else { return nil }
-        return MessageStatusPresentationV2(timestampText: timestamp, isPending: message.pending)
+        guard timestamp != nil || message.pending || message.failed else { return nil }
+        return MessageStatusPresentationV2(timestampText: timestamp, isPending: message.pending, isFailed: message.failed)
     }
 
     private static func normalizeIdentifier(_ value: String?) -> String {
@@ -449,9 +454,16 @@ struct MessageSenderPresentationV2: Hashable {
 struct MessageStatusPresentationV2: Hashable {
     let timestampText: String?
     let isPending: Bool
+    let isFailed: Bool
+
+    init(timestampText: String?, isPending: Bool, isFailed: Bool = false) {
+        self.timestampText = timestampText
+        self.isPending = isPending
+        self.isFailed = isFailed
+    }
 
     var displayText: String {
-        let pieces = [timestampText, isPending ? "发送中" : nil].compactMap { $0 }
+        let pieces = [timestampText, isFailed ? "Failed" : (isPending ? "Sending" : nil)].compactMap { $0 }
         return pieces.joined(separator: " · ")
     }
 }

@@ -10,6 +10,7 @@ final class ChatDiagnosticsV2 {
     private(set) var restoreCount = 0
     private(set) var maxAnchorDrift: CGFloat = 0
     private(set) var keyboardInsetDuringPrependCount = 0
+    private(set) var keyboardRestoreCount = 0
 
     func recordInitialReload() {
         initialReloadCount += 1
@@ -39,7 +40,11 @@ final class ChatDiagnosticsV2 {
         keyboardInsetDuringPrependCount += 1
     }
 
+    func recordKeyboardRestore() {
+        keyboardRestoreCount += 1
+    }
+
     func summary(messageCount: Int) -> String {
-        "messages=\(messageCount); prepends=\(prependCount); appends=\(appendCount); restores=\(restoreCount); reloads=\(unexpectedReloadDataCount); drift=\(String(format: "%.2f", maxAnchorDrift)); keyboardOverlap=\(keyboardInsetDuringPrependCount)"
+        "messages=\(messageCount); prepends=\(prependCount); appends=\(appendCount); restores=\(restoreCount); reloads=\(unexpectedReloadDataCount); drift=\(String(format: "%.2f", maxAnchorDrift)); keyboardOverlap=\(keyboardInsetDuringPrependCount); keyboardRestores=\(keyboardRestoreCount)"
     }
 }

@@ -33,6 +33,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     var onInitialPositioned: (() -> Void)?
     var onPreviewImage: ((Message) -> Void)?
     var onSaveImage: ((Message) -> Void)?
+    var onTapList: (() -> Void)?
     private var isNearBottom = true
 
     init(context: ChatContext, fixture: ChatRoomV2Fixture = .textPrependStress) {
@@ -84,20 +85,12 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     func applyLiveMessages(_ messages: [Message], currentUserID: String?) {
         guard !usesFixtureData else { return }
         let nextSourceMessagesByID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        let maxRemoteSequence = messages.compactMap(\.seq).max() ?? 0
-        var optimisticSequenceOffset = 0
         let rawMessages = messages.enumerated().map { index, message in
-            let fallbackSequence: Int
-            if message.seq == nil {
-                optimisticSequenceOffset += 1
-                fallbackSequence = maxRemoteSequence + optimisticSequenceOffset
-            } else {
-                fallbackSequence = index
-            }
             return ChatMessageV2(
                 message: message,
                 currentUserID: currentUserID,
-                fallbackSequence: fallbackSequence,
+                fallbackSequence: index,
+                preservesSourceOrder: true,
                 showsSenderInfo: context.isGroup,
                 fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString
             )
@@ -173,6 +166,9 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         collectionView.delegate = self
         collectionView.register(TextMessageCollectionViewCell.self, forCellWithReuseIdentifier: TextMessageCollectionViewCell.reuseIdentifier)
         collectionView.accessibilityIdentifier = "chatRoomV2.collectionView"
+        let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(collectionViewTapped(_:)))
+        tapRecognizer.cancelsTouchesInView = false
+        collectionView.addGestureRecognizer(tapRecognizer)
 
         view.addSubview(collectionView)
         NSLayoutConstraint.activate([
@@ -344,6 +340,9 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         if ChatRoomV2FeatureFlag.autoWindowReplace {
             runAutoWindowReplace()
         }
+        if ChatRoomV2FeatureFlag.autoKeyboardShowHide {
+            runAutoKeyboardShowHide()
+        }
     }
 
     private func runAutoSameIDUpdate() {
@@ -419,6 +418,15 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         applyRenderedMessages(rendered)
     }
 
+    private func runAutoKeyboardShowHide() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.postKeyboardFrame(minY: max(0, self.view.bounds.height - 280), height: 280)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            self.postKeyboardFrame(minY: self.view.bounds.height, height: 0)
+        }
+    }
+
     private func rerenderForCurrentWidth() {
         let rawMessages = store.messages.map {
             ChatMessageV2(
@@ -450,20 +458,21 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         _ rendered: [RenderedMessageV2],
         finish: @escaping ChatMutationCoordinatorV2.Finish
     ) {
+        let normalizedRendered = ChatMessageStoreV2.normalized(rendered)
         let previousIDs = store.messages.map(\.id)
-        let nextIDs = rendered.map(\.id)
-        guard previousIDs != nextIDs || store.messages != rendered else {
+        let nextIDs = normalizedRendered.map(\.id)
+        guard previousIDs != nextIDs || store.messages != normalizedRendered else {
             finish()
             return
         }
 
-        guard !rendered.isEmpty else {
+        guard !normalizedRendered.isEmpty else {
             deleteAllRenderedMessagesInCurrentMutation(finish: finish)
             return
         }
 
         if store.count == 0 {
-            store.initialLoad(rendered)
+            store.initialLoad(normalizedRendered)
             collectionView.reloadData()
             diagnostics.recordInitialReload()
             needsInitialBottomPosition = true
@@ -474,26 +483,26 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
 
         if previousIDs == nextIDs {
-            updateRenderedMessagesInCurrentMutation(rendered, finish: finish)
+            updateRenderedMessagesInCurrentMutation(normalizedRendered, finish: finish)
             return
         }
 
         if let contiguousChange = contiguousChange(previousIDs: previousIDs, nextIDs: nextIDs) {
-            applyContiguousChangeInCurrentMutation(rendered, change: contiguousChange, finish: finish)
+            applyContiguousChangeInCurrentMutation(normalizedRendered, change: contiguousChange, finish: finish)
             return
         }
 
         if let prependCount = prependedRowCount(previousIDs: previousIDs, nextIDs: nextIDs), prependCount > 0 {
-            prependRenderedHistoryInCurrentMutation(Array(rendered.prefix(prependCount)), finish: finish)
+            prependRenderedHistoryInCurrentMutation(Array(normalizedRendered.prefix(prependCount)), finish: finish)
             return
         }
 
         if let appendStart = appendedRowStart(previousIDs: previousIDs, nextIDs: nextIDs) {
-            appendRenderedMessagesInCurrentMutation(Array(rendered[appendStart...]), finish: finish)
+            appendRenderedMessagesInCurrentMutation(Array(normalizedRendered[appendStart...]), finish: finish)
             return
         }
 
-        replaceRenderedMessagesInCurrentMutation(rendered, finish: finish)
+        replaceRenderedMessagesInCurrentMutation(normalizedRendered, finish: finish)
     }
 
     private func updateRenderedMessagesInCurrentMutation(
@@ -784,6 +793,8 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         let convertedFrame = view.convert(keyboardFrame, from: nil)
         let overlap = max(0, view.bounds.maxY - convertedFrame.minY)
         let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
+        let curveRawValue = (notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? UIView.AnimationOptions.curveEaseInOut.rawValue
+        let animationOptions = UIView.AnimationOptions(rawValue: curveRawValue << 16)
         pendingKeyboardInset = overlap
 
         mutationCoordinator.enqueue { [weak self] finish in
@@ -794,11 +805,27 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             if self.isApplyingHistoryPrepend {
                 self.diagnostics.recordKeyboardInsetDuringPrepend()
             }
-            UIView.animate(withDuration: duration) {
+            self.collectionView.layoutIfNeeded()
+            let snapshot = self.chatLayout.getContentOffsetSnapshot(from: .bottom)
+            UIView.animate(
+                withDuration: duration,
+                delay: 0,
+                options: [animationOptions, .beginFromCurrentState]
+            ) {
                 self.collectionView.contentInset.bottom = self.pendingKeyboardInset
                 self.collectionView.verticalScrollIndicatorInsets.bottom = self.pendingKeyboardInset
+                self.collectionView.layoutIfNeeded()
             } completion: { [weak self] _ in
-                self?.updateDiagnosticsLabel()
+                guard let self else {
+                    finish()
+                    return
+                }
+                if let snapshot {
+                    self.chatLayout.restoreContentOffset(with: snapshot)
+                    self.diagnostics.recordKeyboardRestore()
+                }
+                self.updateNearBottom(self.collectionView)
+                self.updateDiagnosticsLabel()
                 finish()
             }
         }
@@ -813,11 +840,15 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
         hasInjectedKeyboardDuringPrepend = true
         let keyboardHeight: CGFloat = 260
+        postKeyboardFrame(minY: max(0, view.bounds.height - keyboardHeight), height: keyboardHeight)
+    }
+
+    private func postKeyboardFrame(minY: CGFloat, height: CGFloat) {
         let keyboardFrame = CGRect(
             x: 0,
-            y: max(0, view.bounds.height - keyboardHeight),
+            y: minY,
             width: max(view.bounds.width, collectionWidth),
-            height: keyboardHeight
+            height: height
         )
         NotificationCenter.default.post(
             name: UIResponder.keyboardWillChangeFrameNotification,
@@ -827,6 +858,12 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                 UIResponder.keyboardAnimationDurationUserInfoKey: NSNumber(value: 0.0)
             ]
         )
+    }
+
+    @objc
+    private func collectionViewTapped(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        onTapList?()
     }
 }
 

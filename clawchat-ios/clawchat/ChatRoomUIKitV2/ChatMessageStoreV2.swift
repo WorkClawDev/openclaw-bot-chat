@@ -14,12 +14,12 @@ final class ChatMessageStoreV2 {
     }
 
     func initialLoad(_ messages: [RenderedMessageV2]) {
-        self.messages = Self.sortedUnique(messages)
+        self.messages = Self.normalized(messages)
     }
 
     func prependHistory(_ page: [RenderedMessageV2]) {
         guard !page.isEmpty else { return }
-        messages = Self.sortedUnique(page + messages)
+        messages = Self.normalized(page + messages)
     }
 
     func append(_ message: RenderedMessageV2) {
@@ -28,7 +28,7 @@ final class ChatMessageStoreV2 {
     }
 
     func replaceAll(_ messages: [RenderedMessageV2]) {
-        self.messages = Self.sortedUnique(messages)
+        self.messages = Self.normalized(messages)
     }
 
     func message(at indexPath: IndexPath) -> RenderedMessageV2? {
@@ -42,7 +42,7 @@ final class ChatMessageStoreV2 {
         messages.firstIndex { $0.id == messageID }
     }
 
-    private static func sortedUnique(_ messages: [RenderedMessageV2]) -> [RenderedMessageV2] {
+    static func normalized(_ messages: [RenderedMessageV2]) -> [RenderedMessageV2] {
         var seen = Set<String>()
         return messages
             .sorted { lhs, rhs in
