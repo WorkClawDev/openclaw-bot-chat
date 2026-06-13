@@ -26,6 +26,8 @@ struct ContentView: View {
                 )
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
                 ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "tasksConsole" {
+                TasksView(viewModel: TasksViewModel(fixture: .sample))
             } else if ChatRoomV2FeatureFlag.uiTestMode?.hasPrefix("ipadWorkspace") == true {
                 IpadWorkspaceView(launchSection: ChatRoomV2FeatureFlag.uiTestMode)
             } else if authManager.isAuthenticated {
@@ -113,33 +115,44 @@ private struct AdaptiveHomeShell: View {
 
 struct HomeView: View {
     @State private var selectedTab: MainTab = .home
+    @AppStorage(AppLanguageMode.storageKey) private var languageModeRawValue = AppLanguageMode.english.rawValue
 
     var body: some View {
+        let _ = languageModeRawValue
+
         ZStack {
             FrostedBackground()
 
             TabView(selection: $selectedTab) {
                 HomeDashboardView()
                 .tabItem {
-                    Label("Home", systemImage: "house.fill")
+                    Label(L10n.t("首页", "Home"), systemImage: "house.fill")
                 }
                 .tag(MainTab.home)
 
-                BotsView()
+                ContactsView()
                     .tabItem {
-                        Label("Bots", systemImage: "cpu.fill")
+                        Label(L10n.t("通讯录", "Contacts"), systemImage: "person.2.fill")
                     }
-                    .tag(MainTab.bots)
+                    .tag(MainTab.contacts)
 
-                GroupsView()
+                TasksView()
                     .tabItem {
-                        Label("Groups", systemImage: "person.3.fill")
+                        Label(L10n.t("任务", "Tasks"), systemImage: "checklist.checked")
                     }
-                    .tag(MainTab.groups)
+                    .tag(MainTab.tasks)
+
+                if DocumentsFeatureFlag.isEnabled {
+                    DocumentsView()
+                        .tabItem {
+                            Label(L10n.t("文档", "Docs"), systemImage: "doc.text.fill")
+                        }
+                        .tag(MainTab.documents)
+                }
 
                 SettingsView()
                     .tabItem {
-                        Label("Settings", systemImage: "gearshape.fill")
+                        Label(L10n.t("设置", "Settings"), systemImage: "gearshape.fill")
                     }
                     .tag(MainTab.settings)
             }
@@ -151,8 +164,9 @@ struct HomeView: View {
 
     private enum MainTab: Hashable {
         case home
-        case bots
-        case groups
+        case tasks
+        case contacts
+        case documents
         case settings
     }
 }

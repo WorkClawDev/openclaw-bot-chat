@@ -25,6 +25,7 @@ import {
   buildBotChatDirectTopic,
   buildBotChatGroupTopic,
   buildBotChatHistoryMessagesUrl,
+  createBotChatDocumentClient,
 } from '../src/runtime.ts';
 import { inspectBotChatAccount } from '../src/account-inspect.ts';
 import {
@@ -418,6 +419,68 @@ test('state path stays scoped by bot id', () => {
     buildBotChatStatePath({ stateDir: './data', botId: 'bot-z' }),
     'data/botchat-bot-z-state.json',
   );
+});
+
+test('document client creates and updates documents through bot-runtime api', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    if (init.method === 'PUT') {
+      return jsonResponse({
+        data: {
+          document: {
+            id: 'doc-1',
+            url: '/documents/doc-1',
+            title: 'Updated Plan',
+            body: '# Updated',
+            document_type: 'markdown',
+            source: 'bot',
+          },
+        },
+      });
+    }
+    return jsonResponse({
+      data: {
+        document: {
+          id: 'doc-1',
+          url: '/documents/doc-1',
+          title: 'Plan',
+          body: '# Plan',
+          document_type: 'markdown',
+          source: 'bot',
+        },
+      },
+    });
+  };
+
+  try {
+    const client = createBotChatDocumentClient({ backendUrl: 'http://backend/', botKey: 'key' });
+    const created = await client.createDocument({
+      title: 'Plan',
+      body: '# Plan',
+      conversation_id: 'chat/dm/user/u1/bot/b1',
+      send_url: true,
+    });
+    const updated = await client.updateDocument('doc-1', { title: 'Updated Plan', body: '# Updated' });
+
+    assert.equal(created.url, '/documents/doc-1');
+    assert.equal(updated.title, 'Updated Plan');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/documents');
+  assert.equal(fetchCalls[0].init.headers['X-Bot-Key'], 'key');
+  assert.deepEqual(JSON.parse(fetchCalls[0].init.body), {
+    document_type: 'markdown',
+    title: 'Plan',
+    body: '# Plan',
+    conversation_id: 'chat/dm/user/u1/bot/b1',
+    send_url: true,
+  });
+  assert.equal(fetchCalls[1].url, 'http://backend/api/v1/bot-runtime/documents/doc-1');
+  assert.equal(fetchCalls[1].init.method, 'PUT');
 });
 
 test('task polling does not claim work without an executor hook', async () => {

@@ -40,6 +40,34 @@ export type BotChatTask = {
 };
 
 export type BotChatTaskCreatePayload = Record<string, unknown>;
+export type BotChatDocumentCreatePayload = {
+  title: string;
+  body: string;
+  summary?: string;
+  conversation_id?: string;
+  send_url?: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+export type BotChatDocumentUpdatePayload = {
+  title?: string;
+  body?: string;
+  summary?: string;
+  conversation_id?: string;
+  send_url?: boolean;
+};
+
+export type BotChatDocument = {
+  id: string;
+  url: string;
+  title: string;
+  summary?: string;
+  body?: string;
+  document_type?: string;
+  source?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+};
 
 export type BotChatTaskExecutionResult =
   | string
@@ -57,13 +85,20 @@ export type BotChatTaskExecutionResult =
   | void;
 
 export interface BotChatTaskExecutionContext {
-  progress(progress: number, note?: string): Promise<BotChatTask | undefined>;
-  progress(note: string, progress?: number): Promise<BotChatTask | undefined>;
-  createTask(payload: BotChatTaskCreatePayload): Promise<BotChatTask>;
+	progress(progress: number, note?: string): Promise<BotChatTask | undefined>;
+	progress(note: string, progress?: number): Promise<BotChatTask | undefined>;
+	createTask(payload: BotChatTaskCreatePayload): Promise<BotChatTask>;
+	createDocument(payload: BotChatDocumentCreatePayload): Promise<BotChatDocument>;
+	updateDocument(documentId: string, payload: BotChatDocumentUpdatePayload): Promise<BotChatDocument>;
 }
 
 export type BotChatTaskClient = {
-  createTask(payload: BotChatTaskCreatePayload): Promise<BotChatTask>;
+	createTask(payload: BotChatTaskCreatePayload): Promise<BotChatTask>;
+};
+
+export type BotChatDocumentClient = {
+	createDocument(payload: BotChatDocumentCreatePayload): Promise<BotChatDocument>;
+	updateDocument(documentId: string, payload: BotChatDocumentUpdatePayload): Promise<BotChatDocument>;
 };
 
 export interface RuntimeHooks {
@@ -1141,14 +1176,28 @@ export async function runBotChatTaskPollOnceForTest(params: {
 }
 
 export function createBotChatTaskClient(params: {
-  backendUrl: string;
-  botKey: string;
+	backendUrl: string;
+	botKey: string;
 }): BotChatTaskClient {
   return {
     createTask(payload) {
       return createBotChatTask(params.backendUrl, params.botKey, payload);
     },
-  };
+	};
+}
+
+export function createBotChatDocumentClient(params: {
+	backendUrl: string;
+	botKey: string;
+}): BotChatDocumentClient {
+	return {
+		createDocument(payload) {
+			return createBotChatDocument(params.backendUrl, params.botKey, payload);
+		},
+		updateDocument(documentId, payload) {
+			return updateBotChatDocument(params.backendUrl, params.botKey, documentId, payload);
+		},
+	};
 }
 
 async function pollBotChatTasksOnce(params: {
@@ -1377,7 +1426,7 @@ function createBotChatTaskExecutionContext(params: {
   getActiveTask: () => BotChatTask;
   updateActiveTask: (task: BotChatTask | undefined) => void;
 }): BotChatTaskExecutionContext {
-  return {
+	return {
     async progress(first: number | string, second?: number | string) {
       const body = normalizeTaskProgressBody(first, second);
       const task = await postBotChatTaskTransition(
@@ -1390,13 +1439,81 @@ function createBotChatTaskExecutionContext(params: {
       params.updateActiveTask(task);
       return task;
     },
-    createTask(payload) {
-      return createBotChatTask(params.backendUrl, params.botKey, {
-        parent_task_id: params.getActiveTask().id,
-        ...payload,
-      });
-    },
-  };
+		createTask(payload) {
+			return createBotChatTask(params.backendUrl, params.botKey, {
+				parent_task_id: params.getActiveTask().id,
+				...payload,
+			});
+		},
+		createDocument(payload) {
+			return createBotChatDocument(params.backendUrl, params.botKey, payload);
+		},
+		updateDocument(documentId, payload) {
+			return updateBotChatDocument(params.backendUrl, params.botKey, documentId, payload);
+		},
+	};
+}
+
+async function createBotChatDocument(
+	backendUrl: string,
+	botKey: string,
+	payload: BotChatDocumentCreatePayload,
+): Promise<BotChatDocument> {
+	const response = await fetch(buildBotChatRuntimeDocumentUrl(backendUrl), {
+		method: "POST",
+		headers: {
+			Accept: "application/json",
+			"Content-Type": "application/json",
+			"X-Bot-Key": botKey,
+		},
+		body: JSON.stringify({
+			document_type: "markdown",
+			...payload,
+		}),
+	});
+	if (!response.ok) {
+		throw new Error(`document create failed: ${response.status}`);
+	}
+	const json = (await response.json()) as { data?: { document?: unknown } };
+	const document = toBotChatDocument(json.data?.document);
+	if (!document) {
+		throw new Error("document create returned an invalid document");
+	}
+	return document;
+}
+
+async function updateBotChatDocument(
+	backendUrl: string,
+	botKey: string,
+	documentId: string,
+	payload: BotChatDocumentUpdatePayload,
+): Promise<BotChatDocument> {
+	const response = await fetch(buildBotChatRuntimeDocumentUrl(backendUrl, documentId), {
+		method: "PUT",
+		headers: {
+			Accept: "application/json",
+			"Content-Type": "application/json",
+			"X-Bot-Key": botKey,
+		},
+		body: JSON.stringify(payload),
+	});
+	if (!response.ok) {
+		throw new Error(`document update failed: ${response.status}`);
+	}
+	const json = (await response.json()) as { data?: { document?: unknown } };
+	const document = toBotChatDocument(json.data?.document);
+	if (!document) {
+		throw new Error("document update returned an invalid document");
+	}
+	return document;
+}
+
+function buildBotChatRuntimeDocumentUrl(backendUrl: string, documentId?: string): string {
+	const base = `${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/documents`;
+	if (!documentId) {
+		return base;
+	}
+	return `${base}/${encodeURIComponent(documentId)}`;
 }
 
 function normalizeTaskProgressBody(
@@ -1473,6 +1590,29 @@ function toBotChatTask(value: unknown): BotChatTask | undefined {
     latest_status_note: readString(value.latest_status_note) ?? null,
     progress: readNumber(value.progress),
   };
+}
+
+function toBotChatDocument(value: unknown): BotChatDocument | undefined {
+	if (!isRecord(value)) {
+		return undefined;
+	}
+	const id = readString(value.id);
+	const url = readString(value.url);
+	const title = readString(value.title);
+	if (!id || !url || !title) {
+		return undefined;
+	}
+	return {
+		...value,
+		id,
+		url,
+		title,
+		summary: readString(value.summary),
+		body: readString(value.body),
+		document_type: readString(value.document_type),
+		source: readString(value.source),
+		updated_at: readString(value.updated_at),
+	};
 }
 
 function summarizeTaskExecutionResult(result: BotChatTaskExecutionResult): string | undefined {

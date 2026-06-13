@@ -82,6 +82,7 @@ export function normalizeApiMessage(raw: MessageApiResponse, conversationId?: st
     seq: raw.seq,
     timestamp: raw.timestamp,
     created_at: raw.created_at || timestampToIso(raw.timestamp),
+    metadata: raw.metadata,
   }
 }
 
@@ -115,6 +116,7 @@ export function normalizeRealtimeMessage(payload: RealtimeMessagePayload, fallba
     seq: payload.seq,
     timestamp: payload.timestamp,
     created_at: payload.created_at || timestampToIso(payload.timestamp),
+    metadata: payload.metadata,
   }
 }
 

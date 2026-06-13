@@ -24,6 +24,8 @@ struct ChatRoomV2LiveBridgeFixtureView: View {
             onInitialPositioned: scheduleLiveBridgePrepend,
             onPreviewImage: { _ in },
             onSaveImage: { _ in },
+            onOpenDocument: { _ in },
+            onContinueDocument: { _ in },
             onTapList: {}
         )
         .accessibilityIdentifier("chatRoomV2.liveBridgeFixture")

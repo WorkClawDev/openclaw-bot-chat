@@ -91,6 +91,23 @@ type BotKey struct {
 
 func (BotKey) TableName() string { return "bot_keys" }
 
+// --- BotBindingToken ---
+
+type BotBindingToken struct {
+	ID        uuid.UUID  `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	BotID     uuid.UUID  `gorm:"type:uuid;not null;index"`
+	OwnerID   uuid.UUID  `gorm:"type:uuid;not null;index"`
+	Prefix    string     `gorm:"type:varchar(32);not null;uniqueIndex"`
+	TokenHash string     `gorm:"type:varchar(255);not null"`
+	ExpiresAt time.Time  `gorm:"not null;index"`
+	UsedAt    *time.Time `gorm:"index"`
+	CreatedAt time.Time  `gorm:"not null;default:now()"`
+	Bot       *Bot       `gorm:"foreignKey:BotID"`
+	Owner     *User      `gorm:"foreignKey:OwnerID"`
+}
+
+func (BotBindingToken) TableName() string { return "bot_binding_tokens" }
+
 // --- Message ---
 
 type SenderType string
@@ -173,6 +190,50 @@ type Asset struct {
 }
 
 func (Asset) TableName() string { return "assets" }
+
+// --- Document ---
+
+type DocumentType string
+
+const (
+	DocumentTypeMarkdown DocumentType = "markdown"
+)
+
+type DocumentSource string
+
+const (
+	DocumentSourceUser DocumentSource = "user"
+	DocumentSourceBot  DocumentSource = "bot"
+)
+
+type DocumentStatus string
+
+const (
+	DocumentStatusActive   DocumentStatus = "active"
+	DocumentStatusArchived DocumentStatus = "archived"
+)
+
+type Document struct {
+	ID                   uuid.UUID      `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	OwnerID              uuid.UUID      `gorm:"type:uuid;not null;index"`
+	Title                string         `gorm:"type:varchar(255);not null"`
+	Summary              string         `gorm:"type:text"`
+	Body                 string         `gorm:"type:text"`
+	DocumentType         DocumentType   `gorm:"type:varchar(32);not null;default:'markdown';index"`
+	Source               DocumentSource `gorm:"type:varchar(32);not null;default:'user';index"`
+	Status               DocumentStatus `gorm:"type:varchar(32);not null;default:'active';index"`
+	SourceBotID          *uuid.UUID     `gorm:"type:uuid;index"`
+	SourceConversationID *string        `gorm:"type:varchar(256);index"`
+	SourceMessageID      *uuid.UUID     `gorm:"type:uuid"`
+	Metadata             JSONMap        `gorm:"type:jsonb"`
+	CreatedAt            time.Time      `gorm:"not null;default:now();index"`
+	UpdatedAt            time.Time      `gorm:"not null;default:now();index"`
+	DeletedAt            gorm.DeletedAt `gorm:"index"`
+	Owner                *User          `gorm:"foreignKey:OwnerID"`
+	SourceBot            *Bot           `gorm:"foreignKey:SourceBotID"`
+}
+
+func (Document) TableName() string { return "documents" }
 
 // --- Group ---
 

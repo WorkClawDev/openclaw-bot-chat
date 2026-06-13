@@ -16,26 +16,31 @@ import (
 )
 
 var (
-	ErrBotNotFound    = errors.New("bot not found")
-	ErrBotKeyNotFound = errors.New("bot key not found")
-	ErrNotBotOwner    = errors.New("you are not the owner of this bot")
-	ErrKeyExpired     = errors.New("this key has expired")
-	ErrKeyRevoked     = errors.New("this key has been revoked")
+	ErrBotNotFound         = errors.New("bot not found")
+	ErrBotKeyNotFound      = errors.New("bot key not found")
+	ErrNotBotOwner         = errors.New("you are not the owner of this bot")
+	ErrKeyExpired          = errors.New("this key has expired")
+	ErrKeyRevoked          = errors.New("this key has been revoked")
+	ErrBindingTokenInvalid = errors.New("binding token is invalid")
+	ErrBindingTokenExpired = errors.New("binding token is expired")
+	ErrBindingTokenUsed    = errors.New("binding token has already been used")
 )
 
 // BotService handles bot operations
 type BotService struct {
-	botRepo   *repository.BotRepository
-	keyRepo   *repository.BotKeyRepository
-	auditRepo *repository.AuditLogRepository
+	botRepo          *repository.BotRepository
+	keyRepo          *repository.BotKeyRepository
+	bindingTokenRepo *repository.BotBindingTokenRepository
+	auditRepo        *repository.AuditLogRepository
 }
 
 // NewBotService creates a new bot service
-func NewBotService(botRepo *repository.BotRepository, keyRepo *repository.BotKeyRepository, auditRepo *repository.AuditLogRepository) *BotService {
+func NewBotService(botRepo *repository.BotRepository, keyRepo *repository.BotKeyRepository, bindingTokenRepo *repository.BotBindingTokenRepository, auditRepo *repository.AuditLogRepository) *BotService {
 	return &BotService{
-		botRepo:   botRepo,
-		keyRepo:   keyRepo,
-		auditRepo: auditRepo,
+		botRepo:          botRepo,
+		keyRepo:          keyRepo,
+		bindingTokenRepo: bindingTokenRepo,
+		auditRepo:        auditRepo,
 	}
 }
 
@@ -331,3 +336,112 @@ func generateBotKey() string {
 }
 
 func strPtr(s string) *string { return &s }
+
+// --- Bot Bindings ---
+
+const defaultBotBindingTTL = 15 * time.Minute
+
+type BotBindingTokenResponse struct {
+	ID          uuid.UUID  `json:"id"`
+	Token       string     `json:"token"`
+	TokenPrefix string     `json:"token_prefix"`
+	Bot         *model.Bot `json:"bot"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+}
+
+func (s *BotService) CreateBindingToken(ctx context.Context, botID, ownerID uuid.UUID) (*BotBindingTokenResponse, error) {
+	bot, err := s.botRepo.GetByIDAndOwner(ctx, botID, ownerID)
+	if err != nil {
+		return nil, ErrBotNotFound
+	}
+
+	rawToken := generateBotBindingToken()
+	prefix := rawToken[:14]
+	hashedToken, err := password.Hash(rawToken)
+	if err != nil {
+		return nil, err
+	}
+
+	expiresAt := time.Now().Add(defaultBotBindingTTL)
+	token := &model.BotBindingToken{
+		BotID:     botID,
+		OwnerID:   ownerID,
+		Prefix:    prefix,
+		TokenHash: hashedToken,
+		ExpiresAt: expiresAt,
+	}
+	if err := s.bindingTokenRepo.Create(ctx, token); err != nil {
+		return nil, err
+	}
+
+	return &BotBindingTokenResponse{
+		ID:          token.ID,
+		Token:       rawToken,
+		TokenPrefix: prefix,
+		Bot:         bot,
+		ExpiresAt:   expiresAt,
+	}, nil
+}
+
+func (s *BotService) PreviewBindingToken(ctx context.Context, rawToken string, userID uuid.UUID) (*model.Bot, *model.BotBindingToken, error) {
+	token, err := s.validateBindingToken(ctx, rawToken, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if token.Bot == nil {
+		bot, err := s.botRepo.GetByID(ctx, token.BotID)
+		if err != nil {
+			return nil, nil, ErrBotNotFound
+		}
+		token.Bot = bot
+	}
+	return token.Bot, token, nil
+}
+
+func (s *BotService) ConfirmBindingToken(ctx context.Context, rawToken string, userID uuid.UUID) (*model.Bot, error) {
+	bot, token, err := s.PreviewBindingToken(ctx, rawToken, userID)
+	if err != nil {
+		return nil, err
+	}
+	used, err := s.bindingTokenRepo.MarkUsed(ctx, token.Prefix, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if !used {
+		return nil, ErrBindingTokenUsed
+	}
+	return bot, nil
+}
+
+func (s *BotService) validateBindingToken(ctx context.Context, rawToken string, userID uuid.UUID) (*model.BotBindingToken, error) {
+	rawToken = strings.TrimSpace(rawToken)
+	if len(rawToken) < 14 {
+		return nil, ErrBindingTokenInvalid
+	}
+	prefix := rawToken[:14]
+	token, err := s.bindingTokenRepo.GetByPrefix(ctx, prefix)
+	if err != nil {
+		return nil, ErrBindingTokenInvalid
+	}
+	if token.OwnerID != userID {
+		return nil, ErrBindingTokenInvalid
+	}
+	if token.UsedAt != nil {
+		return nil, ErrBindingTokenUsed
+	}
+	if time.Now().After(token.ExpiresAt) {
+		return nil, ErrBindingTokenExpired
+	}
+	if !password.Check(rawToken, token.TokenHash) {
+		return nil, ErrBindingTokenInvalid
+	}
+	return token, nil
+}
+
+func generateBotBindingToken() string {
+	bytes := make([]byte, 24)
+	_, _ = rand.Read(bytes)
+	encoded := base64.RawURLEncoding.EncodeToString(bytes)
+	shortID := uuid.NewString()[:8]
+	return fmt.Sprintf("ocbb_%s_%s", encoded, shortID)
+}

@@ -33,6 +33,8 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     var onInitialPositioned: (() -> Void)?
     var onPreviewImage: ((Message) -> Void)?
     var onSaveImage: ((Message) -> Void)?
+    var onOpenDocument: ((UUID) -> Void)?
+    var onContinueDocument: ((DocumentLinkPreview) -> Void)?
     var onTapList: (() -> Void)?
     private var isNearBottom = true
 
@@ -890,6 +892,12 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDataSource {
         textCell.onImageTap = { [weak self] blockID in
             self?.previewImage(messageID: message.id, blockID: blockID)
         }
+        textCell.onDocumentTap = { [weak self] documentID in
+            self?.onOpenDocument?(documentID)
+        }
+        textCell.onDocumentContinueTap = { [weak self] preview in
+            self?.onContinueDocument?(preview)
+        }
         return textCell
     }
 }
@@ -928,16 +936,25 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDelegate {
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        guard let message = store.message(at: indexPath),
-              message.blocks.contains(where: { block in
-                  if case .image = block {
-                      return true
-                  }
-                  return false
-              })
-        else {
+        guard let message = store.message(at: indexPath) else {
             return
         }
+        if let document = message.blocks.compactMap({ block -> DocumentLinkBlockContentV2? in
+            if case .document(let document) = block {
+                return document
+            }
+            return nil
+        }).first {
+            onOpenDocument?(document.preview.id)
+            return
+        }
+
+        guard message.blocks.contains(where: { block in
+            if case .image = block {
+                return true
+            }
+            return false
+        }) else { return }
         previewImage(messageID: message.id)
     }
 

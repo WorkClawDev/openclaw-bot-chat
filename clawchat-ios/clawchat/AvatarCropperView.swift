@@ -45,7 +45,7 @@ struct AvatarCropperView: View {
                                 lastOffset = .zero
                             }
                         } label: {
-                            Text("重置")
+                            Text(L10n.t("重置", "Reset"))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Color.rcmsAccent)
                         }
@@ -60,10 +60,10 @@ struct AvatarCropperView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("取消", action: onCancel)
+                        Button(L10n.t("取消", "Cancel"), action: onCancel)
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("使用") {
+                        Button(L10n.t("使用", "Use")) {
                             onConfirm(renderCroppedImage(cropSide: cropSide))
                         }
                         .fontWeight(.semibold)

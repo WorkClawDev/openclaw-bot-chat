@@ -170,6 +170,14 @@ extension ChatMessageV2 {
 
         let body = message.content.body?.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = body?.nonEmpty ?? message.content.name?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? message.content.type
+        if let document = DocumentLinkPreview.first(in: text, metadata: message.content.meta) {
+            return [
+                .document(DocumentLinkBlockContentV2(
+                    id: "\(message.id)-document-0",
+                    preview: document
+                ))
+            ]
+        }
         return MessageMarkdownBlockParserV2.blocks(messageID: message.id, text: text)
     }
 
@@ -263,6 +271,7 @@ enum MessageBlockContentV2: Hashable {
     case table(TableBlockContentV2)
     case image(ImageBlockContentV2)
     case audio(AudioBlockContentV2)
+    case document(DocumentLinkBlockContentV2)
 
     var id: String {
         switch self {
@@ -276,6 +285,8 @@ enum MessageBlockContentV2: Hashable {
             block.id
         case .audio(let block):
             block.id
+        case .document(let block):
+            block.id
         }
     }
 
@@ -287,7 +298,7 @@ enum MessageBlockContentV2: Hashable {
             block.code
         case .table(let block):
             block.copyableText
-        case .image, .audio:
+        case .image, .audio, .document:
             nil
         }
     }
@@ -427,6 +438,11 @@ struct AudioBlockContentV2: Hashable {
     }
 }
 
+struct DocumentLinkBlockContentV2: Hashable {
+    let id: String
+    let preview: DocumentLinkPreview
+}
+
 extension MessageContent {
     var mediaCacheSignatureV2: String {
         [
@@ -463,7 +479,7 @@ struct MessageStatusPresentationV2: Hashable {
     }
 
     var displayText: String {
-        let pieces = [timestampText, isFailed ? "Failed" : (isPending ? "Sending" : nil)].compactMap { $0 }
+        let pieces = [timestampText, isFailed ? L10n.t("发送失败", "Failed") : (isPending ? L10n.t("发送中", "Sending") : nil)].compactMap { $0 }
         return pieces.joined(separator: " · ")
     }
 }

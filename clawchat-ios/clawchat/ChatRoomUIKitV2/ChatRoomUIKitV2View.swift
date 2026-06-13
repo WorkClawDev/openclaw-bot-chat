@@ -26,6 +26,8 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
     let onInitialPositioned: () -> Void
     let onPreviewImage: (Message) -> Void
     let onSaveImage: (Message) -> Void
+    let onOpenDocument: (UUID) -> Void
+    let onContinueDocument: (DocumentLinkPreview) -> Void
     let onTapList: () -> Void
 
     func makeUIViewController(context: Context) -> ChatRoomUIKitV2ViewController {
@@ -38,6 +40,8 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
         viewController.onInitialPositioned = onInitialPositioned
         viewController.onPreviewImage = onPreviewImage
         viewController.onSaveImage = onSaveImage
+        viewController.onOpenDocument = onOpenDocument
+        viewController.onContinueDocument = onContinueDocument
         viewController.onTapList = onTapList
         viewController.applyScrollCommand(scrollCommand)
         return viewController
@@ -52,6 +56,8 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
         viewController.onInitialPositioned = onInitialPositioned
         viewController.onPreviewImage = onPreviewImage
         viewController.onSaveImage = onSaveImage
+        viewController.onOpenDocument = onOpenDocument
+        viewController.onContinueDocument = onContinueDocument
         viewController.onTapList = onTapList
         viewController.applyLiveMessages(messages, currentUserID: currentUserID)
         viewController.applyScrollCommand(scrollCommand)

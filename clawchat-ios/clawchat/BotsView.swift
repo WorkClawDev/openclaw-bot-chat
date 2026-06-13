@@ -154,7 +154,7 @@ struct BotsView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle("Bots")
+            .navigationTitle(L10n.t("机器人", "Bots"))
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
@@ -181,7 +181,7 @@ struct BotsView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(Color.rcmsTextSecondary)
-            TextField("搜索机器人", text: $searchText)
+            TextField(L10n.t("搜索机器人", "Search bots"), text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled(true)
                 .foregroundStyle(Color.rcmsTextPrimary)
@@ -205,9 +205,9 @@ struct BotsView: View {
                         )
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("机器人头像")
+                            Text(L10n.t("机器人头像", "Bot avatar"))
                                 .font(.subheadline.weight(.semibold))
-                            Text(isUploadingAvatar ? "上传中" : "可拖动和缩放后上传")
+                            Text(isUploadingAvatar ? L10n.t("上传中", "Uploading") : L10n.t("上传前可拖动和缩放", "Drag and zoom before uploading"))
                                 .font(.caption)
                                 .foregroundStyle(Color.rcmsTextSecondary)
                         }
@@ -227,9 +227,10 @@ struct BotsView: View {
                             }
                         }
                         .disabled(isUploadingAvatar)
+                        .accessibilityLabel(L10n.t("选择机器人头像", "Choose bot avatar"))
                     }
 
-                    TextField("头像 URL", text: $newAvatarURL)
+                    TextField(L10n.t("头像链接", "Avatar URL"), text: $newAvatarURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
 
@@ -240,19 +241,19 @@ struct BotsView: View {
                     }
                 }
 
-                TextField("Bot name", text: $newName)
-                TextField("Description", text: $newDescription)
+                TextField(L10n.t("机器人名称", "Bot name"), text: $newName)
+                TextField(L10n.t("描述", "Description"), text: $newDescription)
             }
-            .navigationTitle("创建机器人")
+            .navigationTitle(L10n.t("创建机器人", "Create bot"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(L10n.t("取消", "Cancel")) {
                         resetCreateForm()
                         showingCreate = false
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
+                    Button(L10n.t("创建", "Create")) {
                         viewModel.createBot(name: newName, description: newDescription, avatarURL: normalizedNewAvatarURL) {
                             resetCreateForm()
                             showingCreate = false
@@ -264,7 +265,7 @@ struct BotsView: View {
             .sheet(item: $pendingNewAvatarImage) { pending in
                 AvatarCropperView(
                     image: pending.image,
-                    title: "调整机器人头像",
+                    title: L10n.t("调整机器人头像", "Adjust bot avatar"),
                     onCancel: {
                         pendingNewAvatarImage = nil
                     },

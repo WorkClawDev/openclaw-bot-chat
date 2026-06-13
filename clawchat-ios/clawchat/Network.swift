@@ -12,11 +12,35 @@ class APIClient {
     private let remoteDataSession: URLSession
 
     init(session: URLSession = APIClient.makeAPISession(),
-         baseURL: URL = URL(string: "https://clawchat.changer.site")!,
+         baseURL: URL = APIClient.defaultBaseURL,
          remoteDataSession: URLSession = APIClient.makeRemoteDataSession()) {
         self.session = session
         self.baseURL = baseURL
         self.remoteDataSession = remoteDataSession
+    }
+
+    private static var defaultBaseURL: URL {
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "-openclawApiBaseURL"),
+           arguments.indices.contains(arguments.index(after: index)) {
+            let rawValue = arguments[arguments.index(after: index)].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rawValue.isEmpty, let url = URL(string: rawValue) {
+                return url
+            }
+        }
+        if let argument = arguments.first(where: { $0.hasPrefix("OPENCLAW_API_BASE_URL=") }) {
+            let rawValue = String(argument.dropFirst("OPENCLAW_API_BASE_URL=".count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rawValue.isEmpty, let url = URL(string: rawValue) {
+                return url
+            }
+        }
+        let rawValue = ProcessInfo.processInfo.environment["OPENCLAW_API_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let rawValue, !rawValue.isEmpty, let url = URL(string: rawValue) {
+            return url
+        }
+        return URL(string: "https://clawchat.changer.site")!
     }
 
     private static func makeAPISession() -> URLSession {
@@ -113,6 +137,10 @@ class APIClient {
         request("/api/v1/bots")
     }
 
+    func fetchBotsValue() async throws -> [Bot] {
+        try await requestValue("/api/v1/bots")
+    }
+
     func createBot(name: String, description: String?, avatarURL: String?) -> AnyPublisher<Bot, Error> {
         let payload = BotMutationRequest(
             name: name,
@@ -146,6 +174,22 @@ class APIClient {
 
     func revokeBotKey(botID: UUID, keyID: UUID) -> AnyPublisher<EmptyResponse, Error> {
         request("/api/v1/bots/\(normalized(botID))/keys/\(normalized(keyID))", method: "DELETE")
+    }
+
+    func createBotBinding(botID: UUID) -> AnyPublisher<BotBindingResponse, Error> {
+        request("/api/v1/bots/\(normalized(botID))/bindings", method: "POST")
+    }
+
+    func previewBotBinding(token: String) -> AnyPublisher<BotBindingResponse, Error> {
+        let encodedToken = token.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? token
+        return request("/api/v1/bot-bindings/preview?token=\(encodedToken)")
+    }
+
+    func confirmBotBinding(token: String, backendURL: URL? = nil) -> AnyPublisher<BotBindingResponse, Error> {
+        if let backendURL {
+            return APIClient(baseURL: backendURL).confirmBotBinding(token: token)
+        }
+        return encodedRequest("/api/v1/bot-bindings/confirm", method: "POST", body: ConfirmBotBindingRequest(token: token))
     }
 
     // MARK: - Groups
@@ -182,6 +226,81 @@ class APIClient {
         )
     }
 
+    // MARK: - Tasks
+
+    func fetchTasks() async throws -> [DispatchTask] {
+        try await requestValue("/api/v1/tasks")
+    }
+
+    func fetchTask(id: UUID) async throws -> DispatchTask {
+        try await requestValue("/api/v1/tasks/\(normalized(id))")
+    }
+
+    func createTask(_ mutation: DispatchTaskMutation) async throws -> DispatchTask {
+        try await requestValue(
+            "/api/v1/tasks",
+            method: "POST",
+            body: mutation.jsonData()
+        )
+    }
+
+    func updateTask(id: UUID, _ mutation: DispatchTaskMutation) async throws -> DispatchTask {
+        try await requestValue(
+            "/api/v1/tasks/\(normalized(id))",
+            method: "PUT",
+            body: mutation.jsonData()
+        )
+    }
+
+    func dispatchTask(id: UUID, _ input: DispatchTaskActionInput) async throws -> DispatchTask {
+        try await taskAction(id: id, action: "dispatch", input: input)
+    }
+
+    func acceptTask(id: UUID, _ input: DispatchTaskActionInput) async throws -> DispatchTask {
+        try await taskAction(id: id, action: "accept", input: input)
+    }
+
+    func rejectTask(id: UUID, _ input: DispatchTaskActionInput) async throws -> DispatchTask {
+        try await taskAction(id: id, action: "reject", input: input)
+    }
+
+    func cancelTask(id: UUID, _ input: DispatchTaskActionInput) async throws -> DispatchTask {
+        try await taskAction(id: id, action: "cancel", input: input)
+    }
+
+    func retryTask(id: UUID, _ input: DispatchTaskActionInput) async throws -> DispatchTask {
+        try await taskAction(id: id, action: "retry", input: input)
+    }
+
+    func reassignTask(id: UUID, assigneeBotId: UUID?, latestStatusNote: String?) async throws -> DispatchTask {
+        var body: [String: Any] = [
+            "assignee_bot_id": assigneeBotId?.uuidString.lowercased() ?? NSNull()
+        ]
+        if let latestStatusNote, !latestStatusNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["latest_status_note"] = latestStatusNote
+        }
+        return try await requestValue(
+            "/api/v1/tasks/\(normalized(id))/reassign",
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+    }
+
+    func deleteTask(id: UUID) async throws {
+        let _: EmptyResponse = try await requestValue(
+            "/api/v1/tasks/\(normalized(id))",
+            method: "DELETE"
+        )
+    }
+
+    private func taskAction(id: UUID, action: String, input: DispatchTaskActionInput) async throws -> DispatchTask {
+        try await requestValue(
+            "/api/v1/tasks/\(normalized(id))/\(action)",
+            method: "POST",
+            body: input.jsonData()
+        )
+    }
+
     // MARK: - Conversations & Messages
 
     func fetchConversations() -> AnyPublisher<[Conversation], Error> {
@@ -198,6 +317,53 @@ class APIClient {
             beforeSeq: beforeSeq,
             afterSeq: afterSeq
         ))
+    }
+
+    // MARK: - Documents
+
+    func fetchDocuments(limit: Int = 100) async throws -> [DocumentObject] {
+        try await requestValue("/api/v1/documents?limit=\(max(1, min(limit, 200)))")
+    }
+
+    func fetchDocument(id: UUID) async throws -> DocumentObject {
+        try await requestValue("/api/v1/documents/\(normalized(id))")
+    }
+
+    func createDocument(title: String, body: String, summary: String? = nil) async throws -> DocumentObject {
+        try await encodedRequestValue(
+            "/api/v1/documents",
+            method: "POST",
+            body: DocumentMutationRequest(
+                title: title,
+                body: body,
+                summary: summary,
+                documentType: "markdown",
+                source: "user",
+                conversationId: nil
+            )
+        )
+    }
+
+    func updateDocument(id: UUID, title: String, body: String, summary: String? = nil) async throws -> DocumentObject {
+        try await encodedRequestValue(
+            "/api/v1/documents/\(normalized(id))",
+            method: "PUT",
+            body: DocumentMutationRequest(
+                title: title,
+                body: body,
+                summary: summary,
+                documentType: nil,
+                source: nil,
+                conversationId: nil
+            )
+        )
+    }
+
+    func archiveDocument(id: UUID) async throws {
+        let _: EmptyResponse = try await requestValue(
+            "/api/v1/documents/\(normalized(id))",
+            method: "DELETE"
+        )
     }
 
     // MARK: - Realtime
@@ -946,4 +1112,8 @@ private struct AddBotToGroupRequest: Codable {
     enum CodingKeys: String, CodingKey {
         case botId = "bot_id"
     }
+}
+
+private struct ConfirmBotBindingRequest: Codable {
+    let token: String
 }

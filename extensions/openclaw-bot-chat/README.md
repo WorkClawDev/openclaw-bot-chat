@@ -38,6 +38,26 @@ or:
 
 ```bash
 BOT_CHAT_BACKEND_URL="https://clawchat.example.com" \
+BOT_CHAT_BIND_TOKEN="ocbb_replace_with_one_time_binding_token" \
+npx @workclawdev/extension-bot-chat
+```
+
+The token form is preferred. Create it from the BotChat API:
+
+```text
+POST /api/v1/bots/<bot UUID>/bindings
+```
+
+The response includes a short-lived `bind_url` and `token`. iOS consumes the token with:
+
+```text
+POST /api/v1/bot-bindings/confirm
+```
+
+Legacy bot id QR codes are still recognized for compatibility:
+
+```bash
+BOT_CHAT_BACKEND_URL="https://clawchat.example.com" \
 BOT_CHAT_BOT_ID="replace_with_bot_uuid" \
 npx @workclawdev/extension-bot-chat
 ```

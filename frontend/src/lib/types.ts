@@ -128,6 +128,7 @@ export interface Message {
   seq?: number
   timestamp?: number
   created_at?: string
+  metadata?: Record<string, unknown>
   pending?: boolean
   failed?: boolean
 }
@@ -285,6 +286,27 @@ export interface Task {
   updated_at: string
 }
 
+export type DocumentSource = 'user' | 'bot'
+export type DocumentStatus = 'active' | 'archived'
+
+export interface DocumentObject {
+  id: string
+  owner_id: string
+  url: string
+  title: string
+  summary: string
+  body?: string
+  document_type: 'markdown'
+  source: DocumentSource
+  status: DocumentStatus
+  source_bot_id?: string | null
+  source_conversation_id?: string | null
+  source_message_id?: string | null
+  metadata?: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
 export interface MessageApiResponse {
   id: string
   db_id?: number
@@ -298,6 +320,7 @@ export interface MessageApiResponse {
   seq?: number
   created_at?: string
   timestamp?: number
+  metadata?: Record<string, unknown>
 }
 
 export interface ConversationApiResponse {
@@ -357,6 +380,7 @@ export interface RealtimeMessagePayload {
     id: string
   }
   content: MessageContent
+  metadata?: Record<string, unknown>
 }
 
 export interface AuthTokens {

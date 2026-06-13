@@ -70,6 +70,25 @@ CREATE INDEX idx_bot_keys_prefix ON bot_keys(key_prefix);
 CREATE INDEX idx_bot_keys_active ON bot_keys(is_active);
 
 -- ============================================================
+-- Table: bot_binding_tokens
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bot_binding_tokens (
+    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    bot_id          UUID        NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+    owner_id        UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    prefix          VARCHAR(32) NOT NULL UNIQUE,
+    token_hash      VARCHAR(255) NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    used_at         TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_bot_binding_tokens_bot_id ON bot_binding_tokens(bot_id);
+CREATE INDEX idx_bot_binding_tokens_owner_id ON bot_binding_tokens(owner_id);
+CREATE INDEX idx_bot_binding_tokens_expires_at ON bot_binding_tokens(expires_at);
+CREATE INDEX idx_bot_binding_tokens_used_at ON bot_binding_tokens(used_at);
+
+-- ============================================================
 -- Table: messages
 -- ============================================================
 CREATE TABLE IF NOT EXISTS messages (

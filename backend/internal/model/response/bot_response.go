@@ -45,6 +45,13 @@ type BotKeyResponse struct {
 	Bot             *BotResponse `json:"bot,omitempty"`
 }
 
+type BotBindingResponse struct {
+	Token     string       `json:"token,omitempty"`
+	BindURL   string       `json:"bind_url,omitempty"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	Bot       *BotResponse `json:"bot"`
+}
+
 func NewBotResponse(bot *model.Bot) *BotResponse {
 	if bot == nil {
 		return nil

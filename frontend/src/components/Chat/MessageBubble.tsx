@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import Link from 'next/link'
 import { Avatar } from '@/components/Avatar'
 import { Markdown } from '@/components/Markdown'
 import { StatusPill } from '@/components/StatusPill'
@@ -32,6 +33,9 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
   const audioURL = assetURL
   const imageName = message.content.name || asset?.file_name || 'Image'
   const audioName = message.content.name || asset?.file_name || 'Voice message'
+  const documentLink = message.content.type === 'text'
+    ? findDocumentLink(message.content.body || '', message.metadata || message.content.meta)
+    : undefined
 
   const processContent = (text: string) => {
     if (!mentions.length) {
@@ -100,8 +104,13 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
             }`}
           >
             {message.content.type === 'text' && (
-              <div className={`prose prose-sm max-w-none ${isOwn ? 'prose-invert' : 'prose-slate'}`}>
-                <Markdown content={processContent(message.content.body || '')} isOwn={isOwn} />
+              <div className="space-y-3">
+                <div className={`prose prose-sm max-w-none ${isOwn ? 'prose-invert' : 'prose-slate'}`}>
+                  <Markdown content={processContent(message.content.body || '')} isOwn={isOwn} />
+                </div>
+                {documentLink ? (
+                  <DocumentMessageCard link={documentLink} isOwn={isOwn} />
+                ) : null}
               </div>
             )}
             
@@ -162,6 +171,130 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
       </div>
     </div>
   )
+}
+
+function DocumentMessageCard({ link, isOwn }: { link: DocumentLinkPreview; isOwn: boolean }) {
+  const handleContinue = () => {
+    window.dispatchEvent(new CustomEvent('openclaw:document-edit-prompt', {
+      detail: {
+        prompt: `请继续修改这份文档：${link.title}\n${link.path}\n\n修改要求：`,
+      },
+    }))
+  }
+
+  const handleCopyMarkdown = async () => {
+    await navigator.clipboard?.writeText(`请查看这份文档：${link.title}\n${link.path}`)
+  }
+
+  return (
+    <div
+      className={`w-[min(24rem,74vw)] overflow-hidden rounded-md border transition ${
+        isOwn
+          ? 'border-white/25 bg-white/10 text-white hover:bg-white/20'
+          : 'border-slate-200 bg-white text-slate-900 hover:border-sky-200 hover:bg-sky-50'
+      }`}
+    >
+      <Link href={link.path} className="block p-3 no-underline">
+        <div className="flex items-start gap-3">
+          <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md ${isOwn ? 'bg-white/20' : 'bg-sky-50 text-sky-600'}`}>
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 3h7l5 5v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M14 3v6h5M8 13h8M8 17h6" />
+            </svg>
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="mb-1 flex flex-wrap items-center gap-1.5">
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-normal ${isOwn ? 'bg-white/15 text-white/90' : 'bg-slate-100 text-slate-500'}`}>
+                {link.documentType}
+              </span>
+              <span className={`text-[11px] ${isOwn ? 'text-white/70' : 'text-slate-400'}`}>
+                {link.updatedLabel}
+              </span>
+            </span>
+            <span className={`block text-sm font-semibold ${isOwn ? 'text-white' : 'text-slate-950'}`}>
+              {link.title}
+            </span>
+            <span className={`mt-1 block line-clamp-2 text-xs leading-5 ${isOwn ? 'text-white/78' : 'text-slate-500'}`}>
+              {link.summary}
+            </span>
+            <span className={`mt-3 inline-flex text-xs font-semibold ${isOwn ? 'text-white' : 'text-sky-700'}`}>
+              Open document
+            </span>
+          </span>
+        </div>
+      </Link>
+      <div className={`grid grid-cols-3 border-t text-xs font-semibold ${isOwn ? 'border-white/20 text-white' : 'border-slate-100 text-slate-600'}`}>
+        <button type="button" onClick={handleContinue} className={`px-2 py-2 transition ${isOwn ? 'hover:bg-white/15' : 'hover:bg-slate-50'}`}>
+          Continue edit
+        </button>
+        <button type="button" onClick={handleCopyMarkdown} className={`border-x px-2 py-2 transition ${isOwn ? 'border-white/20 hover:bg-white/15' : 'border-slate-100 hover:bg-slate-50'}`}>
+          Copy
+        </button>
+        <span className={`px-2 py-2 text-center ${isOwn ? 'text-white/55' : 'text-slate-400'}`}>
+          Share soon
+        </span>
+      </div>
+    </div>
+  )
+}
+
+interface DocumentLinkPreview {
+  id: string
+  path: string
+  title: string
+  summary: string
+  documentType: string
+  updatedLabel: string
+}
+
+function findDocumentLink(text: string, metadata?: Record<string, unknown>): DocumentLinkPreview | undefined {
+  const match = text.match(/(?:https?:\/\/[^\s)]+)?\/documents\/([0-9a-fA-F-]{36})(?=$|[\s).,，。!！?？])/)
+  if (!match) return undefined
+  const id = match[1]
+  const title = readString(metadata?.document_title) || inferDocumentTitle(text) || 'Shared document'
+  return {
+    id,
+    path: readString(metadata?.document_url) || `/documents/${id}`,
+    title,
+    summary: readString(metadata?.document_summary) || inferDocumentSummary(text, title) || 'Persistent document · Opens the saved document page',
+    documentType: (readString(metadata?.document_type) || 'markdown').toUpperCase(),
+    updatedLabel: formatDocumentTime(readString(metadata?.document_updated_at)),
+  }
+}
+
+function inferDocumentTitle(text: string): string | undefined {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  for (const line of lines) {
+    if (line.includes('/documents/')) continue
+    const normalized = line
+      .replace(/^#+\s*/, '')
+      .replace(/^[-*]\s*/, '')
+      .replace(/^文档[:：]\s*/, '')
+      .trim()
+    if (normalized.length >= 2 && normalized.length <= 80) return normalized
+  }
+  return undefined
+}
+
+function inferDocumentSummary(text: string, title: string): string | undefined {
+  const titleKey = title.trim().toLowerCase()
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.includes('/documents/'))
+    .map((line) => line.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim())
+    .find((line) => line.length >= 6 && line.toLowerCase() !== titleKey)
+}
+
+function formatDocumentTime(value?: string): string {
+  if (!value) return 'Updated just now'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Updated just now'
+  return `Updated ${date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
 }
 
 function readAsset(meta?: Record<string, unknown>) {

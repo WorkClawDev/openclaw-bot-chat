@@ -16,6 +16,8 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
     private var audioLoadingViews: [String: UIActivityIndicatorView] = [:]
 
     var onImageTap: ((String) -> Void)?
+    var onDocumentTap: ((UUID) -> Void)?
+    var onDocumentContinueTap: ((DocumentLinkPreview) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -35,6 +37,8 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         removeAudioObservers()
         renderedMessage = nil
         onImageTap = nil
+        onDocumentTap = nil
+        onDocumentContinueTap = nil
         blockViews.values.forEach { $0.removeFromSuperview() }
         blockViews.removeAll()
     }
@@ -102,6 +106,8 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             return makeImageBlock(image, frame: frame)
         case .audio(let audio):
             return makeAudioBlock(audio, frame: frame, isOutgoing: isOutgoing)
+        case .document(let document):
+            return makeDocumentBlock(document, frame: frame, isOutgoing: isOutgoing)
         }
     }
 
@@ -136,6 +142,124 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         )
         bubbleView.addSubview(textView)
         return bubbleView
+    }
+
+    private func makeDocumentBlock(_ block: DocumentLinkBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
+        let container = UIView(frame: frame)
+        container.accessibilityIdentifier = block.id
+        container.isAccessibilityElement = false
+        container.backgroundColor = isOutgoing ? UIColor.systemBlue : UIColor.secondarySystemBackground
+        container.layer.cornerRadius = 16
+        container.layer.cornerCurve = .continuous
+        container.layer.borderWidth = 1
+        container.layer.borderColor = (isOutgoing ? UIColor.white.withAlphaComponent(0.18) : UIColor.separator.withAlphaComponent(0.35)).cgColor
+        container.clipsToBounds = true
+
+        let actionHeight: CGFloat = 44
+        let openHeight = max(1, frame.height - actionHeight)
+        let horizontalInset: CGFloat = 12
+
+        let openControl = UIControl(frame: CGRect(x: 0, y: 0, width: frame.width, height: openHeight))
+        openControl.accessibilityIdentifier = "\(block.id).open"
+        openControl.isAccessibilityElement = true
+        openControl.accessibilityLabel = L10n.t("打开文档 \(block.preview.title)", "Open document \(block.preview.title)")
+        openControl.accessibilityTraits.insert(.button)
+        openControl.addAction(UIAction { [weak self] _ in
+            self?.onDocumentTap?(block.preview.id)
+        }, for: .touchUpInside)
+        container.addSubview(openControl)
+
+        let iconContainer = UIView(frame: CGRect(x: horizontalInset, y: 14, width: 40, height: 40))
+        iconContainer.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.16) : UIColor.systemBlue.withAlphaComponent(0.11)
+        iconContainer.layer.cornerRadius = 10
+        iconContainer.layer.cornerCurve = .continuous
+        iconContainer.isUserInteractionEnabled = false
+        let iconView = UIImageView(image: UIImage(systemName: "doc.text"))
+        iconView.tintColor = isOutgoing ? .white : .systemBlue
+        iconView.contentMode = .scaleAspectFit
+        iconView.frame = CGRect(x: 10, y: 10, width: 20, height: 20)
+        iconContainer.addSubview(iconView)
+        openControl.addSubview(iconContainer)
+
+        let textX = iconContainer.frame.maxX + 10
+        let textWidth = max(1, frame.width - textX - horizontalInset - 14)
+
+        let titleLabel = UILabel(frame: CGRect(x: textX, y: 12, width: textWidth, height: 40))
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.textColor = isOutgoing ? .white : UIColor.label
+        titleLabel.text = block.preview.title
+        titleLabel.numberOfLines = 2
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.isUserInteractionEnabled = false
+        openControl.addSubview(titleLabel)
+
+        let metadataLabel = UILabel(frame: CGRect(x: textX, y: 58, width: textWidth, height: 16))
+        metadataLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        metadataLabel.textColor = isOutgoing ? UIColor.white.withAlphaComponent(0.72) : .secondaryLabel
+        metadataLabel.text = "\(block.preview.documentType) · \(block.preview.updatedLabel)"
+        metadataLabel.lineBreakMode = .byTruncatingTail
+        metadataLabel.isUserInteractionEnabled = false
+        openControl.addSubview(metadataLabel)
+
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+        chevron.tintColor = isOutgoing ? UIColor.white.withAlphaComponent(0.58) : .tertiaryLabel
+        chevron.contentMode = .scaleAspectFit
+        chevron.frame = CGRect(x: frame.width - horizontalInset - 10, y: 28, width: 10, height: 14)
+        chevron.isUserInteractionEnabled = false
+        openControl.addSubview(chevron)
+
+        let subtitleLabel = UILabel(frame: CGRect(x: horizontalInset, y: 84, width: max(1, frame.width - horizontalInset * 2), height: 38))
+        subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        subtitleLabel.textColor = isOutgoing ? UIColor.white.withAlphaComponent(0.78) : .secondaryLabel
+        subtitleLabel.text = block.preview.summary
+        subtitleLabel.numberOfLines = 2
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.isUserInteractionEnabled = false
+        openControl.addSubview(subtitleLabel)
+
+        let separator = UIView(frame: CGRect(x: horizontalInset, y: openHeight, width: frame.width - horizontalInset * 2, height: 0.5))
+        separator.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.18) : UIColor.separator.withAlphaComponent(0.28)
+        container.addSubview(separator)
+
+        let actionTop = openHeight
+        let buttonWidth = (frame.width - horizontalInset * 2 - 42 - 16) / 2
+        let actions = [
+            ("text.bubble", "继续修改", { [weak self] in self?.onDocumentContinueTap?(block.preview) }),
+            ("arrow.up.right", "打开", { [weak self] in self?.onDocumentTap?(block.preview.id) })
+        ]
+        for (index, action) in actions.enumerated() {
+            let button = UIButton(type: .system)
+            button.frame = CGRect(
+                x: horizontalInset + CGFloat(index) * (buttonWidth + 8),
+                y: actionTop + 6,
+                width: buttonWidth,
+                height: 32
+            )
+            button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+            button.setTitle(" \(action.1)", for: .normal)
+            button.setImage(UIImage(systemName: action.0), for: .normal)
+            button.accessibilityIdentifier = "\(block.id).\(index == 0 ? "continue" : "openAction")"
+            button.accessibilityLabel = index == 0 ? "继续修改文档" : "打开文档"
+            button.tintColor = isOutgoing ? .white : .systemBlue
+            button.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.08) : UIColor.systemBackground.withAlphaComponent(0.72)
+            button.layer.cornerRadius = 8
+            button.layer.cornerCurve = .continuous
+            button.addAction(UIAction { _ in action.2() }, for: .touchUpInside)
+            container.addSubview(button)
+        }
+
+        let shareView = UIImageView(image: UIImage(systemName: "link"))
+        shareView.tintColor = isOutgoing ? UIColor.white.withAlphaComponent(0.5) : .tertiaryLabel
+        shareView.contentMode = .center
+        shareView.frame = CGRect(x: frame.width - horizontalInset - 36, y: actionTop + 6, width: 36, height: 32)
+        shareView.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.08) : UIColor.systemBackground.withAlphaComponent(0.72)
+        shareView.layer.cornerRadius = 8
+        shareView.layer.cornerCurve = .continuous
+        shareView.isAccessibilityElement = true
+        shareView.accessibilityLabel = "分享即将支持"
+        container.addSubview(shareView)
+
+        return container
     }
 
     private func makeCodeBlock(_ block: CodeBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
@@ -439,6 +563,14 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
 
         let cacheContent = block.cacheContent
         let cachedFileURL = LocalImageStore.shared.cachedFileURL(for: cacheContent, fallbackIdentifier: block.id)
+        if let cachedFileURL,
+           let image = UIImage(contentsOfFile: cachedFileURL.path) {
+            Self.imageCache.setObject(image, forKey: cacheKey)
+            imageView.image = image
+            placeholder.isHidden = true
+            return
+        }
+
         imageTasks[block.id] = Task { [weak imageView, weak placeholder] in
             if let cachedFileURL,
                let image = await Self.decodedImage(from: cachedFileURL) {
@@ -497,23 +629,19 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             return
         }
 
+        if let cached = AvatarImageLoader.cachedImageForDisplay(for: url) {
+            Self.avatarCache.setObject(cached, forKey: cacheKey)
+            imageView.image = cached
+            return
+        }
+
         avatarTask = Task { [weak imageView] in
-            do {
-                let data = try await APIClient.shared.fetchRemoteData(
-                    from: url,
-                    acceptHeader: "image/avif,image/webp,image/*,*/*;q=0.8"
-                )
-                guard let image = await Task.detached(priority: .userInitiated, operation: {
-                    UIImage(data: data)
-                }).value else {
-                    return
-                }
-                Self.avatarCache.setObject(image, forKey: cacheKey)
-                await MainActor.run {
-                    imageView?.image = image
-                }
-            } catch {
+            guard let image = await AvatarImageLoader.imageForDisplay(for: url) else {
                 return
+            }
+            Self.avatarCache.setObject(image, forKey: cacheKey)
+            await MainActor.run {
+                imageView?.image = image
             }
         }
     }

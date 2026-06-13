@@ -149,6 +149,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:8080}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com/}
     ports:
       - "${FRONTEND_PORT_MAPPING:-3000:3000}"
     depends_on:

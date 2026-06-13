@@ -62,7 +62,7 @@ struct ConversationsView: View {
                     ConversationRow(conversation: conversation)
                 }
             }
-            .navigationTitle("Chats")
+            .navigationTitle(L10n.t("聊天", "Chats"))
             .onAppear {
                 viewModel.fetchConversations()
             }

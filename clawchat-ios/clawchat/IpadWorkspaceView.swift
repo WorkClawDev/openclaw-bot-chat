@@ -4,6 +4,7 @@ private enum IpadWorkspaceSection: String, CaseIterable, Identifiable {
     case home
     case bots
     case groups
+    case tasks
     case settings
 
     var id: String { rawValue }
@@ -11,13 +12,15 @@ private enum IpadWorkspaceSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .home:
-            return "Home"
+            return L10n.t("首页", "Home")
+        case .tasks:
+            return L10n.t("任务", "Tasks")
         case .bots:
-            return "Bots"
+            return L10n.t("机器人", "Bots")
         case .groups:
-            return "Groups"
+            return L10n.t("群组", "Groups")
         case .settings:
-            return "Settings"
+            return L10n.t("设置", "Settings")
         }
     }
 
@@ -25,6 +28,8 @@ private enum IpadWorkspaceSection: String, CaseIterable, Identifiable {
         switch self {
         case .home:
             return "house.fill"
+        case .tasks:
+            return "checklist.checked"
         case .bots:
             return "cpu.fill"
         case .groups:
@@ -49,8 +54,10 @@ struct IpadWorkspaceView: View {
     @State private var selectedGroupID: UUID?
     @State private var botSearchText = ""
     @State private var groupSearchText = ""
+    @AppStorage(AppLanguageMode.storageKey) private var languageModeRawValue = AppLanguageMode.english.rawValue
 
     @StateObject private var homeViewModel = HomeDashboardViewModel()
+    @StateObject private var tasksViewModel = TasksViewModel()
     @StateObject private var botsViewModel = BotsViewModel()
     @StateObject private var groupsViewModel = GroupsViewModel()
     @ObservedObject private var authManager = AuthManager.shared
@@ -62,6 +69,8 @@ struct IpadWorkspaceView: View {
 
     private static func initialSection(from launchSection: String?) -> IpadWorkspaceSection {
         switch launchSection?.lowercased() {
+        case "ipadworkspacetasks":
+            return .tasks
         case "ipadworkspacebots":
             return .bots
         case "ipadworkspacegroups":
@@ -92,6 +101,8 @@ struct IpadWorkspaceView: View {
     }
 
     var body: some View {
+        let _ = languageModeRawValue
+
         ZStack {
             FrostedBackground()
 
@@ -134,6 +145,11 @@ struct IpadWorkspaceView: View {
                 systemImageForConversation: conversationSystemImage(for:),
                 timestampForConversation: timestamp(for:)
             )
+        case .tasks:
+            IpadDetailStage(maxWidth: IpadWorkspaceLayout.detailMaxWidth, alignment: .top) {
+                TasksView(viewModel: tasksViewModel)
+                    .id("ipad-tasks")
+            }
         case .bots:
             IpadBotsWorkspace(
                 viewModel: botsViewModel,
@@ -163,6 +179,7 @@ struct IpadWorkspaceView: View {
     private func refreshAllIfNeeded() {
         authManager.refreshCurrentUserIfNeeded()
         homeViewModel.refreshIfNeeded()
+        Swift.Task { await tasksViewModel.load(showLoading: false) }
         botsViewModel.refreshIfNeeded()
         groupsViewModel.refreshIfNeeded()
     }
@@ -178,7 +195,7 @@ struct IpadWorkspaceView: View {
             return ChatContext(
                 id: conversation.id,
                 title: conversationTitle(for: conversation),
-                subtitle: "group chat",
+                subtitle: L10n.groupChat,
                 isGroup: true,
                 groupId: groupID,
                 avatarURLString: conversation.avatar
@@ -192,7 +209,7 @@ struct IpadWorkspaceView: View {
             return ChatContext(
                 id: conversation.id,
                 title: conversationTitle(for: conversation),
-                subtitle: conversation.type.lowercased() == "bot" ? "bot chat" : "chat",
+                subtitle: conversation.type.lowercased() == "bot" ? L10n.botChat : L10n.chat,
                 isGroup: false,
                 groupId: nil,
                 avatarURLString: conversation.avatar
@@ -204,7 +221,9 @@ struct IpadWorkspaceView: View {
         ChatContext(
             id: conversationTopic(for: bot) ?? bot.id.uuidString.lowercased(),
             title: bot.name,
-            subtitle: bot.status == "online" ? "online · bot" : "offline · bot",
+            subtitle: bot.status == "online"
+                ? "\(L10n.online) · \(L10n.bot)"
+                : "\(L10n.offline) · \(L10n.bot)",
             isGroup: false,
             groupId: nil,
             bot: bot,
@@ -216,7 +235,9 @@ struct IpadWorkspaceView: View {
         ChatContext(
             id: conversationTopic(for: group),
             title: group.name,
-            subtitle: group.isActive == true ? "\(group.memberCount ?? 0) members · bots online" : "\(group.memberCount ?? 0) members · bots offline",
+            subtitle: group.isActive == true
+                ? L10n.t("\(group.memberCount ?? 0) 名成员 · 机器人在线", "\(group.memberCount ?? 0) members · bots online")
+                : L10n.t("\(group.memberCount ?? 0) 名成员 · 机器人离线", "\(group.memberCount ?? 0) members · bots offline"),
             isGroup: true,
             groupId: group.id.uuidString.lowercased(),
             memberCount: group.memberCount,
@@ -413,13 +434,13 @@ private struct IpadSidebarView: View {
     private var connectionText: String {
         switch connectionState {
         case .idle:
-            return "MQTT idle"
+            return L10n.t("MQTT 空闲", "MQTT idle")
         case .connecting:
-            return "MQTT connecting"
+            return L10n.t("MQTT 连接中", "MQTT connecting")
         case .connected:
-            return "MQTT connected"
+            return L10n.t("MQTT 已连接", "MQTT connected")
         case .disconnected:
-            return "MQTT disconnected"
+            return L10n.t("MQTT 已断开", "MQTT disconnected")
         }
     }
 
@@ -476,10 +497,10 @@ private struct IpadMessagesWorkspace: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Messages")
+                    Text(L10n.t("消息", "Messages"))
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Realtime bot and group conversations")
+                    Text(L10n.t("机器人和群组实时会话", "Realtime bot and group conversations"))
                         .font(.subheadline)
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
@@ -492,7 +513,7 @@ private struct IpadMessagesWorkspace: View {
                 }
             }
 
-            IpadSearchField(text: .constant(""), placeholder: "Search messages")
+            IpadSearchField(text: .constant(""), placeholder: L10n.t("搜索消息", "Search messages"))
                 .disabled(true)
                 .opacity(0.72)
         }
@@ -501,22 +522,22 @@ private struct IpadMessagesWorkspace: View {
     private var metricStrip: some View {
         let metrics = viewModel.metrics
         return HStack(spacing: 10) {
-            IpadMiniMetric(title: "Online bots", value: "\(metrics.onlineBots)", systemImage: "cpu.fill", tint: Color.rcmsOnline)
-            IpadMiniMetric(title: "Active groups", value: "\(metrics.activeGroups)", systemImage: "person.3.fill", tint: Color.rcmsAccent)
-            IpadMiniMetric(title: "Broker", value: brokerMetricValue, systemImage: "antenna.radiowaves.left.and.right", tint: brokerMetricTint)
+            IpadMiniMetric(title: L10n.t("在线机器人", "Online bots"), value: "\(metrics.onlineBots)", systemImage: "cpu.fill", tint: Color.rcmsOnline)
+            IpadMiniMetric(title: L10n.t("活跃群组", "Active groups"), value: "\(metrics.activeGroups)", systemImage: "person.3.fill", tint: Color.rcmsAccent)
+            IpadMiniMetric(title: L10n.t("消息通道", "Broker"), value: brokerMetricValue, systemImage: "antenna.radiowaves.left.and.right", tint: brokerMetricTint)
         }
     }
 
     private var brokerMetricValue: String {
         switch connectionState {
         case .connected:
-            return "Live"
+            return L10n.t("在线", "Live")
         case .connecting:
-            return "Sync"
+            return L10n.t("同步", "Sync")
         case .idle:
-            return "Idle"
+            return L10n.t("空闲", "Idle")
         case .disconnected:
-            return "Off"
+            return L10n.t("离线", "Off")
         }
     }
 
@@ -533,14 +554,14 @@ private struct IpadMessagesWorkspace: View {
 
     private var conversationList: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Recent")
+            Text(L10n.t("最近", "Recent"))
                 .font(.headline.weight(.bold))
                 .foregroundStyle(Color.rcmsTextStrong)
 
             if let errorMessage = viewModel.errorMessage, viewModel.recentConversations.isEmpty {
-                IpadEmptyPanel(systemImage: "exclamationmark.triangle.fill", title: "Dashboard unavailable", message: errorMessage)
+                IpadEmptyPanel(systemImage: "exclamationmark.triangle.fill", title: L10n.t("消息面板不可用", "Dashboard unavailable"), message: errorMessage)
             } else if viewModel.recentConversations.isEmpty {
-                IpadEmptyPanel(systemImage: "bubble.left.and.bubble.right", title: "No conversations yet", message: "Start a chat from Bots or Groups.")
+                IpadEmptyPanel(systemImage: "bubble.left.and.bubble.right", title: L10n.t("暂无会话", "No conversations yet"), message: L10n.t("从机器人或群组开始聊天。", "Start a chat from Bots or Groups."))
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -551,7 +572,7 @@ private struct IpadMessagesWorkspace: View {
                             } label: {
                                 DashboardConversationRow(
                                     title: titleForConversation(conversation),
-                                    subtitle: conversation.lastMessage?.content ?? "No messages yet",
+                                    subtitle: conversation.lastMessage?.content ?? L10n.noMessagesYet,
                                     timestamp: timestampForConversation(conversation),
                                     unreadCount: conversation.unreadCount,
                                     avatarURL: avatarURLForConversation(conversation),
@@ -582,13 +603,13 @@ private struct IpadMessagesWorkspace: View {
             ChatRoomView(context: selectedChatContext)
         } else {
             IpadWorkspaceEmptyDetail(
-                title: "Pick up a conversation",
-                message: "Select a bot or group from the list. The chat opens here while navigation and context stay visible.",
+                title: L10n.t("选择一个会话", "Pick up a conversation"),
+                message: L10n.t("从列表中选择机器人或群组，聊天会在这里打开。", "Select a bot or group from the list. The chat opens here while navigation and context stay visible."),
                 systemImage: "bubble.left.and.bubble.right.fill",
                 highlights: [
-                    ("Broker status", brokerMetricValue, brokerMetricTint),
-                    ("Online bots", "\(viewModel.metrics.onlineBots)", Color.rcmsOnline),
-                    ("Active groups", "\(viewModel.metrics.activeGroups)", Color.rcmsAccent)
+                    (L10n.t("通道状态", "Broker status"), brokerMetricValue, brokerMetricTint),
+                    (L10n.t("在线机器人", "Online bots"), "\(viewModel.metrics.onlineBots)", Color.rcmsOnline),
+                    (L10n.t("活跃群组", "Active groups"), "\(viewModel.metrics.activeGroups)", Color.rcmsAccent)
                 ]
             )
         }
@@ -613,8 +634,8 @@ private struct IpadBotsWorkspace: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
-                IpadDirectoryHeader(title: "Bots", subtitle: "Bot direct chats and runtime presence", isLoading: viewModel.isLoading)
-                IpadSearchField(text: $searchText, placeholder: "Search bots")
+                IpadDirectoryHeader(title: L10n.t("机器人", "Bots"), subtitle: L10n.t("机器人私聊和运行状态", "Bot direct chats and runtime presence"), isLoading: viewModel.isLoading)
+                IpadSearchField(text: $searchText, placeholder: L10n.t("搜索机器人", "Search bots"))
 
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -650,9 +671,9 @@ private struct IpadBotsWorkspace: View {
                         selectedChatContext = contextForBot(selectedBot)
                     }
                 } else if viewModel.errorMessage != nil {
-                    IpadWorkspaceEmptyDetail(title: "Bots unavailable", message: viewModel.errorMessage ?? "", systemImage: "exclamationmark.triangle.fill")
+                    IpadWorkspaceEmptyDetail(title: L10n.t("机器人不可用", "Bots unavailable"), message: viewModel.errorMessage ?? "", systemImage: "exclamationmark.triangle.fill")
                 } else {
-                    IpadWorkspaceEmptyDetail(title: "No bots yet", message: "Create or connect a bot to start a direct chat.", systemImage: "cpu.fill")
+                    IpadWorkspaceEmptyDetail(title: L10n.t("暂无机器人", "No bots yet"), message: L10n.t("创建或连接机器人后即可开始私聊。", "Create or connect a bot to start a direct chat."), systemImage: "cpu.fill")
                 }
             }
         }
@@ -677,8 +698,8 @@ private struct IpadGroupsWorkspace: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
-                IpadDirectoryHeader(title: "Groups", subtitle: "Group rooms with humans and bots", isLoading: viewModel.isLoading)
-                IpadSearchField(text: $searchText, placeholder: "Search groups")
+                IpadDirectoryHeader(title: L10n.t("群组", "Groups"), subtitle: L10n.t("人与机器人共同参与的群聊", "Group rooms with humans and bots"), isLoading: viewModel.isLoading)
+                IpadSearchField(text: $searchText, placeholder: L10n.t("搜索群组", "Search groups"))
 
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -714,9 +735,9 @@ private struct IpadGroupsWorkspace: View {
                         selectedChatContext = contextForGroup(selectedGroup)
                     }
                 } else if viewModel.errorMessage != nil {
-                    IpadWorkspaceEmptyDetail(title: "Groups unavailable", message: viewModel.errorMessage ?? "", systemImage: "exclamationmark.triangle.fill")
+                    IpadWorkspaceEmptyDetail(title: L10n.t("群组不可用", "Groups unavailable"), message: viewModel.errorMessage ?? "", systemImage: "exclamationmark.triangle.fill")
                 } else {
-                    IpadWorkspaceEmptyDetail(title: "No groups yet", message: "Create a group to combine humans, bots, and realtime history.", systemImage: "person.3.fill")
+                    IpadWorkspaceEmptyDetail(title: L10n.t("暂无群组", "No groups yet"), message: L10n.t("创建群组后即可把成员、机器人和实时历史放在一起。", "Create a group to combine humans, bots, and realtime history."), systemImage: "person.3.fill")
                 }
             }
         }
@@ -1014,35 +1035,35 @@ private struct IpadBotDetail: View {
             VStack(alignment: .leading, spacing: 18) {
                 IpadEntityHero(
                     title: bot.name,
-                    subtitle: bot.description ?? "Direct bot conversation",
+                    subtitle: bot.description ?? L10n.t("机器人私聊", "Direct bot conversation"),
                     avatarName: bot.name,
                     avatarURL: bot.avatarUrl ?? bot.avatar,
                     systemImage: "cpu.fill",
-                    statusText: isOnline ? "Online bot" : "Offline bot",
+                    statusText: isOnline ? L10n.t("机器人在线", "Online bot") : L10n.t("机器人离线", "Offline bot"),
                     statusTint: isOnline ? Color.rcmsOnline : Color.rcmsOffline,
-                    actionTitle: "Start chat",
+                    actionTitle: L10n.t("开始聊天", "Start chat"),
                     actionImage: "paperplane.fill",
                     action: onStartChat
                 )
 
                 IpadDetailGrid {
-                    IpadDetailTile(title: "Runtime", value: isOnline ? "Online" : "Offline", systemImage: "bolt.horizontal.fill", tint: isOnline ? Color.rcmsOnline : Color.rcmsOffline)
-                    IpadDetailTile(title: "Bot type", value: bot.botType ?? "bot", systemImage: "cpu.fill", tint: Color.rcmsAccent)
-                    IpadDetailTile(title: "Topic", value: bot.mqttTopic ?? "Generated", systemImage: "point.3.connected.trianglepath.dotted", tint: Color.rcmsWarning)
+                    IpadDetailTile(title: L10n.t("运行状态", "Runtime"), value: isOnline ? L10n.online : L10n.offline, systemImage: "bolt.horizontal.fill", tint: isOnline ? Color.rcmsOnline : Color.rcmsOffline)
+                    IpadDetailTile(title: L10n.t("机器人类型", "Bot type"), value: bot.botType ?? L10n.bot, systemImage: "cpu.fill", tint: Color.rcmsAccent)
+                    IpadDetailTile(title: L10n.t("主题", "Topic"), value: bot.mqttTopic ?? L10n.t("自动生成", "Generated"), systemImage: "point.3.connected.trianglepath.dotted", tint: Color.rcmsWarning)
                 }
 
                 IpadInfoPanel(
-                    title: "Conversation setup",
+                    title: L10n.t("会话设置", "Conversation setup"),
                     rows: [
-                        ("Description", bot.description ?? "No description"),
-                        ("MQTT topic", bot.mqttTopic ?? "Generated from user and bot IDs")
+                        (L10n.t("描述", "Description"), bot.description ?? L10n.t("暂无描述", "No description")),
+                        (L10n.t("MQTT 主题", "MQTT topic"), bot.mqttTopic ?? L10n.t("由用户和机器人 ID 自动生成", "Generated from user and bot IDs"))
                     ]
                 )
 
                 IpadCalloutPanel(
                     systemImage: "message.and.waveform.fill",
-                    title: "Open a direct workspace",
-                    message: "The chat view keeps this bot context available while you inspect messages, images, slash commands, and live replies."
+                    title: L10n.t("打开私聊工作区", "Open a direct workspace"),
+                    message: L10n.t("聊天视图会保留机器人上下文，便于查看消息、图片、斜杠命令和实时回复。", "The chat view keeps this bot context available while you inspect messages, images, slash commands, and live replies.")
                 )
             }
             .frame(maxWidth: IpadWorkspaceLayout.profileDetailMaxWidth, alignment: .leading)
@@ -1065,35 +1086,35 @@ private struct IpadGroupDetail: View {
             VStack(alignment: .leading, spacing: 18) {
                 IpadEntityHero(
                     title: group.name,
-                    subtitle: group.description ?? "Shared group conversation",
+                    subtitle: group.description ?? L10n.t("共享群组会话", "Shared group conversation"),
                     avatarName: group.name,
                     avatarURL: group.avatarUrl ?? group.avatar,
                     systemImage: "person.3.fill",
-                    statusText: isActive ? "Bots online" : "Bots offline",
+                    statusText: isActive ? L10n.botsOnline : L10n.botsOffline,
                     statusTint: isActive ? Color.rcmsOnline : Color.rcmsOffline,
-                    actionTitle: "Open chat",
+                    actionTitle: L10n.t("打开聊天", "Open chat"),
                     actionImage: "bubble.left.and.bubble.right.fill",
                     action: onOpenChat
                 )
 
                 IpadDetailGrid {
-                    IpadDetailTile(title: "Members", value: "\(group.memberCount ?? 0)", systemImage: "person.2.fill", tint: Color.rcmsAccent)
-                    IpadDetailTile(title: "Bot presence", value: isActive ? "Online" : "Offline", systemImage: "cpu.fill", tint: isActive ? Color.rcmsOnline : Color.rcmsOffline)
-                    IpadDetailTile(title: "Topic", value: group.mqttTopic == nil ? "Default" : "Custom", systemImage: "point.3.connected.trianglepath.dotted", tint: Color.rcmsWarning)
+                    IpadDetailTile(title: L10n.t("成员", "Members"), value: "\(group.memberCount ?? 0)", systemImage: "person.2.fill", tint: Color.rcmsAccent)
+                    IpadDetailTile(title: L10n.t("机器人状态", "Bot presence"), value: isActive ? L10n.online : L10n.offline, systemImage: "cpu.fill", tint: isActive ? Color.rcmsOnline : Color.rcmsOffline)
+                    IpadDetailTile(title: L10n.t("主题", "Topic"), value: group.mqttTopic == nil ? L10n.t("默认", "Default") : L10n.t("自定义", "Custom"), systemImage: "point.3.connected.trianglepath.dotted", tint: Color.rcmsWarning)
                 }
 
                 IpadInfoPanel(
-                    title: "Group profile",
+                    title: L10n.t("群组资料", "Group profile"),
                     rows: [
-                        ("Description", group.description ?? "No description"),
-                        ("MQTT topic", group.mqttTopic ?? "chat/group/\(group.id.uuidString.lowercased())")
+                        (L10n.t("描述", "Description"), group.description ?? L10n.t("暂无描述", "No description")),
+                        (L10n.t("MQTT 主题", "MQTT topic"), group.mqttTopic ?? "chat/group/\(group.id.uuidString.lowercased())")
                     ]
                 )
 
                 IpadCalloutPanel(
                     systemImage: "person.badge.gearshape.fill",
-                    title: "Manage the room from chat",
-                    message: "Open the group chat to inspect participants, bot participation, realtime history, and current room activity."
+                    title: L10n.t("在聊天中管理房间", "Manage the room from chat"),
+                    message: L10n.t("打开群聊即可查看成员、机器人参与、实时历史和当前房间状态。", "Open the group chat to inspect participants, bot participation, realtime history, and current room activity.")
                 )
             }
             .frame(maxWidth: IpadWorkspaceLayout.profileDetailMaxWidth, alignment: .leading)

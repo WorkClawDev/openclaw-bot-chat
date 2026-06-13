@@ -7,7 +7,7 @@ extension SettingsView {
         VStack(spacing: 12) {
             ProgressView()
                 .tint(Color.rcmsAccent)
-            Text("Loading your profile")
+            Text(L10n.t("正在加载个人资料", "Loading your profile"))
                 .font(.subheadline)
                 .foregroundStyle(Color.rcmsTextSecondary)
         }
@@ -21,19 +21,22 @@ extension SettingsView {
 
             profileHeader(user: user)
 
-            sectionHeader(title: "Account")
+            sectionHeader(title: L10n.t("账号", "Account"))
             accountCard(user: user)
 
-            sectionHeader(title: "Appearance")
+            sectionHeader(title: L10n.t("外观", "Appearance"))
             appearanceCard
 
-            sectionHeader(title: "Messaging")
+            sectionHeader(title: L10n.t("语言", "Language"))
+            languageCard
+
+            sectionHeader(title: L10n.t("消息", "Messaging"))
             messagingCard
 
-            sectionHeader(title: "System")
+            sectionHeader(title: L10n.t("系统", "System"))
             systemCard
 
-            sectionHeader(title: "About")
+            sectionHeader(title: L10n.t("关于", "About"))
             aboutCard
 
             logoutButton
@@ -47,10 +50,10 @@ extension SettingsView {
         VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Settings")
+                    Text(L10n.t("设置", "Settings"))
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Profile, messaging preferences, and broker state")
+                    Text(L10n.t("个人资料、消息偏好和连接状态", "Profile, messaging preferences, and broker state"))
                         .font(.subheadline)
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
@@ -70,6 +73,7 @@ extension SettingsView {
 
                 VStack(alignment: .leading, spacing: 18) {
                     appearanceCard
+                    languageCard
                     messagingCard
                     wideSystemOverview
                     aboutCard
@@ -92,7 +96,7 @@ extension SettingsView {
     }
 
     var settingsHeader: some View {
-        Text("Settings")
+        Text(L10n.t("设置", "Settings"))
             .font(.system(size: 28, weight: .bold, design: .rounded))
             .foregroundStyle(Color.rcmsTextStrong)
             .frame(maxWidth: .infinity)
@@ -140,7 +144,7 @@ extension SettingsView {
                         }
                     }
                 } label: {
-                    Text(isEditingProfile ? "Cancel" : "Edit")
+                    Text(isEditingProfile ? L10n.t("取消", "Cancel") : L10n.t("编辑", "Edit"))
                         .font(.subheadline.bold())
                         .foregroundStyle(Color.rcmsAccent)
                         .padding(.horizontal, 18)
@@ -166,10 +170,10 @@ extension SettingsView {
                         )
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Profile photo")
+                            Text(L10n.t("头像", "Profile photo"))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Color.rcmsTextPrimary)
-                            Text(isUploadingAvatar ? "Uploading" : "Drag and zoom before uploading")
+                            Text(isUploadingAvatar ? L10n.t("上传中", "Uploading") : L10n.t("上传前可拖动和缩放", "Drag and zoom before uploading"))
                                 .font(.caption)
                                 .foregroundStyle(Color.rcmsTextSecondary)
                         }
@@ -191,15 +195,16 @@ extension SettingsView {
                             }
                         }
                         .disabled(isUploadingAvatar || viewModel.isSavingProfile)
+                        .accessibilityLabel(L10n.t("选择头像", "Choose avatar"))
                     }
                     .padding(12)
                     .background(Color.rcmsSubtleFill)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-                    editField(title: "Display name", placeholder: "Add a display name", text: $nicknameDraft)
+                    editField(title: L10n.t("显示名称", "Display name"), placeholder: L10n.t("添加显示名称", "Add a display name"), text: $nicknameDraft)
                         .focused($focusNicknameField)
                     
-                    editField(title: "Avatar URL", placeholder: "HTTPS image link", text: $avatarURLDraft)
+                    editField(title: L10n.t("头像链接", "Avatar URL"), placeholder: L10n.t("图片链接", "HTTPS image link"), text: $avatarURLDraft)
 
                     if let profileErrorMessage {
                         Text(profileErrorMessage)
@@ -214,7 +219,7 @@ extension SettingsView {
                         if viewModel.isSavingProfile {
                             ProgressView().tint(.white)
                         } else {
-                            Text("Save profile")
+                            Text(L10n.t("保存资料", "Save profile"))
                                 .font(.headline)
                         }
                     }
@@ -253,13 +258,13 @@ extension SettingsView {
 
     func accountCard(user: User) -> some View {
         VStack(spacing: 0) {
-            actionRow(title: "Profile", subtitle: "", value: "", icon: "person") {
+            actionRow(title: L10n.t("个人资料", "Profile"), subtitle: "", value: "", icon: "person") {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     startProfileEditing(using: user)
                 }
             }
             divider
-            actionRow(title: "Password", subtitle: "", value: "", icon: "lock") {
+            actionRow(title: L10n.t("密码", "Password"), subtitle: "", value: "", icon: "lock") {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     showPasswordEditor.toggle()
                 }
@@ -273,7 +278,7 @@ extension SettingsView {
 
             divider
 
-            actionRow(title: "Devices", subtitle: "", value: "", icon: "iphone") {
+            actionRow(title: L10n.t("设备", "Devices"), subtitle: "", value: "", icon: "iphone") {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     showDeviceDetails.toggle()
                 }
@@ -290,17 +295,17 @@ extension SettingsView {
 
     var passwordEditor: some View {
         VStack(spacing: 12) {
-            SecureField("Current password", text: $currentPassword)
+            SecureField(L10n.t("当前密码", "Current password"), text: $currentPassword)
                 .padding(12)
                 .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             
-            SecureField("New password (at least 8 characters)", text: $newPassword)
+            SecureField(L10n.t("新密码（至少 8 个字符）", "New password (at least 8 characters)"), text: $newPassword)
                 .padding(12)
                 .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             
-            SecureField("Confirm new password", text: $confirmPassword)
+            SecureField(L10n.t("确认新密码", "Confirm new password"), text: $confirmPassword)
                 .padding(12)
                 .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -318,7 +323,7 @@ extension SettingsView {
                 if viewModel.isChangingPassword {
                     ProgressView().tint(.white)
                 } else {
-                    Text("Update password").bold()
+                    Text(L10n.t("更新密码", "Update password")).bold()
                 }
             }
             .frame(maxWidth: .infinity)
@@ -349,7 +354,7 @@ extension SettingsView {
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
                 Spacer()
-                Text("Online").font(.caption.bold()).foregroundStyle(Color.rcmsOnline)
+                Text(L10n.t("在线", "Online")).font(.caption.bold()).foregroundStyle(Color.rcmsOnline)
             }
         }
         .padding(12)
@@ -362,7 +367,7 @@ extension SettingsView {
             HStack(spacing: 12) {
                 rowIcon(appearanceMode.systemImage)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Deep night mode")
+                    Text(L10n.t("外观模式", "Appearance mode"))
                         .font(.body.weight(.medium))
                         .foregroundStyle(Color.rcmsTextPrimary)
                     Text(appearanceMode.subtitle)
@@ -373,11 +378,40 @@ extension SettingsView {
                 Spacer(minLength: 0)
             }
 
-            Picker("Appearance", selection: $appearanceModeRawValue) {
+            Picker(L10n.t("外观", "Appearance"), selection: $appearanceModeRawValue) {
                 ForEach(AppAppearanceMode.allCases) { mode in
                     Text(mode.title).tag(mode.rawValue)
                 }
             }
+            .id("appearance-\(languageModeRawValue)")
+            .pickerStyle(.segmented)
+        }
+        .padding(16)
+        .glassCardStyle()
+    }
+
+    var languageCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                rowIcon("globe")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.t("界面语言", "App language"))
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(Color.rcmsTextPrimary)
+                    Text(languageMode.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Picker(L10n.t("语言", "Language"), selection: $languageModeRawValue) {
+                ForEach(AppLanguageMode.allCases) { mode in
+                    Text(mode.title).tag(mode.rawValue)
+                }
+            }
+            .id("language-\(languageModeRawValue)")
             .pickerStyle(.segmented)
         }
         .padding(16)
@@ -386,7 +420,7 @@ extension SettingsView {
 
     var messagingCard: some View {
         VStack(spacing: 0) {
-            preferenceRow(title: "Bot notifications", subtitle: notificationSubtitle, icon: "bell.badge") {
+            preferenceRow(title: L10n.t("机器人通知", "Bot notifications"), subtitle: notificationSubtitle, icon: "bell.badge") {
                 Toggle("", isOn: Binding(
                     get: { botNotificationsEnabled },
                     set: { newValue in
@@ -397,16 +431,16 @@ extension SettingsView {
                 .tint(Color.rcmsAccent)
             }
             divider
-            preferenceRow(title: "Compact message mode", subtitle: compactMessageMode ? "Compact" : "Comfort", icon: "text.alignleft") {
+            preferenceRow(title: L10n.t("紧凑消息模式", "Compact message mode"), subtitle: compactMessageMode ? L10n.t("紧凑", "Compact") : L10n.t("舒适", "Comfort"), icon: "text.alignleft") {
                 Toggle("", isOn: $compactMessageMode)
                     .labelsHidden()
                     .tint(Color.rcmsAccent)
             }
             divider
-            preferenceRow(title: "Image upload quality", subtitle: imageUploadQualitySubtitle, icon: "photo.on.rectangle") {
-                Picker("Image upload quality", selection: $imageUploadQuality) {
+            preferenceRow(title: L10n.t("图片上传质量", "Image upload quality"), subtitle: imageUploadQualitySubtitle, icon: "photo.on.rectangle") {
+                Picker(L10n.t("图片上传质量", "Image upload quality"), selection: $imageUploadQuality) {
                     ForEach(Self.imageUploadQualityOptions, id: \.self) { quality in
-                        Text(quality).tag(quality)
+                        Text(Self.localizedImageUploadQuality(quality)).tag(quality)
                     }
                 }
                 .pickerStyle(.menu)
@@ -418,25 +452,25 @@ extension SettingsView {
 
     var systemCard: some View {
         VStack(spacing: 0) {
-            infoRow(title: "Realtime connection", value: realtimeConnectionText, icon: realtimeConnectionIcon)
+            infoRow(title: L10n.t("实时连接", "Realtime connection"), value: realtimeConnectionText, icon: realtimeConnectionIcon)
             divider
-            infoRow(title: "API endpoint", value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
+            infoRow(title: L10n.t("接口地址", "API endpoint"), value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
         }
         .glassCardStyle()
     }
 
     var wideSystemOverview: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("System")
+            Text(L10n.t("系统", "System"))
                 .font(.headline.weight(.bold))
                 .foregroundStyle(Color.rcmsTextStrong)
 
             HStack(spacing: 12) {
-                IpadSettingsInfoTile(title: "Realtime", value: realtimeConnectionText, systemImage: realtimeConnectionIcon, tint: realtimeStatusTint)
-                IpadSettingsInfoTile(title: "Device", value: AppPlatform.deviceDisplayName, systemImage: AppPlatform.deviceSymbolName, tint: Color.rcmsAccent)
+                IpadSettingsInfoTile(title: L10n.t("实时", "Realtime"), value: realtimeConnectionText, systemImage: realtimeConnectionIcon, tint: realtimeStatusTint)
+                IpadSettingsInfoTile(title: L10n.t("设备", "Device"), value: AppPlatform.deviceDisplayName, systemImage: AppPlatform.deviceSymbolName, tint: Color.rcmsAccent)
             }
 
-            infoRow(title: "API endpoint", value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
+            infoRow(title: L10n.t("接口地址", "API endpoint"), value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
                 .background(Color.rcmsSubtleFill)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
@@ -480,7 +514,7 @@ extension SettingsView {
             authManager.logout()
         } label: {
             HStack {
-                Text("Log out")
+                Text(L10n.t("退出登录", "Log out"))
                     .font(.headline)
                     .foregroundStyle(Self.coralDanger)
                 Spacer()
@@ -518,7 +552,7 @@ extension SettingsView {
                 if let copyString {
                     Button {
                         UIPasteboard.general.string = copyString
-                        presentToast("Copied to clipboard")
+                        presentToast(L10n.t("已复制到剪贴板", "Copied to clipboard"))
                     } label: {
                         Image(systemName: "doc.on.doc")
                             .font(.caption)

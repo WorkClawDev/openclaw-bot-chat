@@ -135,15 +135,25 @@ struct BotSettingsView: View {
             }
             .scrollIndicators(.hidden)
         }
-        .navigationTitle("机器人设置")
+        .navigationTitle(L10n.t("机器人设置", "Bot settings"))
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Label(L10n.t("返回", "Back"), systemImage: "chevron.left")
+                }
+            }
+        }
         .onAppear {
             viewModel.fetchKeys()
         }
         .sheet(item: $pendingAvatarImage) { pending in
             AvatarCropperView(
                 image: pending.image,
-                title: "调整机器人头像",
+                title: L10n.t("调整机器人头像", "Adjust bot avatar"),
                 onCancel: {
                     pendingAvatarImage = nil
                 },
@@ -153,47 +163,50 @@ struct BotSettingsView: View {
                 }
             )
         }
-        .alert("保存失败", isPresented: Binding(
+        .alert(L10n.t("保存失败", "Save failed"), isPresented: Binding(
             get: { viewModel.errorMessage != nil },
             set: { _ in viewModel.errorMessage = nil }
         )) {
-            Button("确定", role: .cancel) { }
+            Button(L10n.t("确定", "OK"), role: .cancel) { }
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .alert("新增密钥", isPresented: $showNewKeyAlert) {
-            TextField("密钥备注名称 (可选)", text: $newKeyName)
-            Button("取消", role: .cancel) { }
-            Button("生成") {
+        .alert(L10n.t("新增密钥", "New key"), isPresented: $showNewKeyAlert) {
+            TextField(L10n.t("密钥备注名称（可选）", "Key note (optional)"), text: $newKeyName)
+            Button(L10n.t("取消", "Cancel"), role: .cancel) { }
+            Button(L10n.t("生成", "Generate")) {
                 viewModel.createKey(name: newKeyName)
                 newKeyName = ""
             }
         }
-        .alert("密钥已生成", isPresented: Binding(
+        .alert(L10n.t("密钥已生成", "Key generated"), isPresented: Binding(
             get: { viewModel.newPlaintextKey != nil },
             set: { _ in viewModel.newPlaintextKey = nil }
         )) {
-            Button("复制并关闭") {
+            Button(L10n.t("复制并关闭", "Copy and close")) {
                 if let key = viewModel.newPlaintextKey {
                     UIPasteboard.general.string = key
                 }
                 viewModel.newPlaintextKey = nil
             }
-            Button("关闭", role: .cancel) { }
+            Button(L10n.t("关闭", "Close"), role: .cancel) { }
         } message: {
-            Text("这是新生成的密钥：\n\(viewModel.newPlaintextKey ?? "")\n\n请立即复制保存，关闭后将无法再次查看！")
+            Text(L10n.t(
+                "这是新生成的密钥：\n\(viewModel.newPlaintextKey ?? "")\n\n请立即复制保存，关闭后将无法再次查看！",
+                "Here is the newly generated key:\n\(viewModel.newPlaintextKey ?? "")\n\nCopy and save it now. It cannot be viewed again after closing."
+            ))
         }
     }
     
     private var botInfoSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("基本信息")
+                Text(L10n.t("基本信息", "Basic info"))
                     .font(.subheadline.bold())
                     .foregroundStyle(Color.rcmsTextSecondary)
                 Spacer()
                 if isEditing {
-                    Button("保存") {
+                    Button(L10n.t("保存", "Save")) {
                         let trimmedAvatarURL = editAvatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
                         viewModel.updateBot(name: editName, description: editDescription, avatarURL: trimmedAvatarURL) {
                             withAnimation { isEditing = false }
@@ -204,7 +217,7 @@ struct BotSettingsView: View {
                     .foregroundStyle(Color.rcmsAccent)
                     .disabled(isUploadingAvatar || editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } else {
-                    Button("编辑") {
+                    Button(L10n.t("编辑", "Edit")) {
                         editName = viewModel.bot.name
                         editDescription = viewModel.bot.description ?? ""
                         editAvatarURL = viewModel.bot.avatarUrl ?? viewModel.bot.avatar ?? ""
@@ -228,10 +241,10 @@ struct BotSettingsView: View {
                             )
 
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("机器人头像")
+                                Text(L10n.t("机器人头像", "Bot avatar"))
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(Color.rcmsTextPrimary)
-                                Text(isUploadingAvatar ? "上传中" : "可拖动和缩放后上传")
+                                Text(isUploadingAvatar ? L10n.t("上传中", "Uploading") : L10n.t("上传前可拖动和缩放", "Drag and zoom before uploading"))
                                     .font(.caption)
                                     .foregroundStyle(Color.rcmsTextSecondary)
                             }
@@ -253,20 +266,21 @@ struct BotSettingsView: View {
                                 }
                             }
                             .disabled(isUploadingAvatar || viewModel.isLoading)
+                            .accessibilityLabel(L10n.t("选择机器人头像", "Choose bot avatar"))
                         }
                         .padding(12)
                         .background(Color.rcmsSubtleFill)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                        TextField("机器人名称", text: $editName)
+                        TextField(L10n.t("机器人名称", "Bot name"), text: $editName)
                             .padding(12)
                             .background(Color.rcmsFieldSurface)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
-                        TextField("一句话描述", text: $editDescription)
+                        TextField(L10n.t("一句话描述", "Short description"), text: $editDescription)
                             .padding(12)
                             .background(Color.rcmsFieldSurface)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
-                        TextField("头像 URL", text: $editAvatarURL)
+                        TextField(L10n.t("头像链接", "Avatar URL"), text: $editAvatarURL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
                             .padding(12)
@@ -276,7 +290,7 @@ struct BotSettingsView: View {
                     .padding(16)
                 } else {
                     HStack {
-                        Text("头像")
+                        Text(L10n.t("头像", "Avatar"))
                             .foregroundStyle(Color.rcmsTextSecondary)
                         Spacer()
                         AvatarBadge(
@@ -292,7 +306,7 @@ struct BotSettingsView: View {
                     Divider().padding(.horizontal, 16)
 
                     HStack {
-                        Text("名称")
+                        Text(L10n.t("名称", "Name"))
                             .foregroundStyle(Color.rcmsTextSecondary)
                         Spacer()
                         Text(viewModel.bot.name)
@@ -303,10 +317,10 @@ struct BotSettingsView: View {
                     Divider().padding(.horizontal, 16)
                     
                     HStack {
-                        Text("描述")
+                        Text(L10n.t("描述", "Description"))
                             .foregroundStyle(Color.rcmsTextSecondary)
                         Spacer()
-                        Text(viewModel.bot.description ?? "无")
+                        Text(viewModel.bot.description ?? L10n.t("无", "None"))
                             .foregroundStyle(Color.rcmsTextPrimary)
                     }
                     .padding(16)
@@ -314,10 +328,10 @@ struct BotSettingsView: View {
                     Divider().padding(.horizontal, 16)
                     
                     HStack {
-                        Text("状态")
+                        Text(L10n.t("状态", "Status"))
                             .foregroundStyle(Color.rcmsTextSecondary)
                         Spacer()
-                        Text(viewModel.bot.status == "online" ? "在线" : "离线")
+                        Text(viewModel.bot.status == "online" ? L10n.online : L10n.offline)
                             .foregroundStyle(viewModel.bot.status == "online" ? Color.rcmsOnline : Color.rcmsTextSecondary)
                     }
                     .padding(16)
@@ -378,11 +392,11 @@ struct BotSettingsView: View {
     private var keysSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("访问密钥 (Bot Keys)")
+                Text(L10n.t("访问密钥", "Bot keys"))
                     .font(.subheadline.bold())
                     .foregroundStyle(Color.rcmsTextSecondary)
                 Spacer()
-                Button("新增密钥") {
+                Button(L10n.t("新增密钥", "New key")) {
                     showNewKeyAlert = true
                 }
                 .font(.subheadline.bold())
@@ -391,7 +405,7 @@ struct BotSettingsView: View {
             
             if viewModel.keys.isEmpty {
                 VStack {
-                    Text("暂无访问密钥")
+                    Text(L10n.t("暂无访问密钥", "No access keys yet"))
                         .font(.subheadline)
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
@@ -403,7 +417,7 @@ struct BotSettingsView: View {
                     ForEach(viewModel.keys) { key in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(key.name ?? "未命名密钥")
+                                Text(key.name ?? L10n.t("未命名密钥", "Unnamed key"))
                                     .font(.subheadline.bold())
                                     .foregroundStyle(Color.rcmsTextPrimary)
                                 Text(key.keyPrefix + "...")
@@ -417,6 +431,7 @@ struct BotSettingsView: View {
                                 Image(systemName: "trash")
                                     .foregroundStyle(Color.rcmsDanger)
                             }
+                            .accessibilityLabel(L10n.t("删除密钥", "Delete key"))
                         }
                         .padding(16)
                         
@@ -432,7 +447,7 @@ struct BotSettingsView: View {
     
     private var dangerZoneSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("危险区域")
+            Text(L10n.t("危险区域", "Danger zone"))
                 .font(.subheadline.bold())
                 .foregroundStyle(Color.rcmsDanger)
             
@@ -440,7 +455,7 @@ struct BotSettingsView: View {
                 showDeleteConfirm = true
             } label: {
                 HStack {
-                    Text("删除机器人")
+                    Text(L10n.t("删除机器人", "Delete bot"))
                         .font(.headline)
                         .foregroundStyle(Color.rcmsDanger)
                     Spacer()
@@ -450,16 +465,16 @@ struct BotSettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.rcmsDanger.opacity(0.3), lineWidth: 1))
             }
-            .confirmationDialog("确定要删除此机器人吗？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-                Button("删除", role: .destructive) {
+            .confirmationDialog(L10n.t("确定要删除此机器人吗？", "Delete this bot?"), isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+                Button(L10n.t("删除", "Delete"), role: .destructive) {
                     viewModel.deleteBot {
                         onBotUpdated()
                         dismiss()
                     }
                 }
-                Button("取消", role: .cancel) { }
+                Button(L10n.t("取消", "Cancel"), role: .cancel) { }
             } message: {
-                Text("删除后不可恢复，相关的聊天记录也会失效。")
+                Text(L10n.t("删除后不可恢复，相关的聊天记录也会失效。", "This cannot be undone. Related chat history will stop working."))
             }
         }
     }

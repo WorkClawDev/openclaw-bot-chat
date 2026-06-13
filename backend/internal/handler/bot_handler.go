@@ -2,7 +2,9 @@ package handler
 
 import (
 	"errors"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +17,10 @@ import (
 // BotHandler handles bot endpoints
 type BotHandler struct {
 	botService *service.BotService
+}
+
+type confirmBindingRequest struct {
+	Token string `json:"token" binding:"required"`
 }
 
 // NewBotHandler creates a new bot handler
@@ -248,4 +254,112 @@ func (h *BotHandler) RevokeKey(c *gin.Context) {
 		return
 	}
 	apiresponse.Success(c, gin.H{"message": "key revoked"})
+}
+
+// CreateBinding creates a short-lived one-time QR binding token for a bot.
+func (h *BotHandler) CreateBinding(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	botID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		apiresponse.BadRequest(c, "invalid bot id")
+		return
+	}
+	binding, err := h.botService.CreateBindingToken(c.Request.Context(), botID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrBotNotFound) {
+			apiresponse.NotFound(c, "bot not found")
+		} else {
+			apiresponse.InternalError(c, err.Error())
+		}
+		return
+	}
+	apiresponse.Created(c, responsedto.BotBindingResponse{
+		Token:     binding.Token,
+		BindURL:   buildBindingURL(c, binding.Token),
+		ExpiresAt: binding.ExpiresAt,
+		Bot:       responsedto.NewBotResponse(binding.Bot),
+	})
+}
+
+// PreviewBinding returns safe bot metadata for a valid one-time binding token.
+func (h *BotHandler) PreviewBinding(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	token := strings.TrimSpace(c.Query("token"))
+	if token == "" {
+		apiresponse.BadRequest(c, "token is required")
+		return
+	}
+	bot, binding, err := h.botService.PreviewBindingToken(c.Request.Context(), token, userID)
+	if err != nil {
+		writeBindingError(c, err)
+		return
+	}
+	apiresponse.Success(c, responsedto.BotBindingResponse{
+		ExpiresAt: binding.ExpiresAt,
+		Bot:       responsedto.NewBotResponse(bot),
+	})
+}
+
+// ConfirmBinding consumes a one-time binding token and returns the bound bot.
+func (h *BotHandler) ConfirmBinding(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	var req confirmBindingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	bot, err := h.botService.ConfirmBindingToken(c.Request.Context(), req.Token, userID)
+	if err != nil {
+		writeBindingError(c, err)
+		return
+	}
+	apiresponse.Success(c, responsedto.BotBindingResponse{
+		Bot: responsedto.NewBotResponse(bot),
+	})
+}
+
+func writeBindingError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrBindingTokenInvalid):
+		apiresponse.NotFound(c, "binding token not found")
+	case errors.Is(err, service.ErrBindingTokenExpired):
+		apiresponse.BadRequest(c, "binding token expired")
+	case errors.Is(err, service.ErrBindingTokenUsed):
+		apiresponse.BadRequest(c, "binding token already used")
+	case errors.Is(err, service.ErrBotNotFound):
+		apiresponse.NotFound(c, "bot not found")
+	default:
+		apiresponse.InternalError(c, err.Error())
+	}
+}
+
+func buildBindingURL(c *gin.Context, token string) string {
+	scheme := "https"
+	if c.Request.TLS == nil {
+		scheme = "http"
+	}
+	if forwardedProto := c.GetHeader("X-Forwarded-Proto"); forwardedProto != "" {
+		scheme = strings.Split(forwardedProto, ",")[0]
+	}
+	host := c.Request.Host
+	if forwardedHost := c.GetHeader("X-Forwarded-Host"); forwardedHost != "" {
+		host = strings.Split(forwardedHost, ",")[0]
+	}
+	query := url.Values{}
+	query.Set("token", token)
+	query.Set("package", "@workclawdev/extension-bot-chat")
+	query.Set("channel", "bot-chat")
+	return scheme + "://" + host + "/openclaw/bind?" + query.Encode()
 }

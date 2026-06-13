@@ -344,6 +344,14 @@ final class AvatarImageLoader: ObservableObject {
         }
     }
 
+    static func cachedImageForDisplay(for url: URL) -> UIImage? {
+        cachedImage(for: url)
+    }
+
+    static func imageForDisplay(for url: URL) async -> UIImage? {
+        await image(for: url)
+    }
+
     func load(url: URL) async {
         if currentURL != url {
             if let cachedImage = Self.cachedImage(for: url) {

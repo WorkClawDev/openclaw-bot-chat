@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,9 +20,10 @@ import (
 )
 
 type BotRuntimeHandler struct {
-	msgService *service.MessageService
-	assetSvc   *service.AssetService
-	broker     config.BrokerClientConfig
+	msgService  *service.MessageService
+	assetSvc    *service.AssetService
+	documentSvc *service.DocumentService
+	broker      config.BrokerClientConfig
 }
 
 type botRuntimeBootstrapResponse struct {
@@ -75,6 +77,10 @@ func NewBotRuntimeHandler(
 			QOS:          int(mqttCfg.QOS),
 		},
 	}
+}
+
+func (h *BotRuntimeHandler) SetDocumentService(documentSvc *service.DocumentService) {
+	h.documentSvc = documentSvc
 }
 
 func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
@@ -157,6 +163,205 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 			MaxCatchupBatch: 200,
 		},
 	})
+}
+
+func (h *BotRuntimeHandler) CreateDocument(c *gin.Context) {
+	h.createDocument(c, false)
+}
+
+type botRuntimeCreateDocumentRequest struct {
+	service.CreateDocumentRequest
+	SendURL *bool `json:"send_url"`
+}
+
+type botRuntimeCreateDocumentResponse struct {
+	Document *responsedto.DocumentResponse `json:"document"`
+	Message  *responsedto.MessageResponse  `json:"message,omitempty"`
+}
+
+type botRuntimeUpdateDocumentResponse struct {
+	Document *responsedto.DocumentResponse `json:"document"`
+	Message  *responsedto.MessageResponse  `json:"message,omitempty"`
+}
+
+type botRuntimeUpdateDocumentRequest struct {
+	service.UpdateDocumentRequest
+	ConversationID string `json:"conversation_id"`
+	SendURL        *bool  `json:"send_url"`
+}
+
+func (h *BotRuntimeHandler) createDocument(c *gin.Context, forceURL bool) {
+	bot, ok := middleware.GetBot(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	if h.documentSvc == nil {
+		apiresponse.InternalError(c, "document service unavailable")
+		return
+	}
+
+	var req botRuntimeCreateDocumentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	conversationID := service.NormalizeConversationReference(req.CreateDocumentRequest.ConversationID)
+	shouldSendURL := forceURL || (req.SendURL != nil && *req.SendURL)
+	if shouldSendURL && conversationID == "" {
+		apiresponse.BadRequest(c, "conversation_id is required to send a document url")
+		return
+	}
+	if conversationID != "" {
+		if err := h.msgService.CanBotAccessConversation(c.Request.Context(), bot.ID, conversationID); err != nil {
+			writeBotRuntimeConversationError(c, err)
+			return
+		}
+		req.CreateDocumentRequest.ConversationID = conversationID
+	}
+	ownerID := documentOwnerForBotRequest(bot.OwnerID, bot.ID, conversationID)
+
+	document, err := h.documentSvc.CreateFromBot(c.Request.Context(), ownerID, bot.ID, req.CreateDocumentRequest)
+	if err != nil {
+		writeDocumentError(c, err)
+		return
+	}
+
+	var message *model.Message
+	if shouldSendURL {
+		message = buildBotDocumentURLMessage(bot, conversationID, document)
+		if err := h.msgService.SaveMessage(c.Request.Context(), message); err != nil {
+			apiresponse.InternalError(c, err.Error())
+			return
+		}
+		updatedDocument, err := h.documentSvc.SetSourceMessage(c.Request.Context(), ownerID, document.ID, message.MessageID)
+		if err == nil {
+			document = updatedDocument
+		} else {
+			// Non-fatal for card delivery; document ownership and card metadata are already valid.
+		}
+	}
+
+	apiresponse.Created(c, botRuntimeCreateDocumentResponse{
+		Document: responsedto.NewDocumentResponse(document, true),
+		Message:  responsedto.NewMessageResponse(message),
+	})
+}
+
+func (h *BotRuntimeHandler) UpdateDocument(c *gin.Context) {
+	bot, ok := middleware.GetBot(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	if h.documentSvc == nil {
+		apiresponse.InternalError(c, "document service unavailable")
+		return
+	}
+	documentID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		apiresponse.BadRequest(c, "invalid document id")
+		return
+	}
+	var req botRuntimeUpdateDocumentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+	conversationID := service.NormalizeConversationReference(req.ConversationID)
+	shouldSendURL := req.SendURL != nil && *req.SendURL
+	if shouldSendURL && conversationID == "" {
+		apiresponse.BadRequest(c, "conversation_id is required to send a document url")
+		return
+	}
+	if conversationID != "" {
+		if err := h.msgService.CanBotAccessConversation(c.Request.Context(), bot.ID, conversationID); err != nil {
+			writeBotRuntimeConversationError(c, err)
+			return
+		}
+	}
+	document, err := h.documentSvc.UpdateFromBot(c.Request.Context(), bot.OwnerID, bot.ID, documentID, req.UpdateDocumentRequest)
+	if err != nil {
+		writeDocumentError(c, err)
+		return
+	}
+	var message *model.Message
+	if shouldSendURL {
+		message = buildBotDocumentURLMessage(bot, conversationID, document)
+		message.Content = fmt.Sprintf("文档已更新：[%s](%s)", document.Title, responsedto.DocumentURL(document.ID))
+		if err := h.msgService.SaveMessage(c.Request.Context(), message); err != nil {
+			apiresponse.InternalError(c, err.Error())
+			return
+		}
+		updatedDocument, err := h.documentSvc.SetSourceMessage(c.Request.Context(), bot.OwnerID, document.ID, message.MessageID)
+		if err == nil {
+			document = updatedDocument
+		}
+	}
+	apiresponse.Success(c, botRuntimeUpdateDocumentResponse{
+		Document: responsedto.NewDocumentResponse(document, true),
+		Message:  responsedto.NewMessageResponse(message),
+	})
+}
+
+func documentOwnerForBotRequest(botOwnerID uuid.UUID, botID uuid.UUID, conversationID string) uuid.UUID {
+	parts := strings.Split(strings.Trim(conversationID, "/"), "/")
+	if len(parts) == 6 && parts[0] == "chat" && parts[1] == "dm" {
+		leftType, leftID := parts[2], parts[3]
+		rightType, rightID := parts[4], parts[5]
+		if leftType == "user" && rightType == "bot" && strings.EqualFold(rightID, botID.String()) {
+			if parsed, err := uuid.Parse(leftID); err == nil && parsed == botOwnerID {
+				return parsed
+			}
+		}
+		if rightType == "user" && leftType == "bot" && strings.EqualFold(leftID, botID.String()) {
+			if parsed, err := uuid.Parse(rightID); err == nil && parsed == botOwnerID {
+				return parsed
+			}
+		}
+	}
+	return botOwnerID
+}
+
+func buildBotDocumentURLMessage(bot *model.Bot, conversationID string, document *model.Document) *model.Message {
+	messageID := uuid.New()
+	botName := bot.Name
+	documentURL := responsedto.DocumentURL(document.ID)
+	meta := model.JSONMap{
+		"document_id":         document.ID.String(),
+		"document_url":        documentURL,
+		"document_title":      document.Title,
+		"document_summary":    document.Summary,
+		"document_type":       string(document.DocumentType),
+		"document_source":     string(document.Source),
+		"document_updated_at": document.UpdatedAt,
+	}
+	return &model.Message{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		SenderType:     model.SenderTypeBot,
+		SenderID:       &bot.ID,
+		SenderName:     &botName,
+		BotID:          &bot.ID,
+		MsgType:        model.MsgTypeText,
+		Content:        fmt.Sprintf("文档已创建：[%s](%s)", document.Title, documentURL),
+		Metadata:       meta,
+		MQTTTopic:      conversationID,
+		QOS:            1,
+		CreatedAt:      time.Now(),
+	}
+}
+
+func writeBotRuntimeConversationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrConversationAccessDenied):
+		apiresponse.Forbidden(c, err.Error())
+	case errors.Is(err, service.ErrInvalidMessageRoute):
+		apiresponse.BadRequest(c, err.Error())
+	default:
+		apiresponse.InternalError(c, err.Error())
+	}
 }
 
 func (h *BotRuntimeHandler) ImportImage(c *gin.Context) {

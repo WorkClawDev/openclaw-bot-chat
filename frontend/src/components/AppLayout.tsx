@@ -10,6 +10,7 @@ import { BrandLogo } from './BrandLogo'
 const navItems = [
   { href: '/bots', label: 'Bots', icon: 'bot' },
   { href: '/groups', label: 'Groups', icon: 'users' },
+  { href: '/documents', label: 'Documents', icon: 'documents' },
   { href: '/tasks', label: 'Tasks', icon: 'tasks' },
   { href: '/settings', label: 'Settings', icon: 'settings' },
 ]
@@ -39,6 +40,13 @@ function NavIcon({ type }: { type: string }) {
       return (
         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5h10M9 12h10M9 19h10M5 5h.01M5 12h.01M5 19h.01" />
+        </svg>
+      )
+    case 'documents':
+      return (
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 3h7l5 5v13a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 3v6h5M8 13h8M8 17h6" />
         </svg>
       )
     default:

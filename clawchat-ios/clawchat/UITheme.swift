@@ -107,22 +107,22 @@ enum AppAppearanceMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .system:
-            return "System"
+            return L10n.t("系统", "System")
         case .light:
-            return "Light"
+            return L10n.t("浅色", "Light")
         case .dark:
-            return "Dark"
+            return L10n.t("深色", "Dark")
         }
     }
 
     var subtitle: String {
         switch self {
         case .system:
-            return "Uses iOS appearance"
+            return L10n.t("跟随系统外观", "Uses iOS appearance")
         case .light:
-            return "Bright daytime palette"
+            return L10n.t("明亮的日间配色", "Bright daytime palette")
         case .dark:
-            return "Deep night palette"
+            return L10n.t("深夜配色", "Deep night palette")
         }
     }
 

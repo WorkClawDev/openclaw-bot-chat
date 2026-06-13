@@ -150,6 +150,8 @@ final class MessageRenderCoordinatorV2 {
             return imageSize(for: image, maxBubbleWidth: maxBubbleWidth)
         case .audio(let audio):
             return audioSize(for: audio, maxBubbleWidth: maxBubbleWidth)
+        case .document(let document):
+            return documentSize(for: document, maxBubbleWidth: maxBubbleWidth)
         }
     }
 
@@ -218,6 +220,11 @@ final class MessageRenderCoordinatorV2 {
         let clampedDuration = min(max(block.durationSeconds ?? 12, 1), 60)
         let width = min(maxBubbleWidth, 98 + CGFloat(clampedDuration) * 1.7)
         return CGSize(width: max(118, width), height: 60)
+    }
+
+    private func documentSize(for block: DocumentLinkBlockContentV2, maxBubbleWidth: CGFloat) -> CGSize {
+        let width = min(maxBubbleWidth, max(286, maxBubbleWidth * 0.96))
+        return CGSize(width: ceil(width), height: 158)
     }
 
     private func senderNameSize(for sender: MessageSenderPresentationV2, maxBubbleWidth: CGFloat) -> CGSize {

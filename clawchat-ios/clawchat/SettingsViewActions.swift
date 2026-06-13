@@ -83,7 +83,7 @@ extension SettingsView {
         do {
             let prefix = resolvedUser?.username ?? "profile"
             avatarURLDraft = try await AvatarUploadService.uploadAvatarImage(image, fileNamePrefix: prefix)
-            presentToast("Avatar uploaded")
+            presentToast(L10n.t("头像已上传", "Avatar uploaded"))
         } catch {
             profileErrorMessage = SettingsViewModel.message(from: error)
         }
@@ -93,13 +93,13 @@ extension SettingsView {
         let trimmedNickname = nicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAvatarURL = avatarURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedNickname.isEmpty {
-            profileErrorMessage = "Display name cannot be empty"
+            profileErrorMessage = L10n.t("显示名称不能为空", "Display name cannot be empty")
             return
         }
         do {
             _ = try await viewModel.updateProfile(nickname: trimmedNickname, avatarURL: trimmedAvatarURL)
             withAnimation { isEditingProfile = false }
-            presentToast("Profile updated")
+            presentToast(L10n.t("个人资料已更新", "Profile updated"))
         } catch {
             profileErrorMessage = SettingsViewModel.message(from: error)
         }
@@ -108,18 +108,18 @@ extension SettingsView {
     func submitPasswordChange() async {
         passwordErrorMessage = nil
         if newPassword.count < 8 {
-            passwordErrorMessage = "New password must be at least 8 characters"
+            passwordErrorMessage = L10n.t("新密码至少需要 8 个字符", "New password must be at least 8 characters")
             return
         }
         if newPassword != confirmPassword {
-            passwordErrorMessage = "New passwords do not match"
+            passwordErrorMessage = L10n.t("两次输入的新密码不一致", "New passwords do not match")
             return
         }
         do {
             try await viewModel.changePassword(currentPassword: currentPassword, newPassword: newPassword)
             resetPasswordForm()
             withAnimation { showPasswordEditor = false }
-            presentToast("Password updated")
+            presentToast(L10n.t("密码已更新", "Password updated"))
         } catch {
             passwordErrorMessage = SettingsViewModel.message(from: error)
         }
@@ -141,22 +141,22 @@ extension SettingsView {
     func updateNotifications(enabled: Bool) async {
         if !enabled {
             botNotificationsEnabled = false
-            presentToast("Notifications turned off")
+            presentToast(L10n.t("通知已关闭", "Notifications turned off"))
             return
         }
         if hasNotificationPermission {
             botNotificationsEnabled = true
-            presentToast("Notifications turned on")
+            presentToast(L10n.t("通知已开启", "Notifications turned on"))
             return
         }
         let granted = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
         await refreshNotificationAuthorization()
         if granted == true {
             botNotificationsEnabled = true
-            presentToast("Notifications turned on")
+            presentToast(L10n.t("通知已开启", "Notifications turned on"))
         } else {
             botNotificationsEnabled = false
-            presentToast("Notification permission was not granted", isError: true)
+            presentToast(L10n.t("未获得通知权限", "Notification permission was not granted"), isError: true)
         }
     }
 
@@ -201,20 +201,20 @@ extension SettingsView {
 
     var notificationSubtitle: String {
         switch notificationAuthorizationStatus {
-        case .authorized, .provisional: return botNotificationsEnabled ? "On" : "Allowed"
-        case .denied: return "Blocked"
-        default: return "Off"
+        case .authorized, .provisional: return botNotificationsEnabled ? L10n.t("已开启", "On") : L10n.t("已允许", "Allowed")
+        case .denied: return L10n.t("已阻止", "Blocked")
+        default: return L10n.t("已关闭", "Off")
         }
     }
 
     var imageUploadQualitySubtitle: String {
         switch imageUploadQuality {
         case "Original":
-            return "Original"
+            return L10n.t("原图", "Original")
         case "Compressed":
-            return "Small"
+            return L10n.t("小图", "Small")
         default:
-            return "Balanced"
+            return L10n.t("均衡", "Balanced")
         }
     }
 
@@ -224,26 +224,26 @@ extension SettingsView {
 
         switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
         case let (.some(version), .some(build)):
-            return "Version \(version) (\(build))"
+            return L10n.t("版本 \(version) (\(build))", "Version \(version) (\(build))")
         case let (.some(version), .none):
-            return "Version \(version)"
+            return L10n.t("版本 \(version)", "Version \(version)")
         case let (.none, .some(build)):
-            return "Build \(build)"
+            return L10n.t("构建 \(build)", "Build \(build)")
         default:
-            return "OpenClaw Bot Chat"
+            return L10n.t("OpenClaw 机器人聊天", "OpenClaw Bot Chat")
         }
     }
 
     var realtimeConnectionText: String {
         switch realtimeService.connectionState {
         case .idle:
-            return "Idle"
+            return L10n.t("空闲", "Idle")
         case .connecting:
-            return "Connecting"
+            return L10n.t("连接中", "Connecting")
         case .connected:
-            return "Connected"
+            return L10n.t("已连接", "Connected")
         case .disconnected:
-            return "Disconnected"
+            return L10n.t("未连接", "Disconnected")
         }
     }
 
@@ -261,6 +261,16 @@ extension SettingsView {
     }
 
     static let imageUploadQualityOptions = ["Compressed", "Balanced", "Original"]
+    static func localizedImageUploadQuality(_ quality: String) -> String {
+        switch quality {
+        case "Compressed":
+            return L10n.t("压缩", "Compressed")
+        case "Original":
+            return L10n.t("原图", "Original")
+        default:
+            return L10n.t("均衡", "Balanced")
+        }
+    }
     static let coralDanger = Color(red: 248 / 255, green: 113 / 255, blue: 113 / 255)
 
     static let dateFormatter: DateFormatter = {

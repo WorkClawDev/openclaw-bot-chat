@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -72,11 +73,13 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	botRepo := repository.NewBotRepository(db)
 	keyRepo := repository.NewBotKeyRepository(db)
+	bindingTokenRepo := repository.NewBotBindingTokenRepository(db)
 	msgRepo := repository.NewMessageRepository(db)
 	groupRepo := repository.NewGroupRepository(db)
 	assetRepo := repository.NewAssetRepository(db)
 	auditRepo := repository.NewAuditLogRepository(db)
 	taskRepo := repository.NewTaskRepository(db)
+	documentRepo := repository.NewDocumentRepository(db)
 
 	// --- Object Storage ---
 	objectStorage, err := storage.NewProvider(cfg.Storage)
@@ -86,11 +89,12 @@ func main() {
 
 	// --- Services ---
 	authService := service.NewAuthService(userRepo, auditRepo, jwtManager)
-	botService := service.NewBotService(botRepo, keyRepo, auditRepo)
+	botService := service.NewBotService(botRepo, keyRepo, bindingTokenRepo, auditRepo)
 	assetService := service.NewAssetService(assetRepo, objectStorage, cfg.Storage, cfg.Asset)
 	msgService := service.NewMessageService(msgRepo, botRepo, groupRepo, assetRepo, auditRepo, assetService)
 	groupService := service.NewGroupService(groupRepo, botRepo, auditRepo)
 	taskService := service.NewTaskService(taskRepo, botRepo)
+	documentService := service.NewDocumentService(documentRepo)
 
 	// --- MQTT Client ---
 	mqttClient := mqtt.NewClient(mqtt.MQTTConfig{
@@ -117,12 +121,14 @@ func main() {
 	realtimeHandler := handler.NewRealtimeHandler(msgService, cfg.MQTT)
 	assetHandler := handler.NewAssetHandler(assetService)
 	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService, assetService, cfg.MQTT)
+	botRuntimeHandler.SetDocumentService(documentService)
 	groupHandler := handler.NewGroupHandler(groupService)
 	taskHandler := handler.NewTaskHandler(taskService)
 	taskRuntimeHandler := handler.NewTaskRuntimeHandler(taskService)
+	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, botService, jwtManager)
+	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -177,8 +183,10 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.User{},
 		&model.Bot{},
 		&model.BotKey{},
+		&model.BotBindingToken{},
 		&model.Message{},
 		&model.Asset{},
+		&model.Document{},
 		&model.Group{},
 		&model.GroupMember{},
 		&model.BotGroupMember{},
@@ -222,6 +230,7 @@ func setupRoutes(
 	groupHandler *handler.GroupHandler,
 	taskHandler *handler.TaskHandler,
 	taskRuntimeHandler *handler.TaskRuntimeHandler,
+	documentHandler *handler.DocumentHandler,
 	botService *service.BotService,
 	jwtManager *jwt.Manager,
 ) {
@@ -246,6 +255,10 @@ func setupRoutes(
 		botRuntime.GET("/messages/*conversation_id", botRuntimeHandler.GetConversationMessages)
 		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
 		botRuntime.POST("/assets/audio/import", botRuntimeHandler.ImportAudio)
+		if documentsFeatureEnabled() {
+			botRuntime.POST("/documents", botRuntimeHandler.CreateDocument)
+			botRuntime.PUT("/documents/:id", botRuntimeHandler.UpdateDocument)
+		}
 		botRuntime.GET("/tasks", taskRuntimeHandler.List)
 		botRuntime.GET("/tasks/queue", taskRuntimeHandler.Queue)
 		botRuntime.POST("/tasks", taskRuntimeHandler.Create)
@@ -274,11 +287,14 @@ func setupRoutes(
 		protected.GET("/bots/:id", botHandler.Get)
 		protected.PUT("/bots/:id", botHandler.Update)
 		protected.DELETE("/bots/:id", botHandler.Delete)
+		protected.POST("/bots/:id/bindings", botHandler.CreateBinding)
 
 		// Bot Keys
 		protected.GET("/bots/:id/keys", botHandler.ListKeys)
 		protected.POST("/bots/:id/keys", botHandler.CreateKey)
 		protected.DELETE("/bots/:id/keys/:key_id", botHandler.RevokeKey)
+		protected.GET("/bot-bindings/preview", botHandler.PreviewBinding)
+		protected.POST("/bot-bindings/confirm", botHandler.ConfirmBinding)
 
 		// Messages
 		protected.GET("/realtime/bootstrap", realtimeHandler.Bootstrap)
@@ -289,6 +305,15 @@ func setupRoutes(
 		protected.POST("/assets/image/complete", assetHandler.CompleteImageUpload)
 		protected.POST("/assets/audio/upload-prepare", assetHandler.PrepareAudioUpload)
 		protected.POST("/assets/audio/complete", assetHandler.CompleteAudioUpload)
+
+		if documentsFeatureEnabled() {
+			// Documents
+			protected.GET("/documents", documentHandler.List)
+			protected.POST("/documents", documentHandler.Create)
+			protected.GET("/documents/:id", documentHandler.Get)
+			protected.PUT("/documents/:id", documentHandler.Update)
+			protected.DELETE("/documents/:id", documentHandler.Archive)
+		}
 
 		// Groups
 		protected.GET("/groups", groupHandler.List)
@@ -314,4 +339,9 @@ func setupRoutes(
 		protected.DELETE("/tasks/:id", taskHandler.Delete)
 	}
 
+}
+
+func documentsFeatureEnabled() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("OPENCLAW_DOCUMENTS_ENABLED")))
+	return raw != "false" && raw != "0" && raw != "off"
 }

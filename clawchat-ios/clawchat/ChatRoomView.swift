@@ -1020,6 +1020,7 @@ private struct ChatRoomLegacyView: View {
     @State private var listScrollCommand = ChatListScrollCommand.none
     @State private var selectedSlashCommandIndex = 0
     @State private var slashAutocompleteTask: Task<Void, Never>?
+    @State private var selectedDocumentRoute: DocumentRoute?
 #if DEBUG
     @State private var hasTriggeredFixtureImageSend = false
 #endif
@@ -1147,11 +1148,20 @@ private struct ChatRoomLegacyView: View {
         .fullScreenCover(item: $previewMessage) { message in
             ChatImagePreviewScreen(message: message)
         }
+        .navigationDestination(item: $selectedDocumentRoute) { route in
+            DocumentDetailView(documentID: route.id)
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            if openDocumentURL(url) {
+                return .handled
+            }
+            return .systemAction
+        })
         .alert(item: $imageSaveStatus) { status in
             Alert(
                 title: Text(status.title),
                 message: Text(status.message),
-                dismissButton: .default(Text("确定"))
+                dismissButton: .default(Text(L10n.t("确定", "OK")))
             )
         }
         .alert(
@@ -1165,7 +1175,7 @@ private struct ChatRoomLegacyView: View {
                 }
             )
         ) {
-            Button("确定", role: .cancel) {
+            Button(L10n.t("确定", "OK"), role: .cancel) {
                 viewModel.errorMessage = nil
             }
         } message: {
@@ -1204,6 +1214,8 @@ private struct ChatRoomLegacyView: View {
                 onInitialPositioned: { hasPositionedInitialMessages = true },
                 onPreviewImage: { previewMessage = $0 },
                 onSaveImage: saveImage,
+                onOpenDocument: { selectedDocumentRoute = DocumentRoute(id: $0) },
+                onContinueDocument: continueEditingDocument,
                 onTapList: { isInputFocused = false }
             )
         } else {
@@ -1218,6 +1230,7 @@ private struct ChatRoomLegacyView: View {
                 scrollCommand: listScrollCommand,
                 onPreviewImage: { previewMessage = $0 },
                 onSaveImage: saveImage,
+                onContinueDocument: continueEditingDocument,
                 onLoadOlder: triggerHistoryPreloadIfNeeded,
                 onNearBottomChange: { isNearBottom = $0 },
                 onUserScrollChange: { isUserInteractingWithMessages = $0 },
@@ -1377,7 +1390,7 @@ private struct ChatRoomLegacyView: View {
                                 .controlSize(.small)
                                 .frame(width: 22, height: 22)
 
-                            Text("Loading options")
+                            Text(L10n.t("正在加载选项", "Loading options"))
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(Color.rcmsTextSecondary)
 
@@ -1845,19 +1858,55 @@ private struct ChatRoomLegacyView: View {
         Task { @MainActor in
             do {
                 try await ChatImageSaver.save(message)
-                imageSaveStatus = ChatImageSaveStatus(title: "已保存", message: "图片已保存到系统相册。")
+                imageSaveStatus = ChatImageSaveStatus(title: L10n.t("已保存", "Saved"), message: L10n.t("图片已保存到系统相册。", "Image saved to Photos."))
             } catch {
                 imageSaveStatus = ChatImageSaveStatus(
-                    title: "保存失败",
+                    title: L10n.t("保存失败", "Save failed"),
                     message: error.localizedDescription
                 )
             }
         }
     }
 
+    private func openDocumentURL(_ url: URL) -> Bool {
+        guard DocumentsFeatureFlag.isEnabled,
+              let documentID = Self.documentID(from: url) else {
+            return false
+        }
+        selectedDocumentRoute = DocumentRoute(id: documentID)
+        return true
+    }
+
+    private func continueEditingDocument(_ preview: DocumentLinkPreview) {
+        viewModel.inputText = L10n.t(
+            "请继续修改这份文档：\(preview.title)\n\(preview.path)\n\n修改要求：",
+            "Please continue editing this document: \(preview.title)\n\(preview.path)\n\nRequested changes:"
+        )
+        isInputFocused = true
+    }
+
     private func normalizeIdentifier(_ value: String?) -> String {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     }
+
+    private static func documentID(from url: URL) -> UUID? {
+        let components = url.pathComponents.filter { $0 != "/" }
+        if components.count == 2,
+           components[0] == "documents",
+           let id = UUID(uuidString: components[1]) {
+            return id
+        }
+        if url.scheme == "openclaw",
+           url.host == "documents",
+           let id = UUID(uuidString: url.lastPathComponent) {
+            return id
+        }
+        return nil
+    }
+}
+
+private struct DocumentRoute: Identifiable, Hashable {
+    let id: UUID
 }
 
 struct ChatListScrollCommand: Equatable {
@@ -1892,6 +1941,7 @@ private struct ChatMessageListView: UIViewRepresentable {
     let scrollCommand: ChatListScrollCommand
     let onPreviewImage: (Message) -> Void
     let onSaveImage: (Message) -> Void
+    let onContinueDocument: (DocumentLinkPreview) -> Void
     let onLoadOlder: () -> Void
     let onNearBottomChange: (Bool) -> Void
     let onUserScrollChange: (Bool) -> Void
@@ -2126,7 +2176,8 @@ private struct ChatMessageListView: UIViewRepresentable {
                     currentUserID: parent.currentUserID,
                     showsSenderInfo: parent.showsSenderInfo,
                     fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
-                    onPreviewImage: parent.onPreviewImage
+                    onPreviewImage: parent.onPreviewImage,
+                    onContinueDocument: parent.onContinueDocument
                 )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
@@ -2146,13 +2197,13 @@ private struct ChatMessageListView: UIViewRepresentable {
 
             if let text = message.content.body?.trimmingCharacters(in: .whitespacesAndNewlines),
                !text.isEmpty {
-                actions.append(UIAction(title: "复制消息", image: UIImage(systemName: "doc.on.doc")) { _ in
+                actions.append(UIAction(title: L10n.t("复制消息", "Copy message"), image: UIImage(systemName: "doc.on.doc")) { _ in
                     UIPasteboard.general.string = text
                 })
             }
 
             if message.content.type.lowercased() == "image" {
-                actions.append(UIAction(title: "保存图片", image: UIImage(systemName: "square.and.arrow.down")) { [parent] _ in
+                actions.append(UIAction(title: L10n.t("保存图片", "Save image"), image: UIImage(systemName: "square.and.arrow.down")) { [parent] _ in
                     parent.onSaveImage(message)
                 })
             }
@@ -2190,14 +2241,15 @@ private struct ChatMessageListView: UIViewRepresentable {
                 currentUserID: parent.currentUserID,
                 showsSenderInfo: parent.showsSenderInfo,
                 fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
-                onPreviewImage: nil
+                onPreviewImage: nil,
+                onContinueDocument: { _ in }
             )
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .frame(width: width)
 
             let host = UIHostingController(rootView: AnyView(content))
-            host.view.backgroundColor = .clear
+            host.view.backgroundColor = UIColor.clear
             let targetSize = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
             let measuredSize = host.sizeThatFits(in: targetSize)
             return max(1, ceil(measuredSize.height))
@@ -2619,7 +2671,7 @@ private struct ChatComposerIconButton: View {
                     .frame(width: 44, height: 44)
             }
         }
-        .accessibilityLabel(isUploading ? "Image uploading" : "Choose image")
+        .accessibilityLabel(isUploading ? L10n.t("图片上传中", "Image uploading") : L10n.t("选择图片", "Choose image"))
     }
 }
 
@@ -2711,6 +2763,9 @@ struct ChatBubbleRow: View {
     let showsSenderInfo: Bool
     let fallbackBotAvatarURLString: String?
     let onPreviewImage: ((Message) -> Void)?
+    let onContinueDocument: (DocumentLinkPreview) -> Void
+
+    @Environment(\.openURL) private var openURL
 
     private var messageTimestamp: String? {
         guard let date = message.displayDate else {
@@ -2912,7 +2967,7 @@ struct ChatBubbleRow: View {
                 if messageTimestamp != nil {
                     Text("·")
                 }
-                Text(message.failed ? "Failed" : "Sending")
+                Text(message.failed ? L10n.t("发送失败", "Failed") : L10n.t("发送中", "Sending"))
             }
         }
         .font(.caption2)
@@ -2923,7 +2978,7 @@ struct ChatBubbleRow: View {
     }
 
     private var deliveryStatusAccessibilityLabel: String {
-        let pieces = [messageTimestamp, message.failed ? "Failed" : (message.pending ? "Sending" : nil)]
+        let pieces = [messageTimestamp, message.failed ? L10n.t("发送失败", "Failed") : (message.pending ? L10n.t("发送中", "Sending") : nil)]
             .compactMap { $0 }
         return pieces.joined(separator: " ")
     }
@@ -2941,7 +2996,16 @@ struct ChatBubbleRow: View {
     @ViewBuilder
     private func messageTextBubble(_ text: String) -> some View {
         let bubbleShape = BubbleShape(isMe: isMe)
-        if MessageMarkdownView.shouldRenderMarkdown(text) {
+        let documentPreview = DocumentLinkPreview.first(in: text, metadata: message.content.meta)
+        if let documentPreview {
+            DocumentLinkPreviewCard(preview: documentPreview, isMe: isMe) {
+                openDocument(documentPreview)
+            } onContinue: {
+                onContinueDocument(documentPreview)
+            }
+            .frame(maxWidth: 318, alignment: isMe ? .trailing : .leading)
+            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
+        } else if MessageMarkdownView.shouldRenderMarkdown(text) {
             MessageMarkdownView(text: text, isMe: isMe)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -2960,6 +3024,107 @@ struct ChatBubbleRow: View {
                 .contentShape(bubbleShape)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
         }
+    }
+
+    private func openDocument(_ preview: DocumentLinkPreview) {
+        guard let url = URL(string: "openclaw://documents/\(preview.id.uuidString)") else { return }
+        openURL(url)
+    }
+}
+
+private struct DocumentLinkPreviewCard: View {
+    let preview: DocumentLinkPreview
+    let isMe: Bool
+    let onOpen: () -> Void
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 10) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isMe ? Color.white : Color.rcmsAccent)
+                            .frame(width: 36, height: 36)
+                            .background(isMe ? Color.white.opacity(0.16) : Color.rcmsAccent.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(preview.title)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(isMe ? Color.white : Color.rcmsTextStrong)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            HStack(spacing: 6) {
+                                Text(preview.documentType)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(isMe ? Color.white.opacity(0.86) : Color.rcmsAccent)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(isMe ? Color.white.opacity(0.13) : Color.rcmsAccent.opacity(0.1))
+                                    .clipShape(Capsule())
+
+                                Text(preview.updatedLabel)
+                                    .font(.caption2)
+                                    .foregroundStyle(isMe ? Color.white.opacity(0.7) : Color.rcmsTextSecondary)
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(isMe ? Color.white.opacity(0.58) : Color.rcmsTextSecondary)
+                    }
+
+                    Text(preview.summary)
+                        .font(.system(size: 13))
+                        .lineSpacing(3)
+                        .foregroundStyle(isMe ? Color.white.opacity(0.78) : Color.rcmsTextSecondary)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 8) {
+                Button(action: onContinue) {
+                    Label(L10n.t("继续修改", "Continue editing"), systemImage: "text.bubble")
+                        .labelStyle(.titleAndIcon)
+                }
+                    .frame(maxWidth: .infinity)
+
+                Button(action: onOpen) {
+                    Label(L10n.t("打开", "Open"), systemImage: "arrow.up.right")
+                        .labelStyle(.titleAndIcon)
+                }
+                    .frame(maxWidth: .infinity)
+
+                Label(L10n.t("分享", "Share"), systemImage: "link")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(isMe ? Color.white.opacity(0.55) : Color.rcmsTextSecondary)
+                    .frame(width: 36, height: 34)
+                    .background(isMe ? Color.white.opacity(0.08) : Color.rcmsFieldSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(isMe ? Color.white : Color.rcmsAccent)
+            .frame(maxWidth: .infinity)
+            .environment(\.layoutDirection, .leftToRight)
+        }
+        .padding(12)
+        .background(isMe ? Color.rcmsAccent : Color.rcmsSurfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isMe ? Color.white.opacity(0.18) : Color.rcmsHairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityLabel(L10n.t("打开文档 \(preview.title)", "Open document \(preview.title)"))
     }
 }
 
@@ -3218,6 +3383,18 @@ private struct CachedChatImageView: View {
     @State private var isLoading = false
     @State private var didFail = false
 
+    private static let imageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 240
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
+
+    init(message: Message) {
+        self.message = message
+        _cachedImage = State(initialValue: Self.cachedImage(for: message))
+    }
+
     var body: some View {
         Group {
             if let cachedImage {
@@ -3293,8 +3470,7 @@ private struct CachedChatImageView: View {
     private func loadImageIfNeeded() async {
         if cachedImage != nil { return }
 
-        if let cachedURL = LocalImageStore.shared.cachedFileURL(for: message),
-           let cachedImage = await decodedImage(from: cachedURL) {
+        if let cachedImage = Self.cachedImage(for: message) {
             self.cachedImage = cachedImage
             return
         }
@@ -3309,8 +3485,46 @@ private struct CachedChatImageView: View {
             return
         }
 
+        Self.store(cachedImage, for: message)
         self.cachedImage = cachedImage
         didFail = false
+    }
+
+    private static func cachedImage(for message: Message) -> UIImage? {
+        let key = memoryCacheKey(for: message)
+        if let image = imageCache.object(forKey: key) {
+            return image
+        }
+
+        guard let cachedURL = LocalImageStore.shared.cachedFileURL(for: message),
+              let image = UIImage(contentsOfFile: cachedURL.path)
+        else {
+            return nil
+        }
+
+        store(image, for: message)
+        return image
+    }
+
+    private static func store(_ image: UIImage, for message: Message) {
+        imageCache.setObject(image, forKey: memoryCacheKey(for: message), cost: cacheCost(for: image))
+    }
+
+    private static func memoryCacheKey(for message: Message) -> NSString {
+        let candidates = [
+            message.content.asset?.id,
+            message.content.asset?.objectKey,
+            message.content.imageURLString,
+            message.id
+        ]
+        let key = candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? message.id
+        return key as NSString
+    }
+
+    private static func cacheCost(for image: UIImage) -> Int {
+        max(1, Int(image.size.width * image.size.height * image.scale * image.scale * 4))
     }
 
     private func decodedImage(from fileURL: URL) async -> UIImage? {
@@ -3334,11 +3548,11 @@ private enum ChatImageSaveError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessDenied:
-            return "请在系统设置中允许 ClawChat 添加照片，然后再试一次。"
+            return L10n.t("请在系统设置中允许本应用添加照片，然后再试一次。", "Allow ClawChat to add photos in Settings, then try again.")
         case .imageUnavailable:
-            return "图片还没有加载完成，或原图地址不可用。"
+            return L10n.t("图片还没有加载完成，或原图地址不可用。", "The image has not finished loading, or the original URL is unavailable.")
         case .saveFailed:
-            return "系统相册没有完成保存，请稍后再试。"
+            return L10n.t("系统相册没有完成保存，请稍后再试。", "Photos did not finish saving the image. Try again later.")
         }
     }
 }
@@ -3501,9 +3715,9 @@ private struct PendingImageSendScreen: View {
 
     private var originalOptionTitle: String {
         if let originalSizeLabel {
-            return "原图 \(originalSizeLabel)"
+            return L10n.t("原图 \(originalSizeLabel)", "Original \(originalSizeLabel)")
         }
-        return "原图"
+        return L10n.t("原图", "Original")
     }
 
     @ViewBuilder
@@ -3516,13 +3730,13 @@ private struct PendingImageSendScreen: View {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.title2.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.9))
-                        Text("图片预览加载失败")
+                        Text(L10n.t("图片预览加载失败", "Image preview failed to load"))
                             .font(.body)
                             .foregroundStyle(.white.opacity(0.9))
                     } else {
                         ProgressView()
                             .tint(.white)
-                        Text("正在准备图片...")
+                        Text(L10n.t("正在准备图片...", "Preparing image..."))
                             .font(.body)
                             .foregroundStyle(.white.opacity(0.9))
                     }
@@ -3673,7 +3887,7 @@ struct ChatImagePreviewScreen: View {
             Alert(
                 title: Text(status.title),
                 message: Text(status.message),
-                dismissButton: .default(Text("确定"))
+                dismissButton: .default(Text(L10n.t("确定", "OK")))
             )
         }
     }
@@ -3738,10 +3952,10 @@ struct ChatImagePreviewScreen: View {
             defer { isSaving = false }
             do {
                 try await ChatImageSaver.save(message)
-                saveStatus = ChatImageSaveStatus(title: "已保存", message: "图片已保存到系统相册。")
+                saveStatus = ChatImageSaveStatus(title: L10n.t("已保存", "Saved"), message: L10n.t("图片已保存到系统相册。", "Image saved to Photos."))
             } catch {
                 saveStatus = ChatImageSaveStatus(
-                    title: "保存失败",
+                    title: L10n.t("保存失败", "Save failed"),
                     message: error.localizedDescription
                 )
             }
@@ -3785,25 +3999,25 @@ struct GroupMaintenanceSheet: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        TextField("群名称", text: $viewModel.groupName)
+                        TextField(L10n.t("群名称", "Group name"), text: $viewModel.groupName)
                             .padding(12)
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                        Button("保存群名称") {
+                        Button(L10n.t("保存群名称", "Save group name")) {
                             viewModel.renameGroup(groupId: groupId)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.rcmsAccent)
 
-                        Text("成员")
+                        Text(L10n.t("成员", "Members"))
                             .font(.headline)
 
                         ForEach(viewModel.members) { member in
                             HStack {
                                 Text(member.user?.username ?? member.nickname ?? member.userId.uuidString)
                                 Spacer()
-                                Button("移除") {
+                                Button(L10n.t("移除", "Remove")) {
                                     viewModel.removeMember(groupId: groupId, memberId: member.userId)
                                 }
                                 .foregroundStyle(Color.rcmsDanger)
@@ -3811,23 +4025,23 @@ struct GroupMaintenanceSheet: View {
                         }
 
                         if !viewModel.botMembers.isEmpty {
-                            Text("机器人成员")
+                            Text(L10n.t("机器人成员", "Bot members"))
                                 .font(.headline)
                             ForEach(viewModel.botMembers) { member in
                                 HStack {
                                     Text(member.bot?.name ?? member.nickname ?? member.botId.uuidString)
                                     Spacer()
-                                    Text("已加入")
+                                    Text(L10n.t("已加入", "Joined"))
                                         .foregroundStyle(Color.rcmsTextSecondary)
                                         .font(.caption)
                                 }
                             }
                         }
 
-                        Text("+ 添加成员")
+                        Text(L10n.t("+ 添加成员", "+ Add member"))
                             .font(.headline)
 
-                        TextField("搜索机器人", text: $viewModel.searchText)
+                        TextField(L10n.t("搜索机器人", "Search bots"), text: $viewModel.searchText)
                             .padding(12)
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -3836,7 +4050,7 @@ struct GroupMaintenanceSheet: View {
                             HStack {
                                 Text(bot.name)
                                 Spacer()
-                                Button("添加") {
+                                Button(L10n.t("添加", "Add")) {
                                     viewModel.addBot(groupId: groupId, botId: bot.id)
                                 }
                                 .foregroundStyle(Color.rcmsAccent)
@@ -3846,7 +4060,7 @@ struct GroupMaintenanceSheet: View {
                     .padding(16)
                 }
             }
-            .navigationTitle("群维护")
+            .navigationTitle(L10n.t("群维护", "Group settings"))
             .navigationBarTitleDisplayMode(.large)
         }
     }

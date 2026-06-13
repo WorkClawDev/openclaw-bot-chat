@@ -27,6 +27,8 @@ struct ChatRoomV2ImagePreviewFixtureView: View {
             onInitialPositioned: {},
             onPreviewImage: { previewMessage = $0 },
             onSaveImage: { _ in },
+            onOpenDocument: { _ in },
+            onContinueDocument: { _ in },
             onTapList: {}
         )
         .accessibilityIdentifier("chatRoomV2.imagePreviewFixture")

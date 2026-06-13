@@ -45,17 +45,20 @@ type CreateTaskRequest struct {
 }
 
 type UpdateTaskRequest struct {
-	Title            *string             `json:"title"`
-	Description      *string             `json:"description"`
-	Priority         *model.TaskPriority `json:"priority"`
-	Status           *model.TaskStatus   `json:"status"`
-	AssigneeBotID    *uuid.UUID          `json:"assignee_bot_id"`
-	AssigneeBotIDSet bool                `json:"-"`
-	EstimatedStartAt *time.Time          `json:"estimated_start_at"`
-	EstimatedEndAt   *time.Time          `json:"estimated_end_at"`
-	Progress         *int                `json:"progress"`
-	DependencyIDs    *[]uuid.UUID        `json:"dependency_ids"`
-	LatestStatusNote *string             `json:"latest_status_note"`
+	Title             *string             `json:"title"`
+	Description       *string             `json:"description"`
+	DescriptionSet    bool                `json:"-"`
+	Priority          *model.TaskPriority `json:"priority"`
+	Status            *model.TaskStatus   `json:"status"`
+	AssigneeBotID     *uuid.UUID          `json:"assignee_bot_id"`
+	AssigneeBotIDSet  bool                `json:"-"`
+	EstimatedStartAt  *time.Time          `json:"estimated_start_at"`
+	EstimatedStartSet bool                `json:"-"`
+	EstimatedEndAt    *time.Time          `json:"estimated_end_at"`
+	EstimatedEndSet   bool                `json:"-"`
+	Progress          *int                `json:"progress"`
+	DependencyIDs     *[]uuid.UUID        `json:"dependency_ids"`
+	LatestStatusNote  *string             `json:"latest_status_note"`
 }
 
 func (r *UpdateTaskRequest) UnmarshalJSON(data []byte) error {
@@ -70,20 +73,46 @@ func (r *UpdateTaskRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	rawAssignee, ok := raw["assignee_bot_id"]
-	if !ok {
-		return nil
+	if rawDescription, ok := raw["description"]; ok {
+		r.DescriptionSet = true
+		if string(rawDescription) != "null" {
+			var description string
+			if err := json.Unmarshal(rawDescription, &description); err != nil {
+				return err
+			}
+			r.Description = &description
+		}
 	}
-	r.AssigneeBotIDSet = true
-	if string(rawAssignee) == "null" {
-		r.AssigneeBotID = nil
-		return nil
+	if rawAssignee, ok := raw["assignee_bot_id"]; ok {
+		r.AssigneeBotIDSet = true
+		if string(rawAssignee) != "null" {
+			var assignee uuid.UUID
+			if err := json.Unmarshal(rawAssignee, &assignee); err != nil {
+				return err
+			}
+			r.AssigneeBotID = &assignee
+		}
 	}
-	var assignee uuid.UUID
-	if err := json.Unmarshal(rawAssignee, &assignee); err != nil {
-		return err
+	if rawStart, ok := raw["estimated_start_at"]; ok {
+		r.EstimatedStartSet = true
+		if string(rawStart) != "null" {
+			var start time.Time
+			if err := json.Unmarshal(rawStart, &start); err != nil {
+				return err
+			}
+			r.EstimatedStartAt = &start
+		}
 	}
-	r.AssigneeBotID = &assignee
+	if rawEnd, ok := raw["estimated_end_at"]; ok {
+		r.EstimatedEndSet = true
+		if string(rawEnd) != "null" {
+			var end time.Time
+			if err := json.Unmarshal(rawEnd, &end); err != nil {
+				return err
+			}
+			r.EstimatedEndAt = &end
+		}
+	}
 	return nil
 }
 
@@ -203,7 +232,7 @@ func (s *TaskService) Update(ctx context.Context, ownerID, taskID uuid.UUID, req
 	if req.Title != nil {
 		task.Title = strings.TrimSpace(*req.Title)
 	}
-	if req.Description != nil {
+	if req.DescriptionSet {
 		task.Description = req.Description
 	}
 	if req.Priority != nil {
@@ -221,10 +250,10 @@ func (s *TaskService) Update(ctx context.Context, ownerID, taskID uuid.UUID, req
 		task.AssigneeBot = nil
 		task.ClaimedAt = nil
 	}
-	if req.EstimatedStartAt != nil {
+	if req.EstimatedStartSet {
 		task.EstimatedStartAt = req.EstimatedStartAt
 	}
-	if req.EstimatedEndAt != nil {
+	if req.EstimatedEndSet {
 		task.EstimatedEndAt = req.EstimatedEndAt
 	}
 	if req.Progress != nil {

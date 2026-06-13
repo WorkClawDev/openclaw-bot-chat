@@ -77,6 +77,19 @@ struct BotKeyResponse: Codable, Identifiable {
     }
 }
 
+struct BotBindingResponse: Codable {
+    let token: String?
+    let bindURL: String?
+    let expiresAt: Date?
+    let bot: Bot?
+
+    enum CodingKeys: String, CodingKey {
+        case token, bot
+        case bindURL = "bind_url"
+        case expiresAt = "expires_at"
+    }
+}
+
 struct CreateKeyRequest: Codable {
     let name: String?
     let expiresAt: Int64?
@@ -321,6 +334,174 @@ struct Conversation: Codable, Identifiable {
     }
 }
 
+// MARK: - Documents
+
+struct DocumentObject: Codable, Identifiable, Equatable {
+    let id: UUID
+    var ownerId: UUID?
+    var url: String
+    var title: String
+    var summary: String
+    var body: String?
+    var documentType: String
+    var source: String
+    var status: String
+    var sourceBotId: UUID?
+    var sourceConversationId: String?
+    var sourceMessageId: UUID?
+    var createdAt: Date?
+    var updatedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, url, title, summary, body, source, status
+        case ownerId = "owner_id"
+        case documentType = "document_type"
+        case sourceBotId = "source_bot_id"
+        case sourceConversationId = "source_conversation_id"
+        case sourceMessageId = "source_message_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct DocumentMutationRequest: Codable {
+    let title: String?
+    let body: String?
+    let summary: String?
+    let documentType: String?
+    let source: String?
+    let conversationId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title, body, summary, source
+        case documentType = "document_type"
+        case conversationId = "conversation_id"
+    }
+}
+
+enum DocumentsFeatureFlag {
+    static var isEnabled: Bool {
+        if ProcessInfo.processInfo.arguments.contains("-documentsDisabled") {
+            return false
+        }
+        let raw = ProcessInfo.processInfo.environment["OPENCLAW_DOCUMENTS_ENABLED"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return raw != "false" && raw != "0"
+    }
+}
+
+struct DocumentLinkPreview: Hashable {
+    let id: UUID
+    let path: String
+    let title: String
+    let summary: String
+    let documentType: String
+    let updatedLabel: String
+
+    static func first(in text: String, metadata: [String: AnyCodable]? = nil) -> DocumentLinkPreview? {
+        let pattern = #"(?:https?://[^\s)]+)?/documents/([0-9a-fA-F-]{36})(?=$|[\s).,，。!！?？])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let nsText = text as NSString
+        let range = NSRange(location: 0, length: nsText.length)
+        guard let match = regex.firstMatch(in: text, range: range),
+              match.numberOfRanges > 1,
+              let idRange = Range(match.range(at: 1), in: text),
+              let id = UUID(uuidString: String(text[idRange]))
+        else {
+            return nil
+        }
+        let title = metadataString("document_title", in: metadata) ?? inferredTitle(from: text) ?? "Shared document"
+        return DocumentLinkPreview(
+            id: id,
+            path: metadataString("document_url", in: metadata) ?? "/documents/\(id.uuidString)",
+            title: title,
+            summary: metadataString("document_summary", in: metadata) ?? inferredSummary(from: text, title: title) ?? "持久文档 · 打开查看和编辑",
+            documentType: (metadataString("document_type", in: metadata) ?? "markdown").uppercased(),
+            updatedLabel: formattedUpdatedLabel(metadataString("document_updated_at", in: metadata))
+        )
+    }
+
+    private static func inferredTitle(from text: String) -> String? {
+        text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { line in
+                guard !line.isEmpty, !line.contains("/documents/") else { return false }
+                let normalized = normalizeTitleLine(line)
+                return normalized.count >= 2 && normalized.count <= 80
+            }
+            .map(normalizeTitleLine)
+    }
+
+    private static func inferredSummary(from text: String, title: String) -> String? {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return text
+            .components(separatedBy: .newlines)
+            .map { normalizeTitleLine($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .first { line in
+                !line.isEmpty
+                    && !line.contains("/documents/")
+                    && line.count >= 6
+                    && line.lowercased() != normalizedTitle
+            }
+    }
+
+    private static func normalizeTitleLine(_ line: String) -> String {
+        var value = line
+        while value.hasPrefix("#") {
+            value.removeFirst()
+        }
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("- ") || value.hasPrefix("* ") {
+            value = String(value.dropFirst(2))
+        }
+        if value.hasPrefix("文档：") || value.hasPrefix("文档:") {
+            value = String(value.dropFirst(3))
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func metadataString(_ key: String, in metadata: [String: AnyCodable]?) -> String? {
+        guard let value = metadata?[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else {
+            return nil
+        }
+        return value
+    }
+
+    private static func formattedUpdatedLabel(_ value: String?) -> String {
+        guard let value,
+              let date = Self.isoDateFormatter.date(from: value) ?? Self.fractionalISODateFormatter.date(from: value)
+        else {
+            return L10n.t("刚刚更新", "Updated just now")
+        }
+        return L10n.t("更新 \(Self.displayDateFormatter.string(from: date))", "Updated \(Self.displayDateFormatter.string(from: date))")
+    }
+
+    private static let isoDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let fractionalISODateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let displayDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "M/d HH:mm"
+        return formatter
+    }()
+}
+
 // MARK: - Display Helpers
 
 extension Message {
@@ -345,6 +526,12 @@ extension Conversation.MessageSnippet {
 
         let normalizedTimestamp = timestamp > 1_000_000_000_000 ? Double(timestamp) / 1000 : Double(timestamp)
         return Date(timeIntervalSince1970: normalizedTimestamp)
+    }
+}
+
+private extension String {
+    var nonEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

@@ -24,6 +24,8 @@ struct ChatRoomV2StatusStabilityFixtureView: View {
             onInitialPositioned: appendRemoteAfterLocalStatusRows,
             onPreviewImage: { _ in },
             onSaveImage: { _ in },
+            onOpenDocument: { _ in },
+            onContinueDocument: { _ in },
             onTapList: {}
         )
         .overlay(alignment: .topLeading) {

@@ -21,6 +21,19 @@ export function buildBindingUrl(env: NodeJS.ProcessEnv = process.env): string {
   }
 
   const backendUrl = normalizeUrl(env.BOT_CHAT_BACKEND_URL);
+  const bindingToken = normalizeValue(env.OPENCLAW_BOTCHAT_BIND_TOKEN) ?? normalizeValue(env.BOT_CHAT_BIND_TOKEN);
+  if (backendUrl && bindingToken) {
+    const url = new URL("/openclaw/bind", backendUrl);
+    url.searchParams.set("package", PACKAGE_NAME);
+    url.searchParams.set("channel", CHANNEL_ID);
+    url.searchParams.set("token", bindingToken);
+    const botId = normalizeValue(env.BOT_CHAT_BOT_ID);
+    if (botId) {
+      url.searchParams.set("botId", botId);
+    }
+    return url.toString();
+  }
+
   const botId = normalizeValue(env.BOT_CHAT_BOT_ID);
   if (backendUrl && botId) {
     const url = new URL("/openclaw/bind", backendUrl);
@@ -55,6 +68,7 @@ export function printSetupQr(env: NodeJS.ProcessEnv = process.env): void {
   console.log("");
   console.log("Optional environment:");
   console.log("  OPENCLAW_BOTCHAT_BIND_URL=<full iOS binding URL>");
+  console.log("  BOT_CHAT_BACKEND_URL=<backend URL> BOT_CHAT_BIND_TOKEN=<one-time binding token>");
   console.log("  BOT_CHAT_BACKEND_URL=<backend URL> BOT_CHAT_BOT_ID=<bot UUID>");
   console.log("");
   console.log("Secrets such as BOT_CHAT_BOT_KEY are never encoded into the QR code.");

@@ -15,6 +15,7 @@ import type {
   Task,
   TaskPriority,
   TaskStatus,
+  DocumentObject,
 } from './types'
 
 const RAW_API_BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '')
@@ -399,6 +400,29 @@ export const tasksApi = {
 
   delete: (id: string) =>
     request<void>(`/api/v1/tasks/${id}`, { method: 'DELETE' }),
+}
+
+export const documentsApi = {
+  list: (limit = 100) => request<DocumentObject[]>(`/api/v1/documents?limit=${Math.max(1, Math.min(limit, 200))}`),
+
+  get: (id: string) => request<DocumentObject>(`/api/v1/documents/${id}`),
+
+  create: (data: { title: string; body: string; summary?: string }) =>
+    request<DocumentObject>('/api/v1/documents', {
+      method: 'POST',
+      body: JSON.stringify({
+        document_type: 'markdown',
+        ...data,
+      }),
+    }),
+
+  update: (id: string, data: { title?: string; body?: string; summary?: string }) =>
+    request<DocumentObject>(`/api/v1/documents/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  archive: (id: string) => request<void>(`/api/v1/documents/${id}`, { method: 'DELETE' }),
 }
 
 // Health check

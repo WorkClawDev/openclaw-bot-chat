@@ -298,6 +298,37 @@ func TestTaskUpdateCanClearAssignee(t *testing.T) {
 	}
 }
 
+func TestTaskUpdateCanClearNullableFields(t *testing.T) {
+	env := newTaskServiceTestEnv(t)
+	start := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	end := start.Add(48 * time.Hour)
+	description := "clear me"
+	task, err := env.service.Create(context.Background(), env.owner.ID, CreateTaskRequest{
+		Title:            "scheduled task",
+		Description:      &description,
+		EstimatedStartAt: &start,
+		EstimatedEndAt:   &end,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	req := UpdateTaskRequest{}
+	if err := req.UnmarshalJSON([]byte(`{"description":null,"estimated_start_at":null,"estimated_end_at":null}`)); err != nil {
+		t.Fatalf("UnmarshalJSON() error = %v", err)
+	}
+	updated, err := env.service.Update(context.Background(), env.owner.ID, task.ID, req)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.Description != nil {
+		t.Fatalf("Update() description = %q, want nil", *updated.Description)
+	}
+	if updated.EstimatedStartAt != nil || updated.EstimatedEndAt != nil {
+		t.Fatalf("Update() estimated range = %v - %v, want nil range", updated.EstimatedStartAt, updated.EstimatedEndAt)
+	}
+}
+
 func TestRuntimeCreateChildTaskRecordsParent(t *testing.T) {
 	env := newTaskServiceTestEnv(t)
 	ctx := context.Background()

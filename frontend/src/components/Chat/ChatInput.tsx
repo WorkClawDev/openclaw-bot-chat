@@ -138,6 +138,23 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     }
   }, [content])
 
+  useEffect(() => {
+    const handleDocumentEditPrompt = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt?.trim()
+      if (!prompt) return
+      setContent(prompt)
+      setMentionActive(false)
+      setSlashActive(false)
+      setTimeout(() => {
+        textareaRef.current?.focus()
+        textareaRef.current?.setSelectionRange(prompt.length, prompt.length)
+      }, 0)
+    }
+
+    window.addEventListener('openclaw:document-edit-prompt', handleDocumentEditPrompt)
+    return () => window.removeEventListener('openclaw:document-edit-prompt', handleDocumentEditPrompt)
+  }, [])
+
   const handleScroll = () => {
     if (textareaRef.current && overlayRef.current) {
       overlayRef.current.scrollTop = textareaRef.current.scrollTop

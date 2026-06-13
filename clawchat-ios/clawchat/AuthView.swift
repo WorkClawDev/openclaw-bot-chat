@@ -17,12 +17,12 @@ class AuthViewModel: ObservableObject {
         var isValid = true
         
         if identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fieldErrors["identifier"] = "Username or email is required"
+            fieldErrors["identifier"] = L10n.t("请输入用户名或邮箱", "Username or email is required")
             isValid = false
         }
         
         if password.isEmpty {
-            fieldErrors["password"] = "Password is required"
+            fieldErrors["password"] = L10n.t("请输入密码", "Password is required")
             isValid = false
         }
         
@@ -58,26 +58,26 @@ class AuthViewModel: ObservableObject {
         var isValid = true
         
         if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fieldErrors["username"] = "Username is required"
+            fieldErrors["username"] = L10n.t("请输入用户名", "Username is required")
             isValid = false
         } else if username.count < 3 {
-            fieldErrors["username"] = "Username must be at least 3 characters"
+            fieldErrors["username"] = L10n.t("用户名至少需要 3 个字符", "Username must be at least 3 characters")
             isValid = false
         }
         
         if email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fieldErrors["email"] = "Email is required"
+            fieldErrors["email"] = L10n.t("请输入邮箱", "Email is required")
             isValid = false
         } else if !email.contains("@") {
-            fieldErrors["email"] = "Invalid email format"
+            fieldErrors["email"] = L10n.t("邮箱格式不正确", "Invalid email format")
             isValid = false
         }
         
         if password.isEmpty {
-            fieldErrors["password"] = "Password is required"
+            fieldErrors["password"] = L10n.t("请输入密码", "Password is required")
             isValid = false
         } else if password.count < 8 {
-            fieldErrors["password"] = "Password must be at least 8 characters"
+            fieldErrors["password"] = L10n.t("密码至少需要 8 个字符", "Password must be at least 8 characters")
             isValid = false
         }
         
@@ -130,13 +130,16 @@ struct LoginView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $isRegistering) {
+                RegisterView()
+            }
         }
     }
 
     private var compactBody: some View {
         ScrollView {
             VStack(spacing: 26) {
-                authBrandHeader(title: "Welcome back", subtitle: "Sign in to ClawChat", logoSize: 72)
+                authBrandHeader(title: L10n.t("欢迎回来", "Welcome back"), subtitle: L10n.t("登录 ClawChat", "Sign in to ClawChat"), logoSize: 72)
 
                 loginForm
                     .padding(.horizontal, 20)
@@ -146,9 +149,9 @@ struct LoginView: View {
                 divider
 
                 capabilityCard([
-                    ("antenna.radiowaves.left.and.right", "MQTT realtime"),
-                    ("shield.checkered", "Secure auth"),
-                    ("message.badge", "Connect bots, groups, and message history")
+                    ("antenna.radiowaves.left.and.right", L10n.t("实时消息", "MQTT realtime")),
+                    ("shield.checkered", L10n.t("安全认证", "Secure auth")),
+                    ("message.badge", L10n.t("连接机器人、群组和历史消息", "Connect bots, groups, and message history"))
                 ])
                 .padding(.horizontal, 20)
                 .padding(.bottom, 28)
@@ -170,16 +173,16 @@ struct LoginView: View {
                     Text("ClawChat")
                         .font(.system(size: 42, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Broker-first chats for humans, bots, and groups.")
+                    Text(L10n.t("面向用户、机器人和群组的实时聊天。", "Broker-first chats for humans, bots, and groups."))
                         .font(.title3)
                         .foregroundStyle(Color.rcmsTextSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 capabilityCard([
-                    ("antenna.radiowaves.left.and.right", "MQTT realtime"),
-                    ("shield.checkered", "Secure auth"),
-                    ("message.badge", "Bot and group history")
+                    ("antenna.radiowaves.left.and.right", L10n.t("实时消息", "MQTT realtime")),
+                    ("shield.checkered", L10n.t("安全认证", "Secure auth")),
+                    ("message.badge", L10n.t("机器人和群组历史", "Bot and group history"))
                 ])
 
                 Spacer()
@@ -192,10 +195,10 @@ struct LoginView: View {
 
             VStack(spacing: 24) {
                 VStack(spacing: 8) {
-                    Text("Welcome back")
+                    Text(L10n.t("欢迎回来", "Welcome back"))
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Sign in to ClawChat")
+                    Text(L10n.t("登录 ClawChat", "Sign in to ClawChat"))
                         .font(.body)
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
@@ -215,7 +218,7 @@ struct LoginView: View {
         VStack(spacing: 18) {
             AuthTextInput(
                 icon: "envelope",
-                placeholder: "Email or username",
+                placeholder: L10n.t("邮箱或用户名", "Email or username"),
                 text: $viewModel.identifier,
                 error: viewModel.fieldErrors["identifier"]
             )
@@ -224,7 +227,7 @@ struct LoginView: View {
 
             AuthSecureInput(
                 icon: "lock",
-                placeholder: "Password",
+                placeholder: L10n.t("密码", "Password"),
                 text: $viewModel.password,
                 error: viewModel.fieldErrors["password"]
             )
@@ -234,7 +237,7 @@ struct LoginView: View {
             }
 
             Button(action: viewModel.login) {
-                AuthPrimaryButtonLabel(title: "Login", isLoading: viewModel.isLoading)
+                AuthPrimaryButtonLabel(title: L10n.t("登录", "Login"), isLoading: viewModel.isLoading)
             }
             .disabled(viewModel.isLoading)
         }
@@ -242,15 +245,13 @@ struct LoginView: View {
 
     private var registerLink: some View {
         VStack {
-            NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }
-                .hidden()
             Button {
                 isRegistering = true
             } label: {
                 HStack(spacing: 4) {
-                    Text("Don't have an account?")
+                    Text(L10n.t("还没有账号？", "Don't have an account?"))
                         .foregroundStyle(Color.rcmsTextSecondary)
-                    Text("Create account")
+                    Text(L10n.t("创建账号", "Create account"))
                         .fontWeight(.semibold)
                         .foregroundStyle(Color.rcmsAccent)
                 }
@@ -285,7 +286,7 @@ struct RegisterView: View {
     private var compactBody: some View {
         ScrollView {
             VStack(spacing: 26) {
-                authBrandHeader(title: "Create account", subtitle: "Start chatting with bots and teams", logoSize: 72)
+                authBrandHeader(title: L10n.t("创建账号", "Create account"), subtitle: L10n.t("开始和机器人、团队聊天", "Start chatting with bots and teams"), logoSize: 72)
 
                 registerForm
                     .padding(.horizontal, 20)
@@ -295,9 +296,9 @@ struct RegisterView: View {
                 divider
 
                 capabilityCard([
-                    ("cpu", "Bot single chat"),
-                    ("person.3", "Group conversations"),
-                    ("clock", "Realtime history")
+                    ("cpu", L10n.t("机器人单聊", "Bot single chat")),
+                    ("person.3", L10n.t("群组会话", "Group conversations")),
+                    ("clock", L10n.t("实时历史", "Realtime history"))
                 ])
                 .padding(.horizontal, 20)
                 .padding(.bottom, 28)
@@ -319,16 +320,16 @@ struct RegisterView: View {
                     Text("ClawChat")
                         .font(.system(size: 42, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Create one account for bot direct chats, group rooms, and realtime history.")
+                    Text(L10n.t("一个账号即可使用机器人单聊、群组房间和实时历史。", "Create one account for bot direct chats, group rooms, and realtime history."))
                         .font(.title3)
                         .foregroundStyle(Color.rcmsTextSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 capabilityCard([
-                    ("cpu", "Bot single chat"),
-                    ("person.3", "Group conversations"),
-                    ("clock", "Realtime history")
+                    ("cpu", L10n.t("机器人单聊", "Bot single chat")),
+                    ("person.3", L10n.t("群组会话", "Group conversations")),
+                    ("clock", L10n.t("实时历史", "Realtime history"))
                 ])
 
                 Spacer()
@@ -341,10 +342,10 @@ struct RegisterView: View {
 
             VStack(spacing: 24) {
                 VStack(spacing: 8) {
-                    Text("Create account")
+                    Text(L10n.t("创建账号", "Create account"))
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Start chatting with bots and teams")
+                    Text(L10n.t("开始和机器人、团队聊天", "Start chatting with bots and teams"))
                         .font(.body)
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
@@ -364,7 +365,7 @@ struct RegisterView: View {
         VStack(spacing: 18) {
             AuthTextInput(
                 icon: "person",
-                placeholder: "Username",
+                placeholder: L10n.t("用户名", "Username"),
                 text: $viewModel.username,
                 error: viewModel.fieldErrors["username"]
             )
@@ -373,7 +374,7 @@ struct RegisterView: View {
 
             AuthTextInput(
                 icon: "envelope",
-                placeholder: "Email",
+                placeholder: L10n.t("邮箱", "Email"),
                 text: $viewModel.email,
                 error: viewModel.fieldErrors["email"]
             )
@@ -383,12 +384,12 @@ struct RegisterView: View {
 
             AuthSecureInput(
                 icon: "lock",
-                placeholder: "Password",
+                placeholder: L10n.t("密码", "Password"),
                 text: $viewModel.password,
                 error: viewModel.fieldErrors["password"]
             )
 
-            PasswordRequirementRow(text: "At least 8 characters", isMet: viewModel.password.count >= 8)
+            PasswordRequirementRow(text: L10n.t("至少 8 个字符", "At least 8 characters"), isMet: viewModel.password.count >= 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 4)
 
@@ -397,7 +398,7 @@ struct RegisterView: View {
             }
 
             Button(action: viewModel.register) {
-                AuthPrimaryButtonLabel(title: "Register", isLoading: viewModel.isLoading)
+                AuthPrimaryButtonLabel(title: L10n.t("注册", "Register"), isLoading: viewModel.isLoading)
             }
             .disabled(viewModel.isLoading)
         }
@@ -408,9 +409,9 @@ struct RegisterView: View {
             dismiss()
         } label: {
             HStack(spacing: 4) {
-                Text("Already have an account?")
+                Text(L10n.t("已有账号？", "Already have an account?"))
                     .foregroundStyle(Color.rcmsTextSecondary)
-                Text("Sign in")
+                Text(L10n.t("登录", "Sign in"))
                     .fontWeight(.semibold)
                     .foregroundStyle(Color.rcmsAccent)
             }
@@ -418,4 +419,3 @@ struct RegisterView: View {
         }
     }
 }
-

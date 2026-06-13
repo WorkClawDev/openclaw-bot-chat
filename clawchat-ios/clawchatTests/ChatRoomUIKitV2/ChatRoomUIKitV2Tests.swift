@@ -34,16 +34,16 @@ struct ChatRoomUIKitV2Tests {
         #expect(normalized.map(\.id) == ["older", "pending-now-confirmed", "confirmed"])
     }
 
-    @Test func pendingStatusUsesSubduedEnglishText() {
+    @Test func pendingStatusUsesSubduedLocalizedText() {
         let status = MessageStatusPresentationV2(timestampText: "09:31", isPending: true)
 
-        #expect(status.displayText == "09:31 · Sending")
+        #expect(status.displayText == "09:31 · \(L10n.t("发送中", "Sending"))")
     }
 
     @Test func failedStatusUsesStableSubduedText() {
         let status = MessageStatusPresentationV2(timestampText: "09:31", isPending: false, isFailed: true)
 
-        #expect(status.displayText == "09:31 · Failed")
+        #expect(status.displayText == "09:31 · \(L10n.t("发送失败", "Failed"))")
     }
 
     @Test func rendererPrecomputesExactTextGeometryBeforeInsertion() {
@@ -449,7 +449,7 @@ struct ChatRoomUIKitV2Tests {
 
         #expect(rendered.map(\.sequence) == [0, 1, 2])
         #expect(rendered.map(\.id) == ["remote-100", "failed", "pending"])
-        #expect(rendered[1].status?.displayText.contains("Failed") == true)
+        #expect(rendered[1].status?.displayText.contains(L10n.t("发送失败", "Failed")) == true)
         #expect(rendered.last?.id == "pending")
     }
 

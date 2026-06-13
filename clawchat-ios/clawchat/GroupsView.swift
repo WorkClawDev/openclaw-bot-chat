@@ -136,7 +136,7 @@ struct GroupsView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle("Groups")
+            .navigationTitle(L10n.t("群组", "Groups"))
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
@@ -160,7 +160,7 @@ struct GroupsView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(Color.rcmsTextSecondary)
-            TextField("搜索群组", text: $searchText)
+            TextField(L10n.t("搜索群组", "Search groups"), text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled(true)
                 .foregroundStyle(Color.rcmsTextPrimary)
@@ -173,16 +173,16 @@ struct GroupsView: View {
     private var createGroupSheet: some View {
         NavigationStack {
             Form {
-                TextField("Group name", text: $newName)
-                TextField("Description", text: $newDescription)
+                TextField(L10n.t("群组名称", "Group name"), text: $newName)
+                TextField(L10n.t("描述", "Description"), text: $newDescription)
             }
-            .navigationTitle("创建群组")
+            .navigationTitle(L10n.t("创建群组", "Create group"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showingCreate = false }
+                    Button(L10n.t("取消", "Cancel")) { showingCreate = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
+                    Button(L10n.t("创建", "Create")) {
                         viewModel.createGroup(name: newName, description: newDescription) {
                             newName = ""
                             newDescription = ""

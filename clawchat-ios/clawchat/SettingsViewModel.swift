@@ -52,17 +52,17 @@ final class SettingsViewModel: ObservableObject {
         if let apiError = error as? APIClient.APIError {
             switch apiError {
             case .invalidURL:
-                return "Invalid server URL"
+                return L10n.t("服务器地址无效", "Invalid server URL")
             case .noData:
-                return "The server returned no usable data"
+                return L10n.t("服务器没有返回可用数据", "The server returned no usable data")
             case .decodingError:
-                return "Failed to parse server data"
+                return L10n.t("服务器数据解析失败", "Failed to parse server data")
             case .serverError(let message):
                 return message
             case .unauthorized:
-                return "Your session expired. Please sign in again"
+                return L10n.t("登录已过期，请重新登录", "Your session expired. Please sign in again")
             case .networkError(let error):
-                return "Network connection failed: \(error.localizedDescription)"
+                return L10n.t("网络连接失败：\(error.localizedDescription)", "Network connection failed: \(error.localizedDescription)")
             }
         }
 

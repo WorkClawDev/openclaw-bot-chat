@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage("settings.compactMessageMode") var compactMessageMode = false
     @AppStorage("settings.imageUploadQuality") var imageUploadQuality = "Compressed"
     @AppStorage("settings.appearanceMode") var appearanceModeRawValue = AppAppearanceMode.system.rawValue
+    @AppStorage(AppLanguageMode.storageKey) var languageModeRawValue = AppLanguageMode.english.rawValue
 
     @State var didInitialLoad = false
     @State var isEditingProfile = false
@@ -50,6 +51,10 @@ struct SettingsView: View {
 
     var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRawValue) ?? .system
+    }
+
+    var languageMode: AppLanguageMode {
+        AppLanguageMode(rawValue: languageModeRawValue) ?? .english
     }
 
     var usesWideSettingsLayout: Bool {
@@ -90,7 +95,7 @@ struct SettingsView: View {
             .sheet(item: $pendingAvatarImage) { pending in
                 AvatarCropperView(
                     image: pending.image,
-                    title: "调整头像",
+                    title: L10n.t("调整头像", "Adjust avatar"),
                     onCancel: {
                         pendingAvatarImage = nil
                     },
@@ -101,13 +106,13 @@ struct SettingsView: View {
                 )
             }
             .alert(
-                "Profile failed to load",
+                L10n.t("个人资料加载失败", "Profile failed to load"),
                 isPresented: Binding(
                     get: { viewModel.loadErrorMessage != nil },
                     set: { _ in viewModel.loadErrorMessage = nil }
                 ),
                 actions: {
-                    Button("OK", role: .cancel) {}
+                    Button(L10n.t("确定", "OK"), role: .cancel) {}
                 },
                 message: {
                     Text(viewModel.loadErrorMessage ?? "")
