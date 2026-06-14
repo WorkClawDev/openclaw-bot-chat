@@ -5,6 +5,8 @@ struct ChatRoomV2LiveBridgeFixtureView: View {
 
     @State private var messages = ChatRoomV2LiveBridgeFixtureView.makeMessages(range: 41...100)
     @State private var didPrepend = false
+    @State private var isLoadingOlder = false
+    @State private var hasMoreHistory = true
     @State private var isNearBottom = true
     @State private var isUserScrolling = false
 
@@ -17,8 +19,10 @@ struct ChatRoomV2LiveBridgeFixtureView: View {
             currentUserID: Self.currentUserID,
             bottomAutoScrollThreshold: 96,
             historyPreloadDistance: 1_200,
+            isLoadingOlder: isLoadingOlder,
+            hasMoreHistory: hasMoreHistory,
             scrollCommand: .none,
-            onLoadOlder: {},
+            onLoadOlder: loadOlderOnce,
             onNearBottomChange: { isNearBottom = $0 },
             onUserScrollChange: { isUserScrolling = $0 },
             onInitialPositioned: scheduleLiveBridgePrepend,
@@ -37,6 +41,16 @@ struct ChatRoomV2LiveBridgeFixtureView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 250_000_000)
             messages = Self.makeMessages(range: 11...40) + messages
+        }
+    }
+
+    private func loadOlderOnce() {
+        guard !isLoadingOlder, hasMoreHistory else { return }
+        isLoadingOlder = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            hasMoreHistory = false
+            isLoadingOlder = false
         }
     }
 

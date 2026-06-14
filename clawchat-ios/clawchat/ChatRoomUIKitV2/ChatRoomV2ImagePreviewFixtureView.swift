@@ -20,6 +20,8 @@ struct ChatRoomV2ImagePreviewFixtureView: View {
             currentUserID: "fixture-user",
             bottomAutoScrollThreshold: 96,
             historyPreloadDistance: 1_200,
+            isLoadingOlder: false,
+            hasMoreHistory: false,
             scrollCommand: .none,
             onLoadOlder: {},
             onNearBottomChange: { _ in },

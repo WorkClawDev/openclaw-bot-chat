@@ -1028,7 +1028,7 @@ private struct ChatRoomLegacyView: View {
     private let currentUserIDOverride: String?
     private let bottomAutoScrollThreshold: CGFloat = 96
     private let bottomMessageClearance: CGFloat = 24
-    private let historyPreloadDistance: CGFloat = 1200
+    private let historyPreloadDistance: CGFloat = 2400
     @FocusState private var isInputFocused: Bool
 
     init(context: ChatContext) {
@@ -1207,6 +1207,8 @@ private struct ChatRoomLegacyView: View {
                 currentUserID: effectiveCurrentUserID,
                 bottomAutoScrollThreshold: bottomAutoScrollThreshold,
                 historyPreloadDistance: historyPreloadDistance,
+                isLoadingOlder: viewModel.isLoadingOlder || isHistoryPreloadScheduled,
+                hasMoreHistory: viewModel.hasMoreHistory,
                 scrollCommand: listScrollCommand,
                 onLoadOlder: triggerHistoryPreloadIfNeeded,
                 onNearBottomChange: { isNearBottom = $0 },
@@ -1958,7 +1960,7 @@ private struct ChatMessageListView: UIViewRepresentable {
         tableView.showsVerticalScrollIndicator = false
         tableView.keyboardDismissMode = .interactive
         tableView.contentInsetAdjustmentBehavior = .never
-        tableView.estimatedRowHeight = 0
+        tableView.estimatedRowHeight = 88
         tableView.rowHeight = UITableView.automaticDimension
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
@@ -1984,11 +1986,6 @@ private struct ChatMessageListView: UIViewRepresentable {
             let contentHeight: CGFloat
         }
 
-        private struct MessageHeightCacheKey: Hashable {
-            let signature: MessageRenderSignature
-            let width: Int
-        }
-
         private var parent: ChatMessageListView
         private var messages: [Message] = []
         private var lastScrollCommand = ChatListScrollCommand.none
@@ -2000,7 +1997,6 @@ private struct ChatMessageListView: UIViewRepresentable {
         private var deferredNeedsReload = false
         private var pendingScrollToBottom: PendingScrollToBottom?
         private var footerHeight: CGFloat = 0
-        private var measuredRowHeights: [MessageHeightCacheKey: CGFloat] = [:]
 
         init(parent: ChatMessageListView) {
             self.parent = parent
@@ -2151,14 +2147,6 @@ private struct ChatMessageListView: UIViewRepresentable {
             messages.count
         }
 
-        func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
-            rowHeight(for: indexPath, in: tableView)
-        }
-
-        func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-            rowHeight(for: indexPath, in: tableView)
-        }
-
         func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
             let cell = tableView.dequeueReusableCell(withIdentifier: Self.cellReuseIdentifier, for: indexPath)
             guard messages.indices.contains(indexPath.row) else {
@@ -2212,47 +2200,6 @@ private struct ChatMessageListView: UIViewRepresentable {
             return UIContextMenuConfiguration(identifier: message.id as NSString, previewProvider: nil) { _ in
                 UIMenu(children: actions)
             }
-        }
-
-        private func rowHeight(for indexPath: IndexPath, in tableView: UITableView) -> CGFloat {
-            guard messages.indices.contains(indexPath.row), tableView.bounds.width > 0 else {
-                return 84
-            }
-
-            let message = messages[indexPath.row]
-            let width = tableView.bounds.width
-            let displayScale = max(tableView.traitCollection.displayScale, 1)
-            let key = MessageHeightCacheKey(
-                signature: MessageRenderSignature(message: message),
-                width: Int((width * displayScale).rounded())
-            )
-            if let cachedHeight = measuredRowHeights[key] {
-                return cachedHeight
-            }
-
-            let measuredHeight = measureRowHeight(for: message, width: width)
-            measuredRowHeights[key] = measuredHeight
-            return measuredHeight
-        }
-
-        private func measureRowHeight(for message: Message, width: CGFloat) -> CGFloat {
-            let content = ChatBubbleRow(
-                message: message,
-                currentUserID: parent.currentUserID,
-                showsSenderInfo: parent.showsSenderInfo,
-                fallbackBotAvatarURLString: parent.fallbackBotAvatarURLString,
-                onPreviewImage: nil,
-                onContinueDocument: { _ in }
-            )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .frame(width: width)
-
-            let host = UIHostingController(rootView: AnyView(content))
-            host.view.backgroundColor = UIColor.clear
-            let targetSize = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-            let measuredSize = host.sizeThatFits(in: targetSize)
-            return max(1, ceil(measuredSize.height))
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -2417,9 +2364,9 @@ private struct ChatMessageListView: UIViewRepresentable {
             guard !hasScheduledNearTopRequest else { return }
 
             let distanceFromTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
-            let preloadDistance = max(parent.historyPreloadDistance, scrollView.bounds.height * 2.2)
+            let preloadDistance = max(parent.historyPreloadDistance, scrollView.bounds.height * 3.0)
             let contentUnderfillsViewport = scrollView.contentSize.height <= scrollView.bounds.height + preloadDistance
-            guard distanceFromTop <= preloadDistance || contentUnderfillsViewport else { return }
+            guard contentUnderfillsViewport || (distanceFromTop >= 0 && distanceFromTop <= preloadDistance) else { return }
 
             hasScheduledNearTopRequest = true
             emit { [weak self] in

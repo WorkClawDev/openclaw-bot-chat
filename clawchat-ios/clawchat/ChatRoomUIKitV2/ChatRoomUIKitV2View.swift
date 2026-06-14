@@ -19,6 +19,8 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
     let currentUserID: String?
     let bottomAutoScrollThreshold: CGFloat
     let historyPreloadDistance: CGFloat
+    let isLoadingOlder: Bool
+    let hasMoreHistory: Bool
     let scrollCommand: ChatListScrollCommand
     let onLoadOlder: () -> Void
     let onNearBottomChange: (Bool) -> Void
@@ -60,6 +62,7 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
         viewController.onContinueDocument = onContinueDocument
         viewController.onTapList = onTapList
         viewController.applyLiveMessages(messages, currentUserID: currentUserID)
+        viewController.applyLiveHistoryState(isLoadingOlder: isLoadingOlder, hasMoreHistory: hasMoreHistory)
         viewController.applyScrollCommand(scrollCommand)
     }
 }

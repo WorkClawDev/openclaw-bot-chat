@@ -22,6 +22,10 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     private var hasPositionedInitialContent = false
     private var needsInitialBottomPosition = false
     private var isApplyingHistoryPrepend = false
+    private var isLiveHistoryLoading = false
+    private var hasMoreLiveHistory = true
+    private var hasPendingLiveHistoryRequest = false
+    private var hasUserInitiatedHistoryScroll = false
     private var pendingKeyboardInset: CGFloat = 0
     private var hasInjectedKeyboardDuringPrepend = false
     private var lastScrollCommand = ChatListScrollCommand.none
@@ -124,6 +128,17 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
     }
 
+    func applyLiveHistoryState(isLoadingOlder: Bool, hasMoreHistory: Bool) {
+        guard !usesFixtureData else { return }
+        isLiveHistoryLoading = isLoadingOlder
+        hasMoreLiveHistory = hasMoreHistory
+        if !hasMoreHistory {
+            hasPendingLiveHistoryRequest = false
+        } else if !isLoadingOlder, !mutationCoordinator.isBusy {
+            hasPendingLiveHistoryRequest = false
+        }
+    }
+
     func appendMockMessage() {
         let nextSequence = (store.messages.last?.sequence ?? 0) + 1
         let raw = ChatMessageV2(
@@ -154,7 +169,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         view.backgroundColor = .systemBackground
         chatLayout.keepContentAtBottomOfVisibleArea = true
         chatLayout.keepContentOffsetAtBottomOnBatchUpdates = true
-        chatLayout.processOnlyVisibleItemsOnAnimatedBatchUpdates = true
+        chatLayout.processOnlyVisibleItemsOnAnimatedBatchUpdates = false
         if #available(iOS 16.0, *) {
             chatLayout.supportSelfSizingInvalidation = false
         }
@@ -216,6 +231,10 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             rawMessages = ChatRoomV2FixtureFactory.benchmarkMessages()
         case .richMedia:
             rawMessages = ChatRoomV2FixtureFactory.richMediaMessages()
+        case .mixedRichPrepend:
+            rawMessages = ChatRoomV2FixtureFactory.mixedRichMessages()
+        case .consecutiveImagesPrepend:
+            rawMessages = ChatRoomV2FixtureFactory.consecutiveImageMessages()
         }
 
         let rendered = renderCoordinator.renderPage(rawMessages, containerWidth: collectionWidth, traitCollection: traitCollection)
@@ -240,6 +259,19 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
 
     private func loadPreviousPageIfNeeded(completion: (() -> Void)? = nil) {
         guard usesFixtureData else {
+            guard hasUserInitiatedHistoryScroll else {
+                completion?()
+                return
+            }
+            guard hasMoreLiveHistory else {
+                completion?()
+                return
+            }
+            guard !isLiveHistoryLoading, !hasPendingLiveHistoryRequest else {
+                completion?()
+                return
+            }
+            hasPendingLiveHistoryRequest = true
             onLoadOlder?()
             completion?()
             return
@@ -253,7 +285,11 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             return
         }
         isLoadingHistory = true
-        let rawPage = ChatRoomV2FixtureFactory.historyPage(before: earliestSequence, count: historyPageSize)
+        let rawPage = ChatRoomV2FixtureFactory.historyPage(
+            before: earliestSequence,
+            count: historyPageSize,
+            fixture: fixture
+        )
         let renderedPage = renderCoordinator.renderPage(rawPage, containerWidth: collectionWidth, traitCollection: traitCollection)
         prependRenderedHistory(renderedPage, completion: completion)
     }
@@ -281,7 +317,8 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
 
         self.collectionView.layoutIfNeeded()
-        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: .top)
+        let snapshotEdge = self.restoreSnapshotEdgeForLiveState()
+        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: snapshotEdge)
         let anchorBefore = self.visibleAnchor()
         let insertedIndexPaths = page.indices.map { IndexPath(item: $0, section: 0) }
         self.store.prependHistory(page)
@@ -295,26 +332,28 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         self.diagnostics.recordPrepend()
         self.isApplyingHistoryPrepend = true
         self.injectKeyboardNotificationDuringPrependIfNeeded()
-        self.collectionView.performBatchUpdates {
-            self.collectionView.insertItems(at: insertedIndexPaths)
-        } completion: { [weak self] _ in
-            guard let self else {
+        UIView.performWithoutAnimation {
+            self.collectionView.performBatchUpdates {
+                self.collectionView.insertItems(at: insertedIndexPaths)
+            } completion: { [weak self] _ in
+                guard let self else {
+                    finish()
+                    return
+                }
+                self.isApplyingHistoryPrepend = false
+                if let restoredSnapshot {
+                    self.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self.diagnostics.recordRestore()
+                }
+                self.collectionView.layoutIfNeeded()
+                if let anchorBefore, let anchorAfter = self.visibleAnchor(messageID: anchorBefore.messageID) {
+                    self.diagnostics.recordAnchorDrift(anchorAfter.offsetFromVisibleTop - anchorBefore.offsetFromVisibleTop)
+                }
+                self.isLoadingHistory = false
+                self.updateDiagnosticsLabel()
                 finish()
-                return
+                completion?()
             }
-            self.isApplyingHistoryPrepend = false
-            if let restoredSnapshot {
-                self.chatLayout.restoreContentOffset(with: restoredSnapshot)
-                self.diagnostics.recordRestore()
-            }
-            self.collectionView.layoutIfNeeded()
-            if let anchorBefore, let anchorAfter = self.visibleAnchor(messageID: anchorBefore.messageID) {
-                self.diagnostics.recordAnchorDrift(anchorAfter.offsetFromVisibleTop - anchorBefore.offsetFromVisibleTop)
-            }
-            self.isLoadingHistory = false
-            self.updateDiagnosticsLabel()
-            finish()
-            completion?()
         }
     }
 
@@ -464,6 +503,9 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         let previousIDs = store.messages.map(\.id)
         let nextIDs = normalizedRendered.map(\.id)
         guard previousIDs != nextIDs || store.messages != normalizedRendered else {
+            if !usesFixtureData, !isLiveHistoryLoading {
+                hasPendingLiveHistoryRequest = false
+            }
             finish()
             return
         }
@@ -518,26 +560,30 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             return IndexPath(item: index, section: 0)
         }
         guard !changedIndexPaths.isEmpty else {
+            finishLiveHistoryRequestIfIdle()
             finish()
             return
         }
 
         self.collectionView.layoutIfNeeded()
-        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: .top)
+        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: restoreSnapshotEdgeForLiveState())
         self.store.replaceAll(rendered)
-        self.collectionView.performBatchUpdates {
-            self.collectionView.reloadItems(at: changedIndexPaths)
-        } completion: { [weak self] _ in
-            guard let self else {
+        UIView.performWithoutAnimation {
+            self.collectionView.performBatchUpdates {
+                self.collectionView.reloadItems(at: changedIndexPaths)
+            } completion: { [weak self] _ in
+                guard let self else {
+                    finish()
+                    return
+                }
+                if let snapshot {
+                    self.chatLayout.restoreContentOffset(with: snapshot)
+                    self.diagnostics.recordRestore()
+                }
+                self.finishLiveHistoryRequestIfIdle()
+                self.updateDiagnosticsLabel()
                 finish()
-                return
             }
-            if let snapshot {
-                self.chatLayout.restoreContentOffset(with: snapshot)
-                self.diagnostics.recordRestore()
-            }
-            self.updateDiagnosticsLabel()
-            finish()
         }
     }
 
@@ -553,6 +599,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         self.collectionView.performBatchUpdates {
             self.collectionView.deleteItems(at: indexPaths)
         } completion: { [weak self] _ in
+            self?.finishLiveHistoryRequestIfIdle()
             self?.updateDiagnosticsLabel()
             finish()
         }
@@ -562,22 +609,40 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         _ rendered: [RenderedMessageV2],
         finish: @escaping ChatMutationCoordinatorV2.Finish
     ) {
+        self.collectionView.layoutIfNeeded()
+        let anchorBefore = visibleAnchor()
+        let restoredSnapshot = anchorBefore.flatMap { anchor -> ChatLayoutPositionSnapshot? in
+            guard let newIndex = rendered.firstIndex(where: { $0.id == anchor.messageID }) else {
+                return nil
+            }
+            return ChatLayoutPositionSnapshot(
+                indexPath: IndexPath(item: newIndex, section: 0),
+                edge: .top,
+                offset: anchor.offsetFromVisibleTop
+            )
+        }
         let oldIndexPaths = self.store.messages.indices.map { IndexPath(item: $0, section: 0) }
         let newIndexPaths = rendered.indices.map { IndexPath(item: $0, section: 0) }
         self.store.replaceAll(rendered)
-        self.collectionView.performBatchUpdates {
-            if !oldIndexPaths.isEmpty {
-                self.collectionView.deleteItems(at: oldIndexPaths)
+        UIView.performWithoutAnimation {
+            self.collectionView.performBatchUpdates {
+                if !oldIndexPaths.isEmpty {
+                    self.collectionView.deleteItems(at: oldIndexPaths)
+                }
+                if !newIndexPaths.isEmpty {
+                    self.collectionView.insertItems(at: newIndexPaths)
+                }
+            } completion: { [weak self] _ in
+                if self?.isNearBottom == true {
+                    self?.scrollToBottom(animated: false)
+                } else if let restoredSnapshot {
+                    self?.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self?.diagnostics.recordRestore()
+                }
+                self?.finishLiveHistoryRequestIfIdle()
+                self?.updateDiagnosticsLabel()
+                finish()
             }
-            if !newIndexPaths.isEmpty {
-                self.collectionView.insertItems(at: newIndexPaths)
-            }
-        } completion: { [weak self] _ in
-            if self?.isNearBottom == true {
-                self?.scrollToBottom(animated: false)
-            }
-            self?.updateDiagnosticsLabel()
-            finish()
         }
     }
 
@@ -616,7 +681,8 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
 
         self.collectionView.layoutIfNeeded()
-        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: .top)
+        let snapshotEdge = self.restoreSnapshotEdgeForLiveState()
+        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: snapshotEdge)
         let oldCount = self.store.count
         let prependIndexPaths = prepended.indices.map { IndexPath(item: $0, section: 0) }
         let appendIndexPaths = appended.indices.map { IndexPath(item: oldCount + change.prependCount + $0, section: 0) }
@@ -636,26 +702,29 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             self.diagnostics.recordAppend()
         }
 
-        self.collectionView.performBatchUpdates {
-            if !prependIndexPaths.isEmpty {
-                self.collectionView.insertItems(at: prependIndexPaths)
-            }
-            if !appendIndexPaths.isEmpty {
-                self.collectionView.insertItems(at: appendIndexPaths)
-            }
-        } completion: { [weak self] _ in
-            guard let self else {
+        UIView.performWithoutAnimation {
+            self.collectionView.performBatchUpdates {
+                if !prependIndexPaths.isEmpty {
+                    self.collectionView.insertItems(at: prependIndexPaths)
+                }
+                if !appendIndexPaths.isEmpty {
+                    self.collectionView.insertItems(at: appendIndexPaths)
+                }
+            } completion: { [weak self] _ in
+                guard let self else {
+                    finish()
+                    return
+                }
+                if let restoredSnapshot, change.prependCount > 0 {
+                    self.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self.diagnostics.recordRestore()
+                    self.finishLiveHistoryRequestIfIdle()
+                } else if self.isNearBottom {
+                    self.scrollToBottom(animated: false)
+                }
+                self.updateDiagnosticsLabel()
                 finish()
-                return
             }
-            if let restoredSnapshot, change.prependCount > 0 {
-                self.chatLayout.restoreContentOffset(with: restoredSnapshot)
-                self.diagnostics.recordRestore()
-            } else if self.isNearBottom {
-                self.scrollToBottom(animated: false)
-            }
-            self.updateDiagnosticsLabel()
-            finish()
         }
     }
 
@@ -789,6 +858,18 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         diagnosticsLabel.isHidden = !usesFixtureData && !ChatRoomV2FeatureFlag.showsDiagnostics
     }
 
+    private func restoreSnapshotEdgeForLiveState() -> ChatLayoutPositionSnapshot.Edge {
+        if !usesFixtureData, !hasUserInitiatedHistoryScroll, isNearBottom {
+            return .bottom
+        }
+        return .top
+    }
+
+    private func finishLiveHistoryRequestIfIdle() {
+        guard !usesFixtureData, !isLiveHistoryLoading else { return }
+        hasPendingLiveHistoryRequest = false
+    }
+
     @objc
     private func keyboardWillChangeFrame(_ notification: Notification) {
         let keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
@@ -906,10 +987,20 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard hasAppeared else { return }
         updateNearBottom(scrollView)
-        let distanceFromTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
-        let threshold = max(historyPreloadDistance, scrollView.bounds.height * 2.2, 1)
-        guard distanceFromTop <= threshold else { return }
+        requestPreviousPageIfReady(from: scrollView)
+    }
+
+    private func requestPreviousPageIfReady(from scrollView: UIScrollView) {
+        guard shouldRequestPreviousPage(from: scrollView) else { return }
+        guard !isLoadingHistory else { return }
         loadPreviousPageIfNeeded()
+    }
+
+    private func shouldRequestPreviousPage(from scrollView: UIScrollView) -> Bool {
+        let distanceFromTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+        guard distanceFromTop >= 0 else { return false }
+        let threshold = max(historyPreloadDistance, scrollView.bounds.height * 3.0, 1)
+        return distanceFromTop <= threshold
     }
 
     private func updateNearBottom(_ scrollView: UIScrollView) {
@@ -922,6 +1013,7 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDelegate {
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        hasUserInitiatedHistoryScroll = true
         onUserScrollChange?(true)
     }
 

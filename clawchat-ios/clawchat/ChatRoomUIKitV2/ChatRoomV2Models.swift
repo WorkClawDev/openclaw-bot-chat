@@ -5,6 +5,8 @@ enum ChatRoomV2Fixture: String {
     case textPrependStress
     case textBenchmark
     case richMedia
+    case mixedRichPrepend
+    case consecutiveImagesPrepend
 }
 
 enum ChatRoomV2FeatureFlag {
@@ -764,13 +766,17 @@ enum ChatRoomV2FixtureFactory {
         }
     }
 
-    static func historyPage(before sequence: Int, count: Int = 30) -> [ChatMessageV2] {
+    static func historyPage(
+        before sequence: Int,
+        count: Int = 30,
+        fixture: ChatRoomV2Fixture = .textPrependStress
+    ) -> [ChatMessageV2] {
         guard sequence > 1 else { return [] }
         let end = sequence - 1
         let start = max(1, end - count + 1)
         guard start <= end else { return [] }
         return (start...end).map { sequence in
-            message(sequence: sequence)
+            message(sequence: sequence, fixture: fixture)
         }
     }
 
@@ -876,7 +882,32 @@ enum ChatRoomV2FixtureFactory {
         ]
     }
 
-    private static func message(sequence: Int) -> ChatMessageV2 {
+    static func mixedRichMessages(count: Int = 36, newestSequence: Int = 1000) -> [ChatMessageV2] {
+        let oldestSequence = newestSequence - count + 1
+        return (oldestSequence...newestSequence).map { sequence in
+            mixedRichMessage(sequence: sequence)
+        }
+    }
+
+    static func consecutiveImageMessages(count: Int = 28, newestSequence: Int = 1000) -> [ChatMessageV2] {
+        let oldestSequence = newestSequence - count + 1
+        return (oldestSequence...newestSequence).map { sequence in
+            consecutiveImageMessage(sequence: sequence)
+        }
+    }
+
+    private static func message(sequence: Int, fixture: ChatRoomV2Fixture = .textPrependStress) -> ChatMessageV2 {
+        switch fixture {
+        case .mixedRichPrepend:
+            return mixedRichMessage(sequence: sequence)
+        case .consecutiveImagesPrepend:
+            return consecutiveImageMessage(sequence: sequence)
+        case .textPrependStress, .textBenchmark, .richMedia:
+            return textMessage(sequence: sequence)
+        }
+    }
+
+    private static func textMessage(sequence: Int) -> ChatMessageV2 {
         let variants = [
             "Short deterministic text message.",
             "This is a slightly longer text-only message used to verify fixed geometry during rapid scrolling.",
@@ -889,6 +920,190 @@ enum ChatRoomV2FixtureFactory {
             sequence: sequence,
             text: text,
             isOutgoing: sequence.isMultiple(of: 4)
+        )
+    }
+
+    private static func mixedRichMessage(sequence: Int) -> ChatMessageV2 {
+        let id = "v2-mixed-\(sequence)"
+        let isOutgoing = sequence.isMultiple(of: 4)
+        let sender = isOutgoing ? nil : MessageSenderPresentationV2(
+            displayName: "Fixture Bot",
+            avatarURLString: nil,
+            isBot: true,
+            showsName: true
+        )
+        let status = MessageStatusPresentationV2(
+            timestampText: String(format: "%02d:%02d", 9 + (sequence % 6), sequence % 60),
+            isPending: false
+        )
+
+        switch sequence % 6 {
+        case 0:
+            return ChatMessageV2(
+                id: id,
+                sequence: sequence,
+                isOutgoing: isOutgoing,
+                blocks: [
+                    .text(TextBlockContentV2(
+                        id: "\(id)-text-0",
+                        text: """
+                        # Mixed markdown \(sequence)
+
+                        This row combines **bold text**, `inline code`, and a stable code block.
+
+                        - bullet one
+                        - bullet two with enough text to wrap across lines
+                        """,
+                        isMarkdown: true
+                    )),
+                    .code(CodeBlockContentV2(
+                        id: "\(id)-code-0",
+                        code: "let sequence = \(sequence)\nlet stable = true\nprint(\"history prepend keeps rich content anchored\")",
+                        language: "swift"
+                    ))
+                ],
+                sender: sender,
+                status: status
+            )
+        case 1:
+            return ChatMessageV2(
+                id: id,
+                sequence: sequence,
+                isOutgoing: isOutgoing,
+                blocks: [
+                    .image(ImageBlockContentV2(
+                        id: "\(id)-image-0",
+                        urlString: nil,
+                        name: "fixture-\(sequence).jpg",
+                        aspectRatio: sequence.isMultiple(of: 2) ? 4.0 / 3.0 : 3.0 / 4.0,
+                        isSticker: false
+                    )),
+                    .text(TextBlockContentV2(
+                        id: "\(id)-caption-0",
+                        text: "Image caption for #\(sequence) should not change the anchored row during history loading.",
+                        isMarkdown: false
+                    ))
+                ],
+                sender: sender,
+                status: status
+            )
+        case 2:
+            return ChatMessageV2(
+                id: id,
+                sequence: sequence,
+                isOutgoing: isOutgoing,
+                blocks: [
+                    .text(TextBlockContentV2(
+                        id: "\(id)-text-0",
+                        text: "Table row #\(sequence) keeps native block geometry stable.",
+                        isMarkdown: true
+                    )),
+                    .table(TableBlockContentV2(
+                        id: "\(id)-table-0",
+                        rows: [
+                            ["Metric", "Value", "Note"],
+                            ["Seq", "\(sequence)", "history"],
+                            ["Kind", "table", "rich"],
+                            ["Anchor", "stable", "no jump"]
+                        ]
+                    ))
+                ],
+                sender: sender,
+                status: status
+            )
+        case 3:
+            return ChatMessageV2(
+                id: id,
+                sequence: sequence,
+                isOutgoing: isOutgoing,
+                blocks: [
+                    .audio(AudioBlockContentV2(
+                        id: "\(id)-audio-0",
+                        urlString: nil,
+                        durationSeconds: 7 + (sequence % 9),
+                        durationLabel: "\(7 + (sequence % 9))\""
+                    )),
+                    .text(TextBlockContentV2(
+                        id: "\(id)-text-0",
+                        text: "Audio + text row #\(sequence) stays in the same visual slot.",
+                        isMarkdown: false
+                    ))
+                ],
+                sender: sender,
+                status: status
+            )
+        case 4:
+            return ChatMessageV2(
+                id: id,
+                sequence: sequence,
+                isOutgoing: isOutgoing,
+                blocks: [
+                    .text(TextBlockContentV2(
+                        id: "\(id)-text-0",
+                        text: """
+                        ## Markdown table source \(sequence)
+
+                        | Part | Behavior |
+                        | --- | --- |
+                        | image | fixed aspect ratio |
+                        | markdown | precomputed layout |
+                        | prepend | snapshot restored |
+                        """,
+                        isMarkdown: true
+                    ))
+                ],
+                sender: sender,
+                status: status
+            )
+        default:
+            return ChatMessageV2(
+                id: id,
+                sequence: sequence,
+                text: "#\(sequence) Plain fallback row inside the mixed rich prepend stream.",
+                isOutgoing: isOutgoing
+            )
+        }
+    }
+
+    private static func consecutiveImageMessage(sequence: Int) -> ChatMessageV2 {
+        let id = "v2-images-\(sequence)"
+        let isOutgoing = sequence.isMultiple(of: 3)
+        let aspectRatios: [CGFloat] = [
+            4.0 / 3.0,
+            3.0 / 4.0,
+            1.0,
+            16.0 / 10.0,
+            10.0 / 16.0
+        ]
+        let sender = isOutgoing ? nil : MessageSenderPresentationV2(
+            displayName: "Fixture Images",
+            avatarURLString: nil,
+            isBot: true,
+            showsName: true
+        )
+        return ChatMessageV2(
+            id: id,
+            sequence: sequence,
+            isOutgoing: isOutgoing,
+            blocks: [
+                .image(ImageBlockContentV2(
+                    id: "\(id)-image-0",
+                    urlString: nil,
+                    name: "fixture-consecutive-\(sequence).jpg",
+                    aspectRatio: aspectRatios[sequence % aspectRatios.count],
+                    isSticker: false
+                )),
+                .text(TextBlockContentV2(
+                    id: "\(id)-caption-0",
+                    text: "Image #\(sequence) in a consecutive history stream.",
+                    isMarkdown: false
+                ))
+            ],
+            sender: sender,
+            status: MessageStatusPresentationV2(
+                timestampText: String(format: "%02d:%02d", 10 + (sequence % 5), sequence % 60),
+                isPending: false
+            )
         )
     }
 }

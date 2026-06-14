@@ -36,6 +36,80 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
     }
 
     @MainActor
+    func testMixedRichContentPrependStaysStable() throws {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-uiTestMode", "chatRoomV2",
+            "-fixture", "mixedRichPrepend"
+        ]
+        app.launch()
+
+        let collection = app.collectionViews["chatRoomV2.collectionView"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["v2-mixed-997-image-0"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.otherElements["v2-mixed-998-table-0"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["v2-mixed-999-audio-0"].waitForExistence(timeout: 10))
+        XCTAssertTrue(collection.cells["chatRoomV2.message.v2-mixed-1000"].waitForExistence(timeout: 10))
+
+        let top = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        let bottom = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
+        let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
+        for _ in 0..<18 {
+            let diagnosticText = diagnostics.value as? String ?? diagnostics.label
+            if diagnosticText.contains("prepends=1") {
+                break
+            }
+            top.press(forDuration: 0.01, thenDragTo: bottom)
+        }
+
+        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "prepends=1", "prepends=1")
+        expectation(for: completed, evaluatedWith: diagnostics)
+        waitForExpectations(timeout: 10)
+
+        let diagnosticText = diagnostics.value as? String ?? diagnostics.label
+        XCTAssertTrue(diagnosticText.contains("restores=1"))
+        XCTAssertTrue(diagnosticText.contains("reloads=0"))
+        XCTAssertLessThanOrEqual(driftValue(in: diagnosticText), 1.0)
+    }
+
+    @MainActor
+    func testConsecutiveImagesPrependStaysStable() throws {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-uiTestMode", "chatRoomV2",
+            "-fixture", "consecutiveImagesPrepend"
+        ]
+        app.launch()
+
+        let collection = app.collectionViews["chatRoomV2.collectionView"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["v2-images-1000-image-0"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["v2-images-999-image-0"].waitForExistence(timeout: 10))
+
+        let top = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        let bottom = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
+        let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
+        for _ in 0..<22 {
+            let diagnosticText = diagnostics.value as? String ?? diagnostics.label
+            if diagnosticText.contains("prepends=1") {
+                break
+            }
+            top.press(forDuration: 0.01, thenDragTo: bottom)
+        }
+
+        let completed = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "prepends=1", "prepends=1")
+        expectation(for: completed, evaluatedWith: diagnostics)
+        waitForExpectations(timeout: 10)
+
+        let diagnosticText = diagnostics.value as? String ?? diagnostics.label
+        XCTAssertTrue(diagnosticText.contains("restores=1"))
+        XCTAssertTrue(diagnosticText.contains("reloads=0"))
+        XCTAssertLessThanOrEqual(driftValue(in: diagnosticText), 1.0)
+    }
+
+    @MainActor
     func testRapidScrollingDoesNotBlankTextFixture() throws {
         let app = XCUIApplication()
         app.launchArguments = [
@@ -295,11 +369,17 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
     }
 
     private func driftValue(in diagnosticText: String) -> Double {
-        guard let range = diagnosticText.range(of: #"drift=([0-9]+(?:\.[0-9]+)?)"#, options: .regularExpression) else {
-            XCTFail("Missing drift diagnostic in: \(diagnosticText)")
+        metricValue("drift", in: diagnosticText)
+    }
+
+    private func metricValue(_ name: String, in diagnosticText: String) -> Double {
+        let escapedName = NSRegularExpression.escapedPattern(for: name)
+        guard let range = diagnosticText.range(of: "\(escapedName)=([0-9]+(?:\\.[0-9]+)?)", options: .regularExpression) else {
+            XCTFail("Missing \(name) diagnostic in: \(diagnosticText)")
             return .greatestFiniteMagnitude
         }
         let matched = String(diagnosticText[range])
-        return Double(matched.replacingOccurrences(of: "drift=", with: "")) ?? .greatestFiniteMagnitude
+        return Double(matched.replacingOccurrences(of: "\(name)=", with: "")) ?? .greatestFiniteMagnitude
     }
+
 }
