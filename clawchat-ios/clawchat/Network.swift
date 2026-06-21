@@ -945,6 +945,28 @@ class AuthManager: ObservableObject {
     }
 
     init() {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiTestResetState") {
+            userDefaults.removeObject(forKey: accessTokenKey)
+            userDefaults.removeObject(forKey: refreshTokenKey)
+            userDefaults.removeObject(forKey: currentUserKey)
+            userDefaults.set(AppLanguageMode.english.rawValue, forKey: AppLanguageMode.storageKey)
+        }
+
+        if ProcessInfo.processInfo.arguments.contains("-uiTestAuthenticated") {
+            let seededUser = Self.uiTestUser
+            userDefaults.set("ui-test-access-token", forKey: accessTokenKey)
+            userDefaults.set("ui-test-refresh-token", forKey: refreshTokenKey)
+            if let data = try? JSONEncoder().encode(seededUser) {
+                userDefaults.set(data, forKey: currentUserKey)
+            }
+            userDefaults.set(AppLanguageMode.english.rawValue, forKey: AppLanguageMode.storageKey)
+            self.isAuthenticated = true
+            self.currentUser = seededUser
+            return
+        }
+#endif
+
         self.isAuthenticated = accessToken != nil
         if isAuthenticated {
             self.currentUser = Self.decodeCachedUser(from: userDefaults.data(forKey: currentUserKey))
@@ -1064,6 +1086,21 @@ class AuthManager: ObservableObject {
         }
         return try? JSONDecoder().decode(User.self, from: data)
     }
+
+#if DEBUG
+    private static var uiTestUser: User {
+        User(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000111")!,
+            username: "ui-test",
+            email: "ui-test@example.com",
+            nickname: "Test Runner",
+            avatar: nil,
+            avatarUrl: nil,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            updatedAt: nil
+        )
+    }
+#endif
 }
 
 private struct RefreshTokenRequest: Codable {

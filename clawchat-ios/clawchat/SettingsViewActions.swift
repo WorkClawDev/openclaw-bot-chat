@@ -9,6 +9,11 @@ extension SettingsView {
         didInitialLoad = true
         syncProfileDraftsIfNeeded()
         await refreshNotificationAuthorization()
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiTestAuthenticated") {
+            return
+        }
+#endif
         await viewModel.fetchProfile()
         syncProfileDraftsIfNeeded()
     }

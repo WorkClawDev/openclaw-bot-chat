@@ -158,6 +158,7 @@ extension SettingsView {
                 }
                 .fixedSize()
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.profile-edit-button")
             }
 
             if isEditingProfile {
@@ -203,6 +204,7 @@ extension SettingsView {
 
                     editField(title: L10n.t("显示名称", "Display name"), placeholder: L10n.t("添加显示名称", "Add a display name"), text: $nicknameDraft)
                         .focused($focusNicknameField)
+                        .accessibilityIdentifier("settings.display-name-field")
                     
                     editField(title: L10n.t("头像链接", "Avatar URL"), placeholder: L10n.t("图片链接", "HTTPS image link"), text: $avatarURLDraft)
 
@@ -269,6 +271,7 @@ extension SettingsView {
                     showPasswordEditor.toggle()
                 }
             }
+            .accessibilityIdentifier("settings.password-row")
 
             if showPasswordEditor {
                 passwordEditor
@@ -299,16 +302,19 @@ extension SettingsView {
                 .padding(12)
                 .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityIdentifier("settings.current-password-field")
             
             SecureField(L10n.t("新密码（至少 8 个字符）", "New password (at least 8 characters)"), text: $newPassword)
                 .padding(12)
                 .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityIdentifier("settings.new-password-field")
             
             SecureField(L10n.t("确认新密码", "Confirm new password"), text: $confirmPassword)
                 .padding(12)
                 .background(Color.rcmsFieldSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityIdentifier("settings.confirm-password-field")
 
             if let passwordErrorMessage {
                 Text(passwordErrorMessage)
@@ -531,6 +537,7 @@ extension SettingsView {
         }
         .padding(.top, 12)
         .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.logout-button")
     }
 
     func infoRow(title: String, value: String, icon: String, isMonospaced: Bool = false, copyString: String? = nil) -> some View {
@@ -590,6 +597,7 @@ extension SettingsView {
                     .foregroundStyle(Color.rcmsTextSecondary.opacity(0.5))
             }
             .padding(16)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
