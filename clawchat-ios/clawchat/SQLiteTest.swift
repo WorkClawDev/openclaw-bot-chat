@@ -200,6 +200,18 @@ final class LocalMessageStore {
         }
     }
 
+    func resetForCurrentServiceEndpoint() {
+        queue.sync {
+            if let database {
+                sqlite3_close(database)
+                self.database = nil
+            }
+            openDatabaseIfNeeded()
+            createTablesIfNeeded()
+            notifyConversationChanges()
+        }
+    }
+
     private func openDatabaseIfNeeded() {
         guard database == nil else { return }
 
@@ -1009,7 +1021,11 @@ final class LocalMessageStore {
             create: true
         )) ?? fileManager.temporaryDirectory
 
-        let directoryURL = baseURL.appendingPathComponent("clawchat", isDirectory: true)
+        let endpointIdentifier = ServiceEndpointConfiguration.storageIdentifier(for: APIClient.shared.baseURL)
+        let directoryURL = baseURL
+            .appendingPathComponent("clawchat", isDirectory: true)
+            .appendingPathComponent("endpoints", isDirectory: true)
+            .appendingPathComponent(endpointIdentifier, isDirectory: true)
         if !fileManager.fileExists(atPath: directoryURL.path) {
             try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         }

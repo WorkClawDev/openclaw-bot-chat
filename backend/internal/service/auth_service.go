@@ -14,15 +14,15 @@ import (
 )
 
 var (
-	ErrUserNotFound       = errors.New("user not found")
-	ErrInvalidCredentials = errors.New("invalid username or password")
+	ErrUserNotFound           = errors.New("user not found")
+	ErrInvalidCredentials     = errors.New("invalid username or password")
 	ErrMissingLoginIdentifier = errors.New("missing login identifier")
-	ErrUserAlreadyExists  = errors.New("user already exists")
-	ErrUsernameTaken      = errors.New("username already taken")
-	ErrEmailTaken         = errors.New("email already taken")
-	ErrIncorrectPassword  = errors.New("incorrect password")
-	ErrWeakPassword       = errors.New("new password does not meet policy")
-	ErrUserBanned         = errors.New("account has been suspended")
+	ErrUserAlreadyExists      = errors.New("user already exists")
+	ErrUsernameTaken          = errors.New("username already taken")
+	ErrEmailTaken             = errors.New("email already taken")
+	ErrIncorrectPassword      = errors.New("incorrect password")
+	ErrWeakPassword           = errors.New("new password does not meet policy")
+	ErrUserBanned             = errors.New("account has been suspended")
 )
 
 // AuthService handles authentication operations
@@ -105,10 +105,12 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest, ip, use
 		return nil, nil, err
 	}
 	// Create user
+	email := strings.TrimSpace(req.Email)
 	user := &model.User{
 		Username:     req.Username,
-		Email:        req.Email,
-		PasswordHash: hashedPassword,
+		Email:        &email,
+		PasswordHash: &hashedPassword,
+		AuthProvider: "password",
 		Status:       model.UserStatusActive,
 	}
 	if err := s.userRepo.Create(ctx, user); err != nil {
@@ -152,7 +154,7 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent
 	if user.Status == model.UserStatusBanned {
 		return nil, nil, ErrUserBanned
 	}
-	if !password.Check(req.Password, user.PasswordHash) {
+	if user.PasswordHash == nil || !password.Check(req.Password, *user.PasswordHash) {
 		return nil, nil, ErrInvalidCredentials
 	}
 	// Update last login
@@ -286,7 +288,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 	if err != nil {
 		return ErrUserNotFound
 	}
-	if !password.Check(oldPassword, user.PasswordHash) {
+	if user.PasswordHash == nil || !password.Check(oldPassword, *user.PasswordHash) {
 		return ErrIncorrectPassword
 	}
 
@@ -295,7 +297,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 		return err
 	}
 	if err := s.userRepo.UpdateFields(ctx, userID, map[string]interface{}{
-		"password_hash": hashedPassword,
+		"password_hash": &hashedPassword,
 	}); err != nil {
 		return err
 	}

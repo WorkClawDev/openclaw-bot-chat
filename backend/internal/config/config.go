@@ -15,6 +15,9 @@ type Config struct {
 	Redis    RedisConfig
 	MQTT     MQTTConfig
 	JWT      JWTConfig
+	Auth     AuthConfig
+	SMS      SMSConfig
+	Captcha  CaptchaConfig
 	Storage  StorageConfig
 	Asset    AssetConfig
 	Log      LogConfig
@@ -77,6 +80,46 @@ type JWTConfig struct {
 	AccessTokenTTL  int // seconds
 	RefreshTokenTTL int // seconds
 	Issuer          string
+}
+
+type AuthConfig struct {
+	Phone PhoneAuthConfig `mapstructure:"phone"`
+}
+
+type PhoneAuthConfig struct {
+	Enabled             bool     `mapstructure:"enabled"`
+	AllowedCountryCodes []string `mapstructure:"allowed_country_codes"`
+	CodeTTLSeconds      int      `mapstructure:"code_ttl_seconds"`
+	SendCooldownSeconds int      `mapstructure:"send_cooldown_seconds"`
+	PhoneHourlyLimit    int      `mapstructure:"phone_hourly_limit"`
+	PhoneDailyLimit     int      `mapstructure:"phone_daily_limit"`
+	IPHourlyLimit       int      `mapstructure:"ip_hourly_limit"`
+	MaxVerifyAttempts   int      `mapstructure:"max_verify_attempts"`
+	CodePepper          string   `mapstructure:"code_pepper"`
+	MockCode            string   `mapstructure:"mock_code"`
+}
+
+type SMSConfig struct {
+	Provider string          `mapstructure:"provider"`
+	Aliyun   AliyunSMSConfig `mapstructure:"aliyun"`
+}
+
+type AliyunSMSConfig struct {
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	AccessKeySecret string `mapstructure:"access_key_secret"`
+	SignName        string `mapstructure:"sign_name"`
+	TemplateCode    string `mapstructure:"template_code"`
+	Endpoint        string `mapstructure:"endpoint"`
+}
+
+type CaptchaConfig struct {
+	Provider  string                 `mapstructure:"provider"`
+	Turnstile TurnstileCaptchaConfig `mapstructure:"turnstile"`
+}
+
+type TurnstileCaptchaConfig struct {
+	SecretKey string `mapstructure:"secret_key"`
+	Endpoint  string `mapstructure:"endpoint"`
 }
 
 type StorageConfig struct {
@@ -149,6 +192,18 @@ func Load(configPath string) (*Config, error) {
 	// Allow environment variable overrides
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetDefault("auth.phone.enabled", true)
+	v.SetDefault("auth.phone.allowed_country_codes", []string{"86"})
+	v.SetDefault("auth.phone.code_ttl_seconds", 300)
+	v.SetDefault("auth.phone.send_cooldown_seconds", 60)
+	v.SetDefault("auth.phone.phone_hourly_limit", 5)
+	v.SetDefault("auth.phone.phone_daily_limit", 10)
+	v.SetDefault("auth.phone.ip_hourly_limit", 30)
+	v.SetDefault("auth.phone.max_verify_attempts", 5)
+	v.SetDefault("sms.provider", "mock")
+	v.SetDefault("sms.aliyun.endpoint", "https://dysmsapi.aliyuncs.com/")
+	v.SetDefault("captcha.provider", "mock")
+	v.SetDefault("captcha.turnstile.endpoint", "https://challenges.cloudflare.com/turnstile/v0/siteverify")
 	bindEnvKeys(v,
 		"app.host",
 		"app.port",
@@ -181,6 +236,25 @@ func Load(configPath string) (*Config, error) {
 		"jwt.access_token_ttl",
 		"jwt.refresh_token_ttl",
 		"jwt.issuer",
+		"auth.phone.enabled",
+		"auth.phone.allowed_country_codes",
+		"auth.phone.code_ttl_seconds",
+		"auth.phone.send_cooldown_seconds",
+		"auth.phone.phone_hourly_limit",
+		"auth.phone.phone_daily_limit",
+		"auth.phone.ip_hourly_limit",
+		"auth.phone.max_verify_attempts",
+		"auth.phone.code_pepper",
+		"auth.phone.mock_code",
+		"sms.provider",
+		"sms.aliyun.access_key_id",
+		"sms.aliyun.access_key_secret",
+		"sms.aliyun.sign_name",
+		"sms.aliyun.template_code",
+		"sms.aliyun.endpoint",
+		"captcha.provider",
+		"captcha.turnstile.secret_key",
+		"captcha.turnstile.endpoint",
 		"storage.provider",
 		"storage.bucket",
 		"storage.region",
@@ -254,6 +328,42 @@ func Load(configPath string) (*Config, error) {
 	}
 	if cfg.JWT.RefreshTokenTTL == 0 {
 		cfg.JWT.RefreshTokenTTL = 604800
+	}
+	if cfg.Auth.Phone.CodeTTLSeconds == 0 {
+		cfg.Auth.Phone.CodeTTLSeconds = 300
+	}
+	if cfg.Auth.Phone.SendCooldownSeconds == 0 {
+		cfg.Auth.Phone.SendCooldownSeconds = 60
+	}
+	if cfg.Auth.Phone.PhoneHourlyLimit == 0 {
+		cfg.Auth.Phone.PhoneHourlyLimit = 5
+	}
+	if cfg.Auth.Phone.PhoneDailyLimit == 0 {
+		cfg.Auth.Phone.PhoneDailyLimit = 10
+	}
+	if cfg.Auth.Phone.IPHourlyLimit == 0 {
+		cfg.Auth.Phone.IPHourlyLimit = 30
+	}
+	if cfg.Auth.Phone.MaxVerifyAttempts == 0 {
+		cfg.Auth.Phone.MaxVerifyAttempts = 5
+	}
+	if len(cfg.Auth.Phone.AllowedCountryCodes) == 0 {
+		cfg.Auth.Phone.AllowedCountryCodes = []string{"86"}
+	}
+	if cfg.Auth.Phone.CodePepper == "" {
+		cfg.Auth.Phone.CodePepper = cfg.JWT.Secret
+	}
+	if cfg.SMS.Provider == "" {
+		cfg.SMS.Provider = "mock"
+	}
+	if cfg.SMS.Aliyun.Endpoint == "" {
+		cfg.SMS.Aliyun.Endpoint = "https://dysmsapi.aliyuncs.com/"
+	}
+	if cfg.Captcha.Provider == "" {
+		cfg.Captcha.Provider = "mock"
+	}
+	if cfg.Captcha.Turnstile.Endpoint == "" {
+		cfg.Captcha.Turnstile.Endpoint = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 	}
 	if cfg.Storage.UploadURLTTL == 0 {
 		cfg.Storage.UploadURLTTL = 900

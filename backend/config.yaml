@@ -41,6 +41,34 @@ jwt:
   refresh_token_ttl: 604800  # 7 days in seconds
   issuer: "openclaw-bot-chat"
 
+auth:
+  phone:
+    enabled: true
+    allowed_country_codes: ["86"]
+    code_ttl_seconds: 300
+    send_cooldown_seconds: 60
+    phone_hourly_limit: 5
+    phone_daily_limit: 10
+    ip_hourly_limit: 30
+    max_verify_attempts: 5
+    code_pepper: "" # defaults to jwt.secret; set independently in production
+    mock_code: ""   # optional fixed code for local/test only
+
+sms:
+  provider: mock # mock, aliyun
+  aliyun:
+    access_key_id: ""
+    access_key_secret: ""
+    sign_name: ""
+    template_code: ""
+    endpoint: "https://dysmsapi.aliyuncs.com/"
+
+captcha:
+  provider: mock # mock, turnstile; production must use a real provider
+  turnstile:
+    secret_key: ""
+    endpoint: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
 storage:
   provider: "" # empty disables object storage; supported providers: cos, oss, s3
   bucket: ""

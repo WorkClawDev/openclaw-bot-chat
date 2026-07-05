@@ -385,11 +385,13 @@ func newTaskServiceTestEnv(t *testing.T) *taskServiceTestEnv {
 	if err := createTaskServiceTestSchema(db); err != nil {
 		t.Fatalf("create test schema: %v", err)
 	}
+	email := uuid.NewString() + "@example.test"
+	passwordHash := "hash"
 	owner := &model.User{
 		ID:           uuid.New(),
 		Username:     "owner-" + uuid.NewString(),
-		Email:        uuid.NewString() + "@example.test",
-		PasswordHash: "hash",
+		Email:        &email,
+		PasswordHash: &passwordHash,
 		Status:       model.UserStatusActive,
 	}
 	if err := db.Create(owner).Error; err != nil {
@@ -419,8 +421,12 @@ func createTaskServiceTestSchema(db *gorm.DB) error {
 		`CREATE TABLE users (
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
-			email TEXT NOT NULL UNIQUE,
-			password_hash TEXT NOT NULL,
+			email TEXT UNIQUE,
+			password_hash TEXT,
+			phone_country_code TEXT,
+			phone_number TEXT,
+			phone_verified_at DATETIME,
+			auth_provider TEXT NOT NULL DEFAULT 'password',
 			nickname TEXT,
 			avatar_url TEXT,
 			status INTEGER NOT NULL DEFAULT 1,

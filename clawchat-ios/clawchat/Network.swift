@@ -5,7 +5,21 @@ import SwiftUI
 import UIKit
 
 class APIClient {
-    static let shared = APIClient()
+    private static let sharedLock = NSLock()
+    private static var currentShared = APIClient()
+
+    static var shared: APIClient {
+        sharedLock.lock()
+        defer { sharedLock.unlock() }
+        return currentShared
+    }
+
+    static func rebuildShared() {
+        sharedLock.lock()
+        currentShared = APIClient()
+        sharedLock.unlock()
+    }
+
     let baseURL: URL
 
     private let session: URLSession
@@ -20,27 +34,7 @@ class APIClient {
     }
 
     private static var defaultBaseURL: URL {
-        let arguments = ProcessInfo.processInfo.arguments
-        if let index = arguments.firstIndex(of: "-openclawApiBaseURL"),
-           arguments.indices.contains(arguments.index(after: index)) {
-            let rawValue = arguments[arguments.index(after: index)].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rawValue.isEmpty, let url = URL(string: rawValue) {
-                return url
-            }
-        }
-        if let argument = arguments.first(where: { $0.hasPrefix("OPENCLAW_API_BASE_URL=") }) {
-            let rawValue = String(argument.dropFirst("OPENCLAW_API_BASE_URL=".count))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rawValue.isEmpty, let url = URL(string: rawValue) {
-                return url
-            }
-        }
-        let rawValue = ProcessInfo.processInfo.environment["OPENCLAW_API_BASE_URL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let rawValue, !rawValue.isEmpty, let url = URL(string: rawValue) {
-            return url
-        }
-        return URL(string: "https://clawchat.changer.site")!
+        ServiceEndpointConfiguration.currentBaseURL
     }
 
     private static func makeAPISession() -> URLSession {
@@ -55,11 +49,12 @@ class APIClient {
 
     private static func makeRemoteDataSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
+        let endpointIdentifier = ServiceEndpointConfiguration.storageIdentifier(for: defaultBaseURL)
         configuration.requestCachePolicy = .useProtocolCachePolicy
         configuration.urlCache = URLCache(
             memoryCapacity: 16 * 1024 * 1024,
             diskCapacity: 96 * 1024 * 1024,
-            diskPath: "site.changer.clawchat.remote-data-cache"
+            diskPath: "site.changer.clawchat.remote-data-cache.\(endpointIdentifier)"
         )
         return URLSession(configuration: configuration)
     }
@@ -92,6 +87,16 @@ class APIClient {
     func register(username: String, email: String, password: String) -> AnyPublisher<AuthPayload, Error> {
         let payload = RegisterRequest(username: username, email: email, password: password)
         return encodedRequest("/api/v1/auth/register", method: "POST", body: payload, requiresAuth: false)
+    }
+
+    func requestPhoneCode(phone: String, captchaToken: String, purpose: String = "login") -> AnyPublisher<PhoneCodeResponse, Error> {
+        let payload = PhoneCodeRequest(phone: phone, captchaToken: captchaToken, purpose: purpose)
+        return encodedRequest("/api/v1/auth/phone/code", method: "POST", body: payload, requiresAuth: false)
+    }
+
+    func phoneLogin(phone: String, code: String) -> AnyPublisher<AuthPayload, Error> {
+        let payload = PhoneLoginRequest(phone: phone, code: code)
+        return encodedRequestWithTransportRetry("/api/v1/auth/phone/login", method: "POST", body: payload, requiresAuth: false)
     }
 
     func fetchCurrentUser() -> AnyPublisher<User, Error> {
@@ -1121,6 +1126,30 @@ private struct RegisterRequest: Codable {
     let username: String
     let email: String
     let password: String
+}
+
+struct PhoneCodeResponse: Codable {
+    let cooldownSeconds: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case cooldownSeconds = "cooldown_seconds"
+    }
+}
+
+private struct PhoneCodeRequest: Codable {
+    let phone: String
+    let captchaToken: String
+    let purpose: String
+
+    enum CodingKeys: String, CodingKey {
+        case phone, purpose
+        case captchaToken = "captcha_token"
+    }
+}
+
+private struct PhoneLoginRequest: Codable {
+    let phone: String
+    let code: String
 }
 
 private struct BotMutationRequest: Codable {

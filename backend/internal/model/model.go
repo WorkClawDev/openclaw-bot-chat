@@ -20,19 +20,23 @@ const (
 )
 
 type User struct {
-	ID           uuid.UUID  `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
-	Username     string     `gorm:"type:varchar(64);uniqueIndex;not null"`
-	Email        string     `gorm:"type:varchar(255);uniqueIndex;not null"`
-	PasswordHash string     `gorm:"type:varchar(255);not null"`
-	Nickname     *string    `gorm:"type:varchar(128)"`
-	AvatarURL    *string    `gorm:"type:varchar(512)"`
-	Status       UserStatus `gorm:"type:smallint;not null;default:1"`
-	IsDeleted    bool       `gorm:"not null;default:false"`
-	LastLoginAt  *time.Time
-	LastLoginIP  *string        `gorm:"type:varchar(45)"`
-	CreatedAt    time.Time      `gorm:"not null;default:now()"`
-	UpdatedAt    time.Time      `gorm:"not null;default:now()"`
-	DeletedAt    gorm.DeletedAt `gorm:"index"`
+	ID               uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	Username         string    `gorm:"type:varchar(64);uniqueIndex;not null"`
+	Email            *string   `gorm:"type:varchar(255);uniqueIndex"`
+	PasswordHash     *string   `gorm:"type:varchar(255)"`
+	PhoneCountryCode *string   `gorm:"type:varchar(8);index:idx_users_phone,unique,where:deleted_at IS NULL AND phone_country_code IS NOT NULL AND phone_number IS NOT NULL"`
+	PhoneNumber      *string   `gorm:"type:varchar(32);index:idx_users_phone,unique,where:deleted_at IS NULL AND phone_country_code IS NOT NULL AND phone_number IS NOT NULL"`
+	PhoneVerifiedAt  *time.Time
+	AuthProvider     string     `gorm:"type:varchar(32);not null;default:'password'"`
+	Nickname         *string    `gorm:"type:varchar(128)"`
+	AvatarURL        *string    `gorm:"type:varchar(512)"`
+	Status           UserStatus `gorm:"type:smallint;not null;default:1"`
+	IsDeleted        bool       `gorm:"not null;default:false"`
+	LastLoginAt      *time.Time
+	LastLoginIP      *string        `gorm:"type:varchar(45)"`
+	CreatedAt        time.Time      `gorm:"not null;default:now()"`
+	UpdatedAt        time.Time      `gorm:"not null;default:now()"`
+	DeletedAt        gorm.DeletedAt `gorm:"index"`
 }
 
 func (User) TableName() string { return "users" }
@@ -386,6 +390,9 @@ const (
 	AuditActionLogin          AuditAction = "login"
 	AuditActionLogout         AuditAction = "logout"
 	AuditActionRegister       AuditAction = "register"
+	AuditActionSMSCodeRequest AuditAction = "sms_code_requested"
+	AuditActionPhoneLogin     AuditAction = "phone_login"
+	AuditActionPhoneRegister  AuditAction = "phone_register"
 	AuditActionUpdateProfile  AuditAction = "update_profile"
 	AuditActionChangePassword AuditAction = "change_password"
 	AuditActionCreateBot      AuditAction = "create_bot"

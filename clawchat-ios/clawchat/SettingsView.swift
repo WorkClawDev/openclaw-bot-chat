@@ -7,6 +7,7 @@ struct SettingsView: View {
     @StateObject var viewModel: SettingsViewModel
     @StateObject var authManager = AuthManager.shared
     @StateObject var realtimeService = RealtimeService.shared
+    @StateObject var endpointManager = ServiceEndpointManager.shared
     let loadsProfileOnAppear: Bool
 
     @AppStorage("settings.botNotificationsEnabled") var botNotificationsEnabled = false
@@ -31,6 +32,7 @@ struct SettingsView: View {
     @State var passwordErrorMessage: String?
 
     @State var showDeviceDetails = false
+    @State var showEndpointSettings = false
     @State var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
     @State var toast: SettingsToastPayload?
 
@@ -104,6 +106,9 @@ struct SettingsView: View {
                         Task { await uploadProfileAvatarImage(croppedImage) }
                     }
                 )
+            }
+            .sheet(isPresented: $showEndpointSettings) {
+                ServiceEndpointSettingsView(manager: endpointManager)
             }
             .alert(
                 L10n.t("个人资料加载失败", "Profile failed to load"),

@@ -10,8 +10,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS users (
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     username        VARCHAR(64) NOT NULL UNIQUE,
-    email           VARCHAR(255) NOT NULL UNIQUE,
-    password_hash   VARCHAR(255) NOT NULL,
+    email           VARCHAR(255) UNIQUE,
+    password_hash   VARCHAR(255),
+    phone_country_code VARCHAR(8),
+    phone_number    VARCHAR(32),
+    phone_verified_at TIMESTAMPTZ,
+    auth_provider   VARCHAR(32) NOT NULL DEFAULT 'password',
     nickname        VARCHAR(128),
     avatar_url      VARCHAR(512),
     status          SMALLINT    NOT NULL DEFAULT 0,  -- 0: inactive, 1: active, 2: banned
@@ -24,6 +28,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_users_email ON users(email);
+CREATE UNIQUE INDEX idx_users_phone ON users(phone_country_code, phone_number)
+    WHERE phone_country_code IS NOT NULL AND phone_number IS NOT NULL;
 CREATE INDEX idx_users_status ON users(status);
 
 -- ============================================================

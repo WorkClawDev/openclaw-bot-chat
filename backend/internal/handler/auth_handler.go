@@ -12,12 +12,13 @@ import (
 
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
-	authService *service.AuthService
+	authService      *service.AuthService
+	phoneAuthService *service.PhoneAuthService
 }
 
 // NewAuthHandler creates a new auth handler
-func NewAuthHandler(authService *service.AuthService) *AuthHandler {
-	return &AuthHandler{authService: authService}
+func NewAuthHandler(authService *service.AuthService, phoneAuthService *service.PhoneAuthService) *AuthHandler {
+	return &AuthHandler{authService: authService, phoneAuthService: phoneAuthService}
 }
 
 // Register handles user registration
@@ -44,6 +45,93 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	c.JSON(201, apiresponse.Response{
 		Code:    int(apiresponse.CodeSuccess),
 		Message: "registered successfully",
+		Data: responsedto.AuthPayloadResponse{
+			Tokens: responsedto.TokenResponse{
+				AccessToken:  tokens.AccessToken,
+				RefreshToken: tokens.RefreshToken,
+				ExpiresIn:    tokens.ExpiresIn,
+				TokenType:    tokens.TokenType,
+			},
+			User: responsedto.NewAuthUserResponse(user),
+		},
+	})
+}
+
+func (h *AuthHandler) RequestPhoneCode(c *gin.Context) {
+	if h.phoneAuthService == nil {
+		apiresponse.NotFound(c, "phone auth is not enabled")
+		return
+	}
+
+	var req service.PhoneCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	ip := c.ClientIP()
+	userAgent := c.GetHeader("User-Agent")
+	if err := h.phoneAuthService.RequestCode(c.Request.Context(), req, ip, userAgent); err != nil {
+		switch {
+		case errors.Is(err, service.ErrPhoneAuthDisabled):
+			apiresponse.Forbidden(c, "phone auth is disabled")
+		case errors.Is(err, service.ErrInvalidPhone):
+			apiresponse.BadRequest(c, "invalid phone number")
+		case errors.Is(err, service.ErrCaptchaInvalid):
+			apiresponse.BadRequest(c, "captcha verification failed")
+		case errors.Is(err, service.ErrPhoneRateLimited):
+			apiresponse.Error(c, 429, apiresponse.Code(429), "please try again later")
+		default:
+			apiresponse.InternalError(c, "failed to send verification code")
+		}
+		return
+	}
+
+	apiresponse.SuccessWithMessage(c, "verification code sent", gin.H{
+		"cooldown_seconds": h.phoneAuthService.SendCooldownSeconds(),
+	})
+}
+
+func (h *AuthHandler) PhoneLogin(c *gin.Context) {
+	if h.phoneAuthService == nil {
+		apiresponse.NotFound(c, "phone auth is not enabled")
+		return
+	}
+
+	var req service.PhoneLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	ip := c.ClientIP()
+	userAgent := c.GetHeader("User-Agent")
+	tokens, user, created, err := h.phoneAuthService.LoginOrRegister(c.Request.Context(), req, ip, userAgent)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrPhoneAuthDisabled):
+			apiresponse.Forbidden(c, "phone auth is disabled")
+		case errors.Is(err, service.ErrInvalidPhone):
+			apiresponse.BadRequest(c, "invalid phone number")
+		case errors.Is(err, service.ErrInvalidPhoneCode):
+			apiresponse.Unauthorized(c, "invalid or expired verification code")
+		case errors.Is(err, service.ErrUserBanned):
+			apiresponse.Forbidden(c, err.Error())
+		default:
+			apiresponse.InternalError(c, "failed to login")
+		}
+		return
+	}
+
+	statusCode := 200
+	message := "login successful"
+	if created {
+		statusCode = 201
+		message = "registered successfully"
+	}
+	c.JSON(statusCode, apiresponse.Response{
+		Code:    int(apiresponse.CodeSuccess),
+		Message: message,
 		Data: responsedto.AuthPayloadResponse{
 			Tokens: responsedto.TokenResponse{
 				AccessToken:  tokens.AccessToken,

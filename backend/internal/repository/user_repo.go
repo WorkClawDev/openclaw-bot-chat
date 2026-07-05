@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
@@ -60,6 +61,18 @@ func (r *UserRepository) GetByUsernameOrEmail(ctx context.Context, identifier st
 	return &user, nil
 }
 
+func (r *UserRepository) GetByPhone(ctx context.Context, countryCode, phoneNumber string) (*model.User, error) {
+	var user model.User
+	err := r.db.WithContext(ctx).
+		Where("phone_country_code = ? AND phone_number = ?", countryCode, phoneNumber).
+		First(&user).
+		Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 func (r *UserRepository) Update(ctx context.Context, user *model.User) error {
 	return r.db.WithContext(ctx).Save(user).Error
 }
@@ -70,7 +83,7 @@ func (r *UserRepository) UpdateFields(ctx context.Context, userID uuid.UUID, upd
 
 func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID, ip string) error {
 	return r.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
-		"last_login_at": gorm.Expr("NOW()"),
+		"last_login_at": time.Now(),
 		"last_login_ip": ip,
 	}).Error
 }
@@ -84,5 +97,15 @@ func (r *UserRepository) ExistsByUsername(ctx context.Context, username string) 
 func (r *UserRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&model.User{}).Where("email = ?", email).Count(&count).Error
+	return count > 0, err
+}
+
+func (r *UserRepository) ExistsByPhone(ctx context.Context, countryCode, phoneNumber string) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("phone_country_code = ? AND phone_number = ?", countryCode, phoneNumber).
+		Count(&count).
+		Error
 	return count > 0, err
 }

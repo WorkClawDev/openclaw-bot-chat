@@ -11,6 +11,7 @@ type UserResponse struct {
 	ID             uuid.UUID        `json:"id"`
 	Username       string           `json:"username"`
 	Email          string           `json:"email"`
+	Phone          string           `json:"phone,omitempty"`
 	Nickname       string           `json:"nickname"`
 	Avatar         *string          `json:"avatar,omitempty"`
 	AvatarURL      *string          `json:"avatar_url,omitempty"`
@@ -27,6 +28,7 @@ type AuthUserResponse struct {
 	ID             uuid.UUID `json:"id"`
 	Username       string    `json:"username"`
 	Email          string    `json:"email"`
+	Phone          string    `json:"phone,omitempty"`
 	Nickname       string    `json:"nickname"`
 	Avatar         *string   `json:"avatar,omitempty"`
 	AvatarURL      *string   `json:"avatar_url,omitempty"`
@@ -50,6 +52,7 @@ type MeResponse struct {
 	ID             uuid.UUID `json:"id"`
 	Username       string    `json:"username"`
 	Email          string    `json:"email"`
+	Phone          string    `json:"phone,omitempty"`
 	Nickname       string    `json:"nickname"`
 	Avatar         *string   `json:"avatar,omitempty"`
 	AvatarURL      *string   `json:"avatar_url,omitempty"`
@@ -65,7 +68,8 @@ func NewUserResponse(user *model.User) *UserResponse {
 	return &UserResponse{
 		ID:             user.ID,
 		Username:       user.Username,
-		Email:          user.Email,
+		Email:          userEmail(user),
+		Phone:          userPhone(user),
 		Nickname:       userNickname(user),
 		Avatar:         user.AvatarURL,
 		AvatarURL:      user.AvatarURL,
@@ -99,7 +103,8 @@ func NewAuthUserResponse(user *model.User) *AuthUserResponse {
 	return &AuthUserResponse{
 		ID:             user.ID,
 		Username:       user.Username,
-		Email:          user.Email,
+		Email:          userEmail(user),
+		Phone:          userPhone(user),
 		Nickname:       userNickname(user),
 		Avatar:         user.AvatarURL,
 		AvatarURL:      user.AvatarURL,
@@ -116,13 +121,28 @@ func NewMeResponse(user *model.User) *MeResponse {
 	return &MeResponse{
 		ID:             user.ID,
 		Username:       user.Username,
-		Email:          user.Email,
+		Email:          userEmail(user),
+		Phone:          userPhone(user),
 		Nickname:       userNickname(user),
 		Avatar:         user.AvatarURL,
 		AvatarURL:      user.AvatarURL,
 		CreatedAt:      user.CreatedAt,
 		CreatedAtAlias: user.CreatedAt,
 	}
+}
+
+func userEmail(user *model.User) string {
+	if user == nil || user.Email == nil {
+		return ""
+	}
+	return *user.Email
+}
+
+func userPhone(user *model.User) string {
+	if user == nil || user.PhoneNumber == nil || user.PhoneCountryCode == nil {
+		return ""
+	}
+	return "+" + *user.PhoneCountryCode + *user.PhoneNumber
 }
 
 func userNickname(user *model.User) string {

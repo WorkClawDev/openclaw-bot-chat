@@ -59,7 +59,6 @@ func main() {
 
 	// --- Redis ---
 	rdb := setupRedis(cfg, log)
-	_ = rdb // ready for future use (rate limiting, caching)
 
 	// --- JWT Manager ---
 	jwtManager := jwt.NewManager(jwt.Config{
@@ -89,6 +88,26 @@ func main() {
 
 	// --- Services ---
 	authService := service.NewAuthService(userRepo, auditRepo, jwtManager)
+	var phoneAuthService *service.PhoneAuthService
+	if cfg.Auth.Phone.Enabled {
+		captchaProvider, err := service.NewCaptchaProvider(cfg.Captcha, cfg.App.Mode)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to setup captcha provider")
+		}
+		smsProvider, err := service.NewSMSProvider(cfg.SMS, cfg.App.Mode)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to setup sms provider")
+		}
+		phoneAuthService = service.NewPhoneAuthService(
+			userRepo,
+			auditRepo,
+			jwtManager,
+			service.NewRedisPhoneCodeStore(rdb),
+			captchaProvider,
+			smsProvider,
+			cfg.Auth.Phone,
+		)
+	}
 	botService := service.NewBotService(botRepo, keyRepo, bindingTokenRepo, auditRepo)
 	assetService := service.NewAssetService(assetRepo, objectStorage, cfg.Storage, cfg.Asset)
 	msgService := service.NewMessageService(msgRepo, botRepo, groupRepo, assetRepo, auditRepo, assetService)
@@ -115,7 +134,7 @@ func main() {
 	}
 
 	// --- Handlers ---
-	authHandler := handler.NewAuthHandler(authService)
+	authHandler := handler.NewAuthHandler(authService, phoneAuthService)
 	botHandler := handler.NewBotHandler(botService)
 	msgHandler := handler.NewMessageHandler(msgService)
 	realtimeHandler := handler.NewRealtimeHandler(msgService, cfg.MQTT)
@@ -245,6 +264,8 @@ func setupRoutes(
 	{
 		auth.POST("/register", authHandler.Register)
 		auth.POST("/login", authHandler.Login)
+		auth.POST("/phone/code", authHandler.RequestPhoneCode)
+		auth.POST("/phone/login", authHandler.PhoneLogin)
 		auth.POST("/refresh", authHandler.Refresh)
 	}
 

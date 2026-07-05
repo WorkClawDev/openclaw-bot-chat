@@ -6,11 +6,20 @@ class AuthViewModel: ObservableObject {
     @Published var username = ""
     @Published var email = ""
     @Published var password = ""
+    @Published var phone = ""
+    @Published var phoneCode = ""
+    @Published var phoneCodeCooldown = 0
     @Published var isLoading = false
+    @Published var isRequestingPhoneCode = false
     @Published var errorMessage: String?
     @Published var fieldErrors: [String: String] = [:]
 
     private var cancellables = Set<AnyCancellable>()
+    private var cooldownTimer: AnyCancellable?
+
+    var canRequestPhoneCode: Bool {
+        !isRequestingPhoneCode && phoneCodeCooldown == 0
+    }
 
     func validateLogin() -> Bool {
         fieldErrors = [:]
@@ -36,6 +45,82 @@ class AuthViewModel: ObservableObject {
         errorMessage = nil
 
         APIClient.shared.login(identifier: identifier, password: password)
+            .receive(on: DispatchQueue.main)
+            .sink { completion in
+                self.isLoading = false
+                if case .failure(let error) = completion {
+                    if let apiError = error as? APIClient.APIError {
+                        self.errorMessage = apiError.errorDescription
+                    } else {
+                        self.errorMessage = error.localizedDescription
+                    }
+                }
+            } receiveValue: { (payload: AuthPayload) in
+                AuthManager.shared.login(payload: payload)
+                RealtimeService.shared.start()
+            }
+            .store(in: &cancellables)
+    }
+
+    func validatePhoneForCode() -> Bool {
+        fieldErrors = [:]
+        let normalized = normalizedMainlandPhone(phone)
+        if normalized == nil {
+            fieldErrors["phone"] = L10n.t("请输入有效的中国大陆手机号", "Enter a valid mainland China phone number")
+            return false
+        }
+        return true
+    }
+
+    func requestPhoneCode() {
+        guard validatePhoneForCode() else { return }
+        guard let normalizedPhone = normalizedMainlandPhone(phone) else { return }
+
+        isRequestingPhoneCode = true
+        errorMessage = nil
+
+        APIClient.shared.requestPhoneCode(phone: normalizedPhone, captchaToken: captchaTokenForPhoneCode())
+            .receive(on: DispatchQueue.main)
+            .sink { completion in
+                self.isRequestingPhoneCode = false
+                if case .failure(let error) = completion {
+                    if let apiError = error as? APIClient.APIError {
+                        self.errorMessage = apiError.errorDescription
+                    } else {
+                        self.errorMessage = error.localizedDescription
+                    }
+                }
+            } receiveValue: { response in
+                self.startPhoneCodeCooldown(response.cooldownSeconds ?? 60)
+            }
+            .store(in: &cancellables)
+    }
+
+    func validatePhoneLogin() -> Bool {
+        fieldErrors = [:]
+        var isValid = true
+
+        if normalizedMainlandPhone(phone) == nil {
+            fieldErrors["phone"] = L10n.t("请输入有效的中国大陆手机号", "Enter a valid mainland China phone number")
+            isValid = false
+        }
+
+        let trimmedCode = phoneCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedCode.count != 6 || trimmedCode.contains(where: { !$0.isNumber }) {
+            fieldErrors["phoneCode"] = L10n.t("请输入 6 位验证码", "Enter the 6-digit code")
+            isValid = false
+        }
+
+        return isValid
+    }
+
+    func phoneLogin() {
+        guard validatePhoneLogin(), let normalizedPhone = normalizedMainlandPhone(phone) else { return }
+
+        isLoading = true
+        errorMessage = nil
+
+        APIClient.shared.phoneLogin(phone: normalizedPhone, code: phoneCode.trimmingCharacters(in: .whitespacesAndNewlines))
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 self.isLoading = false
@@ -107,11 +192,49 @@ class AuthViewModel: ObservableObject {
             }
             .store(in: &cancellables)
     }
+
+    func normalizedMainlandPhone(_ value: String) -> String? {
+        var phone = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        for token in [" ", "-", "(", ")"] {
+            phone = phone.replacingOccurrences(of: token, with: "")
+        }
+        if phone.hasPrefix("+86") {
+            phone.removeFirst(3)
+        } else if phone.hasPrefix("0086") {
+            phone.removeFirst(4)
+        }
+        guard phone.range(of: #"^1[3-9][0-9]{9}$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return phone
+    }
+
+    private func captchaTokenForPhoneCode() -> String {
+        "mock"
+    }
+
+    private func startPhoneCodeCooldown(_ seconds: Int) {
+        phoneCodeCooldown = max(1, seconds)
+        cooldownTimer?.cancel()
+        cooldownTimer = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                if self.phoneCodeCooldown > 0 {
+                    self.phoneCodeCooldown -= 1
+                }
+                if self.phoneCodeCooldown == 0 {
+                    self.cooldownTimer?.cancel()
+                    self.cooldownTimer = nil
+                }
+            }
+    }
 }
 
 struct LoginView: View {
     @StateObject private var viewModel = AuthViewModel()
     @State private var isRegistering = false
+    @State private var usesPhoneAuth = ServiceEndpointConfiguration.currentBaseURL == ServiceEndpointConfiguration.chinaBaseURL
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var usesWideLayout: Bool {
@@ -141,10 +264,10 @@ struct LoginView: View {
             VStack(spacing: 26) {
                 authBrandHeader(title: L10n.t("欢迎回来", "Welcome back"), subtitle: L10n.t("登录 ClawChat", "Sign in to ClawChat"), logoSize: 72)
 
-                loginForm
+                activeLoginForm
                     .padding(.horizontal, 20)
 
-                registerLink
+                loginModeLink
 
                 divider
 
@@ -203,9 +326,9 @@ struct LoginView: View {
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
 
-                loginForm
+                activeLoginForm
 
-                registerLink
+                loginModeLink
             }
             .frame(width: 430)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -214,7 +337,17 @@ struct LoginView: View {
         .padding(22)
     }
 
-    private var loginForm: some View {
+    private var activeLoginForm: some View {
+        Group {
+            if usesPhoneAuth {
+                phoneLoginForm
+            } else {
+                passwordLoginForm
+            }
+        }
+    }
+
+    private var passwordLoginForm: some View {
         VStack(spacing: 18) {
             AuthTextInput(
                 icon: "envelope",
@@ -243,6 +376,72 @@ struct LoginView: View {
         }
     }
 
+    private var phoneLoginForm: some View {
+        VStack(spacing: 18) {
+            AuthTextInput(
+                icon: "iphone",
+                placeholder: L10n.t("手机号", "Phone number"),
+                text: $viewModel.phone,
+                error: viewModel.fieldErrors["phone"]
+            )
+            .keyboardType(.numberPad)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+
+            HStack(alignment: .top, spacing: 10) {
+                AuthTextInput(
+                    icon: "number",
+                    placeholder: L10n.t("验证码", "Code"),
+                    text: $viewModel.phoneCode,
+                    error: viewModel.fieldErrors["phoneCode"]
+                )
+                .keyboardType(.numberPad)
+
+                Button {
+                    viewModel.requestPhoneCode()
+                } label: {
+                    Group {
+                        if viewModel.isRequestingPhoneCode {
+                            ProgressView()
+                                .tint(Color.rcmsAccent)
+                        } else {
+                            Text(phoneCodeButtonTitle)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.82)
+                        }
+                    }
+                    .frame(width: 108, height: 48)
+                    .foregroundStyle(viewModel.canRequestPhoneCode ? Color.rcmsAccent : Color.rcmsTextSecondary)
+                    .background(Color.rcmsFieldSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.rcmsHairline, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!viewModel.canRequestPhoneCode)
+            }
+
+            if let error = viewModel.errorMessage {
+                AuthErrorBanner(message: error)
+            }
+
+            Button(action: viewModel.phoneLogin) {
+                AuthPrimaryButtonLabel(title: L10n.t("登录 / 注册", "Log in / Register"), isLoading: viewModel.isLoading)
+            }
+            .disabled(viewModel.isLoading)
+        }
+    }
+
+    private var phoneCodeButtonTitle: String {
+        if viewModel.phoneCodeCooldown > 0 {
+            return "\(viewModel.phoneCodeCooldown)s"
+        }
+        return L10n.t("获取验证码", "Get code")
+    }
+
     private var registerLink: some View {
         VStack {
             Button {
@@ -256,6 +455,35 @@ struct LoginView: View {
                         .foregroundStyle(Color.rcmsAccent)
                 }
                 .font(.subheadline)
+            }
+        }
+    }
+
+    private var loginModeLink: some View {
+        VStack(spacing: 10) {
+            if usesPhoneAuth {
+                Button {
+                    usesPhoneAuth = false
+                    viewModel.errorMessage = nil
+                    viewModel.fieldErrors = [:]
+                } label: {
+                    Text(L10n.t("使用邮箱或用户名登录", "Use email or username"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.rcmsAccent)
+                }
+            } else {
+                if ServiceEndpointConfiguration.currentBaseURL == ServiceEndpointConfiguration.chinaBaseURL {
+                    Button {
+                        usesPhoneAuth = true
+                        viewModel.errorMessage = nil
+                        viewModel.fieldErrors = [:]
+                    } label: {
+                        Text(L10n.t("使用手机号验证码登录", "Use phone code"))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.rcmsAccent)
+                    }
+                }
+                registerLink
             }
         }
     }

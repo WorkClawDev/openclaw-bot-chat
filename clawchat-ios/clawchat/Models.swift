@@ -6,6 +6,7 @@ struct User: Codable, Identifiable {
     let id: UUID
     var username: String
     var email: String
+    var phone: String?
     var nickname: String?
     var avatar: String?
     var avatarUrl: String?
@@ -13,7 +14,7 @@ struct User: Codable, Identifiable {
     var updatedAt: Date?
 
     enum CodingKeys: String, CodingKey {
-        case id, username, email, nickname, avatar
+        case id, username, email, phone, nickname, avatar
         case avatarUrl = "avatar_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"

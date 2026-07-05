@@ -460,7 +460,7 @@ extension SettingsView {
         VStack(spacing: 0) {
             infoRow(title: L10n.t("实时连接", "Realtime connection"), value: realtimeConnectionText, icon: realtimeConnectionIcon)
             divider
-            infoRow(title: L10n.t("接口地址", "API endpoint"), value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
+            endpointInfoRow
         }
         .glassCardStyle()
     }
@@ -476,12 +476,27 @@ extension SettingsView {
                 IpadSettingsInfoTile(title: L10n.t("设备", "Device"), value: AppPlatform.deviceDisplayName, systemImage: AppPlatform.deviceSymbolName, tint: Color.rcmsAccent)
             }
 
-            infoRow(title: L10n.t("接口地址", "API endpoint"), value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
+            endpointInfoRow
                 .background(Color.rcmsSubtleFill)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .padding(18)
         .glassCardStyle()
+    }
+
+    var endpointInfoRow: some View {
+        infoRow(
+            title: L10n.t("接口地址", "API endpoint"),
+            value: endpointManager.baseURL.absoluteString,
+            icon: "network",
+            isMonospaced: true,
+            copyString: endpointManager.baseURL.absoluteString
+        )
+        .contentShape(Rectangle())
+        .onLongPressGesture(minimumDuration: 0.8) {
+            showEndpointSettings = true
+        }
+        .accessibilityIdentifier("settings.endpoint-hidden-trigger")
     }
 
     var aboutCard: some View {
