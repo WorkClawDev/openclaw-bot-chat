@@ -11,7 +11,6 @@ class RealtimeService: NSObject, ObservableObject {
     static let shared = RealtimeService()
 
     @Published var connectionState: RealtimeConnectionState = .idle
-    @Published var lastMessagesByConversation: [String: Message] = [:]
     @Published var slashCommands: [SlashCommand] = []
     @Published var slashAutocompleteChoicesByKey: [String: [SlashCommandChoice]] = [:]
     @Published var slashAutocompletePendingKeys: Set<String> = []
@@ -266,7 +265,6 @@ class RealtimeService: NSObject, ObservableObject {
 
         DispatchQueue.main.async {
             self.messagePublisher.send(optimisticMessage)
-            self.lastMessagesByConversation[conversationId] = optimisticMessage
         }
 
         log(
@@ -393,7 +391,6 @@ class RealtimeService: NSObject, ObservableObject {
         )
         DispatchQueue.main.async {
             self.messagePublisher.send(message)
-            self.lastMessagesByConversation[message.conversationId] = message
         }
     }
 
@@ -433,7 +430,6 @@ class RealtimeService: NSObject, ObservableObject {
             isActiveConversation: isActiveConversation
         )
         messagePublisher.send(failedMessage)
-        lastMessagesByConversation[failedMessage.conversationId] = failedMessage
     }
 
     private func handleSlashCommandCatalogIfNeeded(_ payload: RealtimeMessagePayload) -> Bool {

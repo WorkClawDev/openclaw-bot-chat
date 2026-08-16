@@ -39,6 +39,21 @@ final class LocalImageStore {
         return fileManager.fileExists(atPath: fileURL.path) ? fileURL : nil
     }
 
+    func cachedImageData(for content: MessageContent, fallbackIdentifier: String? = nil) async -> Data? {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                guard let fileURL = self.storageFileURL(
+                    for: content,
+                    fallbackIdentifier: fallbackIdentifier
+                ), self.fileManager.fileExists(atPath: fileURL.path) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: try? Data(contentsOf: fileURL, options: [.mappedIfSafe]))
+            }
+        }
+    }
+
     @discardableResult
     func cacheImageData(_ data: Data, for message: Message) -> URL? {
         cacheImageData(data, for: message.content, fallbackIdentifier: message.id)
@@ -75,6 +90,34 @@ final class LocalImageStore {
         }
 
         return fileManager.fileExists(atPath: fileURL.path) ? fileURL : nil
+    }
+
+    @discardableResult
+    func cacheImageDataAsync(
+        _ data: Data,
+        for content: MessageContent,
+        fallbackIdentifier: String? = nil,
+        replacingExisting: Bool = false
+    ) async -> URL? {
+        guard !data.isEmpty else { return nil }
+
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                guard let fileURL = self.storageFileURL(
+                    for: content,
+                    fallbackIdentifier: fallbackIdentifier
+                ) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                if replacingExisting || !self.fileManager.fileExists(atPath: fileURL.path) {
+                    try? data.write(to: fileURL, options: [.atomic])
+                }
+                continuation.resume(
+                    returning: self.fileManager.fileExists(atPath: fileURL.path) ? fileURL : nil
+                )
+            }
+        }
     }
 
     func ensureCachedImage(for message: Message) async -> URL? {

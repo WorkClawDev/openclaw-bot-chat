@@ -1,6 +1,68 @@
 import ChatLayout
 import UIKit
 
+struct ChatContiguousChangeV2: Equatable {
+    let prependCount: Int
+    let appendStart: Int
+    let changedExistingIndices: [Int]
+
+    init?(previous: [RenderedMessageV2], next: [RenderedMessageV2]) {
+        guard !previous.isEmpty else { return nil }
+        let previousIDs = previous.map(\.id)
+        let nextIDs = next.map(\.id)
+        guard let previousStart = nextIDs.firstIndex(of: previousIDs[0]),
+              previousStart + previousIDs.count <= nextIDs.count,
+              nextIDs[previousStart..<(previousStart + previousIDs.count)].elementsEqual(previousIDs),
+              previousStart > 0 || nextIDs.count > previousStart + previousIDs.count
+        else {
+            return nil
+        }
+
+        prependCount = previousStart
+        appendStart = previousStart + previous.count
+        changedExistingIndices = previous.indices.compactMap { previousIndex in
+            let nextIndex = previousStart + previousIndex
+            return previous[previousIndex].hasSamePresentation(as: next[nextIndex]) ? nil : nextIndex
+        }
+    }
+}
+
+struct ChatLiveHistoryStateSnapshotV2: Equatable {
+    let isLoadingOlder: Bool
+    let hasMoreHistory: Bool
+    let hasPendingRequest: Bool
+}
+
+private extension RenderedMessageV2 {
+    /// Source-order sequences can shift when an older page is prepended. They
+    /// affect store ordering, but not anything displayed by an existing cell.
+    func hasSamePresentation(as other: RenderedMessageV2) -> Bool {
+        id == other.id
+            && isOutgoing == other.isOutgoing
+            && blocks == other.blocks
+            && sender == other.sender
+            && status == other.status
+            && layout == other.layout
+            && renderArtifacts == other.renderArtifacts
+            && renderScale == other.renderScale
+    }
+}
+
+enum ChatLiveSnapshotRevisionPolicyV2 {
+    static func trustedChangedMessageIDs(
+        snapshotRevision: UInt64?,
+        lastAppliedRevision: UInt64?,
+        candidateIDs: Set<String>?
+    ) -> Set<String>? {
+        guard let snapshotRevision, let lastAppliedRevision,
+              snapshotRevision == lastAppliedRevision &+ 1
+        else {
+            return nil
+        }
+        return candidateIDs
+    }
+}
+
 @MainActor
 final class ChatRoomUIKitV2ViewController: UIViewController {
     private let context: ChatContext
@@ -8,13 +70,44 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     private let usesFixtureData: Bool
     private let store = ChatMessageStoreV2()
     private let layoutCache = MessageLayoutCacheV2()
-    private let mutationCoordinator = ChatMutationCoordinatorV2()
+    private let mutationCoordinator: ChatMutationCoordinatorV2
     private let diagnostics = ChatDiagnosticsV2()
     private lazy var renderCoordinator = MessageRenderCoordinatorV2(layoutCache: layoutCache)
     private let chatLayout = CollectionViewChatLayout()
     private lazy var collectionView = UICollectionView(frame: .zero, collectionViewLayout: chatLayout)
     private let diagnosticsLabel = UILabel()
     private var sourceMessagesByID: [String: Message] = [:]
+    private var cachedLiveMessagesByID: [String: CachedLiveMessage] = [:]
+    private var lastRequestedLiveSnapshotSignature: LiveSnapshotSignature?
+    private var lastAppliedLiveSnapshotSignature: LiveSnapshotSignature?
+    private var lastRenderedLayoutContext: LiveRenderContext?
+    private var scheduledLayoutContext: LiveRenderContext?
+
+    private struct LiveSnapshotSignature: Equatable {
+        let revision: UInt64?
+        let normalizedCurrentUserID: String
+        let messages: [ChatRoomV2MessageContentSignature]?
+    }
+
+    private struct LiveRawMessageKey: Equatable {
+        let signature: ChatRoomV2MessageContentSignature
+        let resolvedSequence: Int
+        let normalizedCurrentUserID: String
+    }
+
+    private struct LiveRenderContext: Equatable {
+        let containerWidth: CGFloat
+        let displayScale: CGFloat
+        let contentSizeCategory: UIContentSizeCategory
+        let userInterfaceStyle: UIUserInterfaceStyle
+    }
+
+    private struct CachedLiveMessage {
+        let rawKey: LiveRawMessageKey
+        let renderContext: LiveRenderContext
+        let raw: ChatMessageV2
+        let rendered: RenderedMessageV2
+    }
 
     private let historyPageSize = 30
     private var isLoadingHistory = false
@@ -29,6 +122,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     private var pendingKeyboardInset: CGFloat = 0
     private var hasInjectedKeyboardDuringPrepend = false
     private var lastScrollCommand = ChatListScrollCommand.none
+    private var isUserInteracting = false
     var bottomAutoScrollThreshold: CGFloat = 96
     var historyPreloadDistance: CGFloat = 0
     var onLoadOlder: (() -> Void)?
@@ -42,10 +136,19 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     var onTapList: (() -> Void)?
     private var isNearBottom = true
 
+    var liveHistoryStateSnapshot: ChatLiveHistoryStateSnapshotV2 {
+        ChatLiveHistoryStateSnapshotV2(
+            isLoadingOlder: isLiveHistoryLoading,
+            hasMoreHistory: hasMoreLiveHistory,
+            hasPendingRequest: hasPendingLiveHistoryRequest
+        )
+    }
+
     init(context: ChatContext, fixture: ChatRoomV2Fixture = .textPrependStress) {
         self.context = context
         self.fixture = fixture
         self.usesFixtureData = true
+        self.mutationCoordinator = ChatMutationCoordinatorV2()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -53,6 +156,15 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         self.context = context
         self.fixture = .textPrependStress
         self.usesFixtureData = false
+        self.mutationCoordinator = ChatMutationCoordinatorV2()
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    init(context: ChatContext, mutationCoordinator: ChatMutationCoordinatorV2) {
+        self.context = context
+        self.fixture = .textPrependStress
+        self.usesFixtureData = false
+        self.mutationCoordinator = mutationCoordinator
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -69,6 +181,14 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         configureCollectionView()
         configureDiagnosticsLabel()
         configureKeyboardObservers()
+        configureManualSameIDUpdateTriggerIfNeeded()
+        registerForTraitChanges([
+            UITraitPreferredContentSizeCategory.self,
+            UITraitUserInterfaceStyle.self,
+            UITraitDisplayScale.self
+        ]) { (viewController: ChatRoomUIKitV2ViewController, _: UITraitCollection) in
+            viewController.scheduleLayoutContextRerenderIfNeeded()
+        }
         if usesFixtureData {
             loadInitialFixture()
         }
@@ -86,56 +206,182 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         positionInitialContentIfNeeded()
+        scheduleLayoutContextRerenderIfNeeded()
     }
 
-    func applyLiveMessages(_ messages: [Message], currentUserID: String?) {
+    func applyLiveMessages(
+        _ messages: [Message],
+        currentUserID: String?,
+        snapshotRevision: UInt64? = nil,
+        changedMessageIDs: Set<String>? = nil
+    ) {
         guard !usesFixtureData else { return }
-        let nextSourceMessagesByID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        let rawMessages = messages.enumerated().map { index, message in
-            return ChatMessageV2(
-                message: message,
-                currentUserID: currentUserID,
-                fallbackSequence: index,
-                preservesSourceOrder: true,
-                showsSenderInfo: context.isGroup,
-                fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString
-            )
+        let fallbackMessageSignatures: [ChatRoomV2MessageContentSignature]?
+        if snapshotRevision == nil {
+            fallbackMessageSignatures = messages.map { ChatRoomV2MessageContentSignature($0) }
+        } else {
+            fallbackMessageSignatures = nil
         }
-        mutationCoordinator.enqueue { [weak self] finish in
+        let snapshotSignature = LiveSnapshotSignature(
+            revision: snapshotRevision,
+            normalizedCurrentUserID: Self.normalizeIdentifier(currentUserID),
+            messages: fallbackMessageSignatures
+        )
+        guard snapshotSignature != lastRequestedLiveSnapshotSignature else { return }
+        lastRequestedLiveSnapshotSignature = snapshotSignature
+
+        mutationCoordinator.enqueueLatest(for: .liveSnapshot) { [weak self] finish in
             guard let self else {
                 finish()
                 return
             }
+            guard snapshotSignature != self.lastAppliedLiveSnapshotSignature else {
+                finish()
+                return
+            }
+
+            var nextSourceMessagesByID: [String: Message] = [:]
+            nextSourceMessagesByID.reserveCapacity(messages.count)
+            for message in messages {
+                nextSourceMessagesByID[message.id] = message
+            }
             self.sourceMessagesByID = nextSourceMessagesByID
-            let rendered = self.renderCoordinator.renderPage(
-                rawMessages,
-                containerWidth: self.collectionWidth,
-                traitCollection: self.traitCollection
+
+            let effectiveChangedMessageIDs = ChatLiveSnapshotRevisionPolicyV2.trustedChangedMessageIDs(
+                snapshotRevision: snapshotRevision,
+                lastAppliedRevision: self.lastAppliedLiveSnapshotSignature?.revision,
+                candidateIDs: changedMessageIDs
             )
-            self.applyRenderedMessagesInCurrentMutation(rendered, finish: finish)
+            let rendered = self.renderLiveMessages(
+                messages,
+                fallbackSignatures: fallbackMessageSignatures,
+                currentUserID: currentUserID,
+                changedMessageIDs: effectiveChangedMessageIDs
+            )
+            self.applyRenderedMessagesInCurrentMutation(rendered) { [weak self] in
+                self?.lastAppliedLiveSnapshotSignature = snapshotSignature
+                finish()
+            }
         }
+    }
+
+    private func renderLiveMessages(
+        _ messages: [Message],
+        fallbackSignatures: [ChatRoomV2MessageContentSignature]?,
+        currentUserID: String?,
+        changedMessageIDs: Set<String>?
+    ) -> [RenderedMessageV2] {
+        if let fallbackSignatures {
+            precondition(messages.count == fallbackSignatures.count)
+        }
+
+        let normalizedCurrentUserID = Self.normalizeIdentifier(currentUserID)
+        let renderContext = currentLiveRenderContext
+        var nextCache: [String: CachedLiveMessage] = [:]
+        nextCache.reserveCapacity(messages.count)
+        var renderedMessages: [RenderedMessageV2] = []
+        renderedMessages.reserveCapacity(messages.count)
+
+        for (index, message) in messages.enumerated() {
+            let resolvedSequence = index
+
+            let cached = cachedLiveMessagesByID[message.id]
+            let signature: ChatRoomV2MessageContentSignature
+            if let fallbackSignatures {
+                signature = fallbackSignatures[index]
+            } else if let cached, changedMessageIDs?.contains(message.id) == false {
+                signature = cached.rawKey.signature
+            } else {
+                signature = ChatRoomV2MessageContentSignature(message)
+            }
+
+            let rawKey = LiveRawMessageKey(
+                signature: signature,
+                resolvedSequence: resolvedSequence,
+                normalizedCurrentUserID: normalizedCurrentUserID
+            )
+            let raw: ChatMessageV2
+            if let cached, cached.rawKey == rawKey {
+                raw = cached.raw
+            } else {
+                raw = ChatMessageV2(
+                    message: message,
+                    currentUserID: currentUserID,
+                    fallbackSequence: resolvedSequence,
+                    preservesSourceOrder: true,
+                    showsSenderInfo: context.isGroup,
+                    fallbackBotAvatarURLString: context.isGroup ? nil : context.avatarURLString
+                )
+            }
+
+            let rendered: RenderedMessageV2
+            if let cached, cached.rawKey == rawKey, cached.renderContext == renderContext {
+                rendered = cached.rendered
+            } else {
+                rendered = renderCoordinator.render(
+                    raw,
+                    containerWidth: collectionWidth,
+                    traitCollection: traitCollection
+                )
+            }
+
+            nextCache[message.id] = CachedLiveMessage(
+                rawKey: rawKey,
+                renderContext: renderContext,
+                raw: raw,
+                rendered: rendered
+            )
+            renderedMessages.append(rendered)
+        }
+
+        cachedLiveMessagesByID = nextCache
+        lastRenderedLayoutContext = renderContext
+        return renderedMessages
+    }
+
+    private static func normalizeIdentifier(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private var currentLiveRenderContext: LiveRenderContext {
+        LiveRenderContext(
+            containerWidth: collectionWidth,
+            displayScale: traitCollection.displayScale,
+            contentSizeCategory: traitCollection.preferredContentSizeCategory,
+            userInterfaceStyle: traitCollection.userInterfaceStyle
+        )
+    }
+
+    private func layoutContextMatches(_ lhs: LiveRenderContext?, _ rhs: LiveRenderContext) -> Bool {
+        guard let lhs else { return false }
+        return abs(lhs.containerWidth - rhs.containerWidth) <= 0.5
+            && lhs.displayScale == rhs.displayScale
+            && lhs.contentSizeCategory == rhs.contentSizeCategory
+            && lhs.userInterfaceStyle == rhs.userInterfaceStyle
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
-        mutationCoordinator.enqueue { [weak self] finish in
-            coordinator.animate { _ in
-                self?.collectionView.collectionViewLayout.invalidateLayout()
-            } completion: { [weak self] _ in
-                self?.rerenderForCurrentWidth()
-                finish()
-            }
+        coordinator.animate { [weak self] _ in
+            self?.collectionView.collectionViewLayout.invalidateLayout()
+        } completion: { [weak self] _ in
+            self?.scheduleLayoutContextRerenderIfNeeded()
         }
     }
 
     func applyLiveHistoryState(isLoadingOlder: Bool, hasMoreHistory: Bool) {
         guard !usesFixtureData else { return }
-        isLiveHistoryLoading = isLoadingOlder
-        hasMoreLiveHistory = hasMoreHistory
-        if !hasMoreHistory {
-            hasPendingLiveHistoryRequest = false
-        } else if !isLoadingOlder, !mutationCoordinator.isBusy {
-            hasPendingLiveHistoryRequest = false
+        mutationCoordinator.enqueueLatest(for: .liveHistoryState) { [weak self] finish in
+            guard let self else {
+                finish()
+                return
+            }
+            self.isLiveHistoryLoading = isLoadingOlder
+            self.hasMoreLiveHistory = hasMoreHistory
+            if !hasMoreHistory || !isLoadingOlder {
+                self.hasPendingLiveHistoryRequest = false
+            }
+            finish()
         }
     }
 
@@ -205,12 +451,34 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         diagnosticsLabel.accessibilityIdentifier = "chatRoomV2.diagnostics"
         diagnosticsLabel.isAccessibilityElement = true
         diagnosticsLabel.text = diagnostics.summary(messageCount: store.count)
+        diagnosticsLabel.isHidden = !usesFixtureData && !ChatRoomV2FeatureFlag.showsDiagnostics
         view.addSubview(diagnosticsLabel)
         NSLayoutConstraint.activate([
             diagnosticsLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             diagnosticsLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
             diagnosticsLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20)
         ])
+    }
+
+    private func configureManualSameIDUpdateTriggerIfNeeded() {
+        guard usesFixtureData, ChatRoomV2FeatureFlag.manualSameIDUpdate else { return }
+
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setTitle("Update", for: .normal)
+        button.accessibilityIdentifier = "chatRoomV2.triggerSameIDUpdate"
+        button.addTarget(self, action: #selector(handleManualSameIDUpdate), for: .touchUpInside)
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            button.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 48),
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+    }
+
+    @objc private func handleManualSameIDUpdate() {
+        runAutoSameIDUpdate()
     }
 
     private func configureKeyboardObservers() {
@@ -239,6 +507,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
 
         let rendered = renderCoordinator.renderPage(rawMessages, containerWidth: collectionWidth, traitCollection: traitCollection)
         store.initialLoad(rendered)
+        lastRenderedLayoutContext = currentLiveRenderContext
         collectionView.reloadData()
         diagnostics.recordInitialReload()
         needsInitialBottomPosition = true
@@ -468,7 +737,57 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
     }
 
-    private func rerenderForCurrentWidth() {
+    private func scheduleLayoutContextRerenderIfNeeded() {
+        guard store.count > 0, collectionView.bounds.width > 0 else { return }
+        let requestedContext = currentLiveRenderContext
+        guard !layoutContextMatches(lastRenderedLayoutContext, requestedContext),
+              !layoutContextMatches(scheduledLayoutContext, requestedContext)
+        else {
+            return
+        }
+
+        scheduledLayoutContext = requestedContext
+        mutationCoordinator.enqueueLatest(for: .layoutContext) { [weak self] finish in
+            guard let self else {
+                finish()
+                return
+            }
+
+            let activeContext = self.currentLiveRenderContext
+            guard !self.layoutContextMatches(self.lastRenderedLayoutContext, activeContext) else {
+                if self.layoutContextMatches(self.scheduledLayoutContext, requestedContext) {
+                    self.scheduledLayoutContext = nil
+                }
+                finish()
+                return
+            }
+
+            self.rerenderForCurrentLayoutContext(activeContext) { [weak self] in
+                guard let self else {
+                    finish()
+                    return
+                }
+                if self.layoutContextMatches(self.scheduledLayoutContext, requestedContext) {
+                    self.scheduledLayoutContext = nil
+                }
+                finish()
+                self.scheduleLayoutContextRerenderIfNeeded()
+            }
+        }
+    }
+
+    private func rerenderForCurrentLayoutContext(
+        _ renderContext: LiveRenderContext,
+        completion: @escaping () -> Void
+    ) {
+        let shouldStickToBottom = shouldStickToBottomDuringAutomaticUpdates
+        let snapshot: ChatLayoutPositionSnapshot?
+        if shouldStickToBottom {
+            snapshot = nil
+        } else {
+            collectionView.layoutIfNeeded()
+            snapshot = chatLayout.getContentOffsetSnapshot(from: .top)
+        }
         let rawMessages = store.messages.map {
             ChatMessageV2(
                 id: $0.id,
@@ -479,10 +798,63 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                 status: $0.status
             )
         }
-        let rendered = renderCoordinator.renderPage(rawMessages, containerWidth: collectionWidth, traitCollection: traitCollection)
+        let rendered = renderCoordinator.renderPage(
+            rawMessages,
+            containerWidth: renderContext.containerWidth,
+            traitCollection: traitCollection
+        )
         store.replaceAll(rendered)
+        updateLiveRenderCache(with: rendered, renderContext: renderContext)
+        lastRenderedLayoutContext = renderContext
         collectionView.collectionViewLayout.invalidateLayout()
-        updateDiagnosticsLabel()
+
+        let visibleIndexPaths = collectionView.indexPathsForVisibleItems.filter {
+            $0.section == 0 && rendered.indices.contains($0.item)
+        }
+        let finishRerender: () -> Void = { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            } else if let snapshot {
+                self.chatLayout.restoreContentOffset(with: snapshot)
+                self.diagnostics.recordRestore()
+            }
+            self.updateDiagnosticsLabel()
+            completion()
+        }
+
+        guard !visibleIndexPaths.isEmpty else {
+            finishRerender()
+            return
+        }
+
+        collectionView.performBatchUpdates {
+            collectionView.reloadItems(at: visibleIndexPaths)
+        } completion: { _ in
+            finishRerender()
+        }
+    }
+
+    private func updateLiveRenderCache(
+        with rendered: [RenderedMessageV2],
+        renderContext: LiveRenderContext
+    ) {
+        let renderedByID = Dictionary(uniqueKeysWithValues: rendered.map { ($0.id, $0) })
+        var updatedLiveCache: [String: CachedLiveMessage] = [:]
+        updatedLiveCache.reserveCapacity(cachedLiveMessagesByID.count)
+        for (messageID, cached) in cachedLiveMessagesByID {
+            guard let updatedRendered = renderedByID[messageID] else { continue }
+            updatedLiveCache[messageID] = CachedLiveMessage(
+                rawKey: cached.rawKey,
+                renderContext: renderContext,
+                raw: cached.raw,
+                rendered: updatedRendered
+            )
+        }
+        cachedLiveMessagesByID = updatedLiveCache
     }
 
     private func applyRenderedMessages(_ rendered: [RenderedMessageV2]) {
@@ -500,7 +872,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         finish: @escaping ChatMutationCoordinatorV2.Finish
     ) {
         let normalizedRendered = ChatMessageStoreV2.normalized(rendered)
-        let previousIDs = store.messages.map(\.id)
+        let previousIDs = store.messageIDs
         let nextIDs = normalizedRendered.map(\.id)
         guard previousIDs != nextIDs || store.messages != normalizedRendered else {
             if !usesFixtureData, !isLiveHistoryLoading {
@@ -531,7 +903,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             return
         }
 
-        if let contiguousChange = contiguousChange(previousIDs: previousIDs, nextIDs: nextIDs) {
+        if let contiguousChange = ChatContiguousChangeV2(previous: store.messages, next: normalizedRendered) {
             applyContiguousChangeInCurrentMutation(normalizedRendered, change: contiguousChange, finish: finish)
             return
         }
@@ -565,9 +937,16 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             return
         }
 
-        self.collectionView.layoutIfNeeded()
-        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: restoreSnapshotEdgeForLiveState())
+        let shouldStickToBottom = shouldStickToBottomDuringAutomaticUpdates
+        let snapshot: ChatLayoutPositionSnapshot?
+        if shouldStickToBottom {
+            snapshot = nil
+        } else {
+            collectionView.layoutIfNeeded()
+            snapshot = chatLayout.getContentOffsetSnapshot(from: .top)
+        }
         self.store.replaceAll(rendered)
+        diagnostics.recordUpdate()
         UIView.performWithoutAnimation {
             self.collectionView.performBatchUpdates {
                 self.collectionView.reloadItems(at: changedIndexPaths)
@@ -576,7 +955,9 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                     finish()
                     return
                 }
-                if let snapshot {
+                if shouldStickToBottom {
+                    self.scrollToBottom(animated: false)
+                } else if let snapshot {
                     self.chatLayout.restoreContentOffset(with: snapshot)
                     self.diagnostics.recordRestore()
                 }
@@ -609,8 +990,9 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         _ rendered: [RenderedMessageV2],
         finish: @escaping ChatMutationCoordinatorV2.Finish
     ) {
-        self.collectionView.layoutIfNeeded()
-        let anchorBefore = visibleAnchor()
+        let shouldStickToBottom = shouldStickToBottomDuringAutomaticUpdates
+        collectionView.layoutIfNeeded()
+        let anchorBefore = shouldStickToBottom ? nil : visibleAnchor()
         let restoredSnapshot = anchorBefore.flatMap { anchor -> ChatLayoutPositionSnapshot? in
             guard let newIndex = rendered.firstIndex(where: { $0.id == anchor.messageID }) else {
                 return nil
@@ -633,44 +1015,26 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                     self.collectionView.insertItems(at: newIndexPaths)
                 }
             } completion: { [weak self] _ in
-                if self?.isNearBottom == true {
-                    self?.scrollToBottom(animated: false)
-                } else if let restoredSnapshot {
-                    self?.chatLayout.restoreContentOffset(with: restoredSnapshot)
-                    self?.diagnostics.recordRestore()
+                guard let self else {
+                    finish()
+                    return
                 }
-                self?.finishLiveHistoryRequestIfIdle()
-                self?.updateDiagnosticsLabel()
+                if shouldStickToBottom {
+                    self.scrollToBottom(animated: false)
+                } else if let restoredSnapshot {
+                    self.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self.diagnostics.recordRestore()
+                }
+                self.finishLiveHistoryRequestIfIdle()
+                self.updateDiagnosticsLabel()
                 finish()
             }
         }
     }
 
-    private struct ContiguousChange {
-        let prependCount: Int
-        let appendStart: Int
-    }
-
-    private func contiguousChange(previousIDs: [String], nextIDs: [String]) -> ContiguousChange? {
-        guard !previousIDs.isEmpty,
-              let previousStart = nextIDs.firstIndex(of: previousIDs[0]),
-              previousStart + previousIDs.count <= nextIDs.count,
-              Array(nextIDs[previousStart..<(previousStart + previousIDs.count)]) == previousIDs
-        else {
-            return nil
-        }
-        guard previousStart > 0 || nextIDs.count > previousStart + previousIDs.count else {
-            return nil
-        }
-        return ContiguousChange(
-            prependCount: previousStart,
-            appendStart: previousStart + previousIDs.count
-        )
-    }
-
     private func applyContiguousChangeInCurrentMutation(
         _ rendered: [RenderedMessageV2],
-        change: ContiguousChange,
+        change: ChatContiguousChangeV2,
         finish: @escaping ChatMutationCoordinatorV2.Finish
     ) {
         let prepended = change.prependCount > 0 ? Array(rendered.prefix(change.prependCount)) : []
@@ -680,9 +1044,24 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             return
         }
 
-        self.collectionView.layoutIfNeeded()
-        let snapshotEdge = self.restoreSnapshotEdgeForLiveState()
-        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: snapshotEdge)
+        // A prepend must preserve the currently visible content even when the
+        // list happens to be near the bottom. Treating it like a pure append
+        // skips ChatLayout's offset restoration and can make history loading
+        // jump underneath the user's finger.
+        let shouldStickToBottom = change.prependCount == 0
+            && shouldStickToBottomDuringAutomaticUpdates
+        let changedExistingIndexPaths = change.changedExistingIndices.map {
+            IndexPath(item: $0, section: 0)
+        }
+        let shouldPreserveTopAnchor = change.prependCount > 0
+            || (!shouldStickToBottom && !changedExistingIndexPaths.isEmpty)
+        let snapshot: ChatLayoutPositionSnapshot?
+        if shouldPreserveTopAnchor {
+            collectionView.layoutIfNeeded()
+            snapshot = chatLayout.getContentOffsetSnapshot(from: .top)
+        } else {
+            snapshot = nil
+        }
         let oldCount = self.store.count
         let prependIndexPaths = prepended.indices.map { IndexPath(item: $0, section: 0) }
         let appendIndexPaths = appended.indices.map { IndexPath(item: oldCount + change.prependCount + $0, section: 0) }
@@ -701,6 +1080,9 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         if !appended.isEmpty {
             self.diagnostics.recordAppend()
         }
+        if !changedExistingIndexPaths.isEmpty {
+            self.diagnostics.recordUpdate()
+        }
 
         UIView.performWithoutAnimation {
             self.collectionView.performBatchUpdates {
@@ -715,15 +1097,35 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                     finish()
                     return
                 }
-                if let restoredSnapshot, change.prependCount > 0 {
-                    self.chatLayout.restoreContentOffset(with: restoredSnapshot)
-                    self.diagnostics.recordRestore()
+
+                let completeChange: () -> Void = { [weak self] in
+                    guard let self else {
+                        finish()
+                        return
+                    }
+                    if shouldStickToBottom {
+                        self.scrollToBottom(animated: false)
+                    } else if let restoredSnapshot {
+                        self.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                        self.diagnostics.recordRestore()
+                    }
                     self.finishLiveHistoryRequestIfIdle()
-                } else if self.isNearBottom {
-                    self.scrollToBottom(animated: false)
+                    self.updateDiagnosticsLabel()
+                    finish()
                 }
-                self.updateDiagnosticsLabel()
-                finish()
+
+                guard !changedExistingIndexPaths.isEmpty else {
+                    completeChange()
+                    return
+                }
+
+                UIView.performWithoutAnimation {
+                    self.collectionView.performBatchUpdates {
+                        self.collectionView.reloadItems(at: changedExistingIndexPaths)
+                    } completion: { _ in
+                        completeChange()
+                    }
+                }
             }
         }
     }
@@ -740,12 +1142,14 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         let indexPaths = messages.indices.map { IndexPath(item: start + $0, section: 0) }
         messages.forEach { self.store.append($0) }
         self.diagnostics.recordAppend()
+        let shouldStickToBottom = shouldStickToBottomDuringAutomaticUpdates
         self.collectionView.performBatchUpdates {
             self.collectionView.insertItems(at: indexPaths)
         } completion: { [weak self] _ in
-            if self?.isNearBottom == true {
+            if shouldStickToBottom {
                 self?.scrollToBottom(animated: false)
             }
+            self?.finishLiveHistoryRequestIfIdle()
             self?.updateDiagnosticsLabel()
             finish()
         }
@@ -756,7 +1160,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
               let previousStart = nextIDs.firstIndex(of: previousFirstID),
               previousStart > 0,
               nextIDs.count == previousStart + previousIDs.count,
-              Array(nextIDs[previousStart...]) == previousIDs
+              nextIDs[previousStart...].elementsEqual(previousIDs)
         else {
             return nil
         }
@@ -765,20 +1169,22 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
 
     private func appendedRowStart(previousIDs: [String], nextIDs: [String]) -> Int? {
         guard nextIDs.count > previousIDs.count,
-              Array(nextIDs.prefix(previousIDs.count)) == previousIDs
+              nextIDs.prefix(previousIDs.count).elementsEqual(previousIDs)
         else {
             return nil
         }
         return previousIDs.count
     }
 
-    private func scrollToBottomThroughMutationQueue(animated: Bool) {
-        mutationCoordinator.enqueue { [weak self] finish in
+    private func scrollToBottomThroughMutationQueue(animated _: Bool) {
+        mutationCoordinator.enqueueLatest(for: .scrollCommand) { [weak self] finish in
             guard let self else {
                 finish()
                 return
             }
-            self.scrollToBottom(animated: animated)
+            // Keep the mutation queue synchronous. A UIKit scroll animation can
+            // otherwise overlap a following insert/reload after `finish()`.
+            self.scrollToBottom(animated: false)
             finish()
         }
     }
@@ -820,6 +1226,12 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
 
     private var isReadyForScrolling: Bool {
         collectionView.window != nil && collectionView.bounds.width > 0 && collectionView.bounds.height > 0
+    }
+
+    private var shouldStickToBottomDuringAutomaticUpdates: Bool {
+        isNearBottom
+            && !isUserInteracting
+            && (usesFixtureData || !hasUserInitiatedHistoryScroll)
     }
 
     private func visibleAnchor() -> VisibleMessageAnchorV2? {
@@ -987,6 +1399,7 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard hasAppeared else { return }
         updateNearBottom(scrollView)
+        guard !ChatRoomV2FeatureFlag.disablesAutomaticHistoryLoading else { return }
         requestPreviousPageIfReady(from: scrollView)
     }
 
@@ -1014,16 +1427,19 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         hasUserInitiatedHistoryScroll = true
+        isUserInteracting = true
         onUserScrollChange?(true)
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate {
+            isUserInteracting = false
             onUserScrollChange?(false)
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        isUserInteracting = false
         onUserScrollChange?(false)
     }
 

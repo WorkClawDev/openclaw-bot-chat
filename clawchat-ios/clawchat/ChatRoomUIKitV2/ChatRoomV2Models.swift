@@ -11,11 +11,7 @@ enum ChatRoomV2Fixture: String {
 
 enum ChatRoomV2FeatureFlag {
     static var isEnabled: Bool {
-#if DEBUG
-        true
-#else
-        ProcessInfo.processInfo.arguments.contains("-chatRoomV2")
-#endif
+        !ProcessInfo.processInfo.arguments.contains("-chatRoomLegacy")
     }
 
     static var uiTestMode: String? {
@@ -32,6 +28,14 @@ enum ChatRoomV2FeatureFlag {
 
     static var autoSameIDUpdate: Bool {
         ProcessInfo.processInfo.arguments.contains("-chatRoomV2AutoSameIDUpdate")
+    }
+
+    static var manualSameIDUpdate: Bool {
+        ProcessInfo.processInfo.arguments.contains("-chatRoomV2ManualSameIDUpdate")
+    }
+
+    static var disablesAutomaticHistoryLoading: Bool {
+        ProcessInfo.processInfo.arguments.contains("-chatRoomV2DisableHistoryLoading")
     }
 
     static var autoWindowReplace: Bool {
@@ -110,6 +114,12 @@ struct ChatMessageV2: Identifiable, Equatable {
         hasher.combine(blocks)
         hasher.combine(sender)
         hasher.combine(status)
+        return hasher.finalize()
+    }
+
+    var renderArtifactHashValue: Int {
+        var hasher = Hasher()
+        hasher.combine(blocks)
         return hasher.finalize()
     }
 }
@@ -312,7 +322,69 @@ struct TextBlockContentV2: Hashable {
     let isMarkdown: Bool
 
     static func shouldRenderMarkdown(_ text: String) -> Bool {
-        text.rangeOfCharacter(from: CharacterSet(charactersIn: "`*_#[]()>!\n")) != nil
+        // Avoid sending ordinary chat punctuation (for example "#995" or
+        // "Looks good!") through Foundation's Markdown parser. History pages
+        // contain many such rows, so a broad character-set check turns a
+        // cheap plain-text render into repeated main-thread parsing work.
+        if text.contains("`")
+            || text.contains("](")
+            || text.contains("|")
+            || text.contains("://")
+            || (text.contains("<") && text.contains(">")) {
+            return true
+        }
+
+        let asterisks = text.reduce(into: 0) { count, character in
+            if character == "*" { count += 1 }
+        }
+        if asterisks >= 2 {
+            return true
+        }
+
+        let underscores = text.reduce(into: 0) { count, character in
+            if character == "_" { count += 1 }
+        }
+        if underscores >= 2 {
+            return true
+        }
+
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+            guard !trimmed.isEmpty else { continue }
+
+            let firstCharacter = trimmed.first
+            let startsListItem = (firstCharacter == "-" || firstCharacter == "*" || firstCharacter == "+")
+                && trimmed.dropFirst().first?.isWhitespace == true
+            if firstCharacter == ">" || startsListItem {
+                return true
+            }
+
+            let headingMarkers = trimmed.prefix(while: { $0 == "#" }).count
+            if (1...6).contains(headingMarkers),
+               trimmed.dropFirst(headingMarkers).first?.isWhitespace == true {
+                return true
+            }
+
+            let ordinalDigits = trimmed.prefix(while: { $0.isNumber }).count
+            if ordinalDigits > 0 {
+                let suffix = trimmed.dropFirst(ordinalDigits)
+                if let marker = suffix.first,
+                   (marker == "." || marker == ")"),
+                   suffix.dropFirst().first?.isWhitespace == true {
+                    return true
+                }
+            }
+
+            let thematic = trimmed.filter { !$0.isWhitespace }
+            if thematic.count >= 3,
+               let marker = thematic.first,
+               marker == "-" || marker == "*" || marker == "_",
+               thematic.allSatisfy({ $0 == marker }) {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
@@ -493,6 +565,13 @@ private extension Array where Element == MessageBlockContentV2 {
 }
 
 enum MessageMarkdownBlockParserV2 {
+    private static let fencedCodeRegex = try! NSRegularExpression(
+        pattern: "```([A-Za-z0-9_+.-]*)[ \\t]*\\n?([\\s\\S]*?)```"
+    )
+    private static let tableSeparatorRegex = try! NSRegularExpression(
+        pattern: "^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$"
+    )
+
     static func blocks(
         messageID: String,
         text: String,
@@ -573,14 +652,9 @@ enum MessageMarkdownBlockParserV2 {
     }
 
     private static func fencedCodeSegments(in text: String) -> [Segment] {
-        let pattern = "```([A-Za-z0-9_+.-]*)[ \\t]*\\n?([\\s\\S]*?)```"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return [.inline(text)]
-        }
-
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
-        let matches = regex.matches(in: text, range: fullRange)
+        let matches = fencedCodeRegex.matches(in: text, range: fullRange)
         guard !matches.isEmpty else {
             return [.inline(text)]
         }
@@ -676,9 +750,10 @@ enum MessageMarkdownBlockParserV2 {
     }
 
     private static func isTableSeparator(_ line: String) -> Bool {
-        let pattern = "^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
-        return regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) != nil
+        tableSeparatorRegex.firstMatch(
+            in: line,
+            range: NSRange(location: 0, length: (line as NSString).length)
+        ) != nil
     }
 
     private static func tableCells(from line: String) -> [String] {
@@ -705,6 +780,57 @@ struct MessageLayoutV2: Equatable {
     let blockLayouts: [BlockLayoutV2]
 }
 
+struct TextBlockRenderArtifactV2: Equatable {
+    let attributedText: NSAttributedString
+
+    static func == (lhs: TextBlockRenderArtifactV2, rhs: TextBlockRenderArtifactV2) -> Bool {
+        lhs.attributedText.isEqual(to: rhs.attributedText)
+    }
+}
+
+struct CodeBlockRenderArtifactV2: Equatable {
+    let contentWidth: CGFloat
+    let plainAttributedText: NSAttributedString
+
+    static func == (lhs: CodeBlockRenderArtifactV2, rhs: CodeBlockRenderArtifactV2) -> Bool {
+        lhs.contentWidth == rhs.contentWidth
+            && lhs.plainAttributedText.isEqual(to: rhs.plainAttributedText)
+    }
+}
+
+struct TableBlockRenderArtifactV2: Equatable {
+    let columnWidths: [CGFloat]
+    let contentWidth: CGFloat
+    let contentHeight: CGFloat
+}
+
+enum BlockRenderArtifactV2: Equatable {
+    case text(TextBlockRenderArtifactV2)
+    case code(CodeBlockRenderArtifactV2)
+    case table(TableBlockRenderArtifactV2)
+}
+
+struct MessageRenderArtifactsV2: Equatable {
+    static let empty = MessageRenderArtifactsV2(blocksByID: [:])
+
+    let blocksByID: [String: BlockRenderArtifactV2]
+
+    func text(for blockID: String) -> TextBlockRenderArtifactV2? {
+        guard case .text(let artifact) = blocksByID[blockID] else { return nil }
+        return artifact
+    }
+
+    func code(for blockID: String) -> CodeBlockRenderArtifactV2? {
+        guard case .code(let artifact) = blocksByID[blockID] else { return nil }
+        return artifact
+    }
+
+    func table(for blockID: String) -> TableBlockRenderArtifactV2? {
+        guard case .table(let artifact) = blocksByID[blockID] else { return nil }
+        return artifact
+    }
+}
+
 struct RenderedMessageV2: Identifiable, Equatable {
     let id: String
     let sequence: Int
@@ -713,12 +839,22 @@ struct RenderedMessageV2: Identifiable, Equatable {
     let sender: MessageSenderPresentationV2?
     let status: MessageStatusPresentationV2?
     let layout: MessageLayoutV2
+    let renderArtifacts: MessageRenderArtifactsV2
+    let renderScale: CGFloat
 
     var text: String {
         blocks.copyableText
     }
 
-    init(id: String, sequence: Int, text: String, isOutgoing: Bool, layout: MessageLayoutV2) {
+    init(
+        id: String,
+        sequence: Int,
+        text: String,
+        isOutgoing: Bool,
+        layout: MessageLayoutV2,
+        renderArtifacts: MessageRenderArtifactsV2 = .empty,
+        renderScale: CGFloat = 1
+    ) {
         self.id = id
         self.sequence = sequence
         self.isOutgoing = isOutgoing
@@ -732,6 +868,8 @@ struct RenderedMessageV2: Identifiable, Equatable {
         self.sender = nil
         self.status = nil
         self.layout = layout
+        self.renderArtifacts = renderArtifacts
+        self.renderScale = renderScale
     }
 
     init(
@@ -741,7 +879,9 @@ struct RenderedMessageV2: Identifiable, Equatable {
         blocks: [MessageBlockContentV2],
         sender: MessageSenderPresentationV2? = nil,
         status: MessageStatusPresentationV2? = nil,
-        layout: MessageLayoutV2
+        layout: MessageLayoutV2,
+        renderArtifacts: MessageRenderArtifactsV2 = .empty,
+        renderScale: CGFloat = 1
     ) {
         self.id = id
         self.sequence = sequence
@@ -750,6 +890,8 @@ struct RenderedMessageV2: Identifiable, Equatable {
         self.sender = sender
         self.status = status
         self.layout = layout
+        self.renderArtifacts = renderArtifacts
+        self.renderScale = renderScale
     }
 }
 
