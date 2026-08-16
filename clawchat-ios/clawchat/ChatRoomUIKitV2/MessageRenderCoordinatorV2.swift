@@ -3,26 +3,71 @@ import UIKit
 
 @MainActor
 final class MessageLayoutCacheV2 {
-    struct Key: Hashable {
+    struct ArtifactKey: Hashable {
         let messageID: String
         let contentHash: Int
         let isOutgoing: Bool
-        let width: Int
+        let contentSizeCategory: UIContentSizeCategory
+        let userInterfaceStyle: UIUserInterfaceStyle
+    }
+
+    struct LayoutKey: Hashable {
+        let messageID: String
+        let layoutHash: Int
+        let isOutgoing: Bool
+        let pointWidthHundredths: Int
         let contentSizeCategory: UIContentSizeCategory
     }
 
-    private var layouts: [Key: MessageLayoutV2] = [:]
+    private var layouts: [LayoutKey: MessageLayoutV2] = [:]
+    private var renderArtifacts: [ArtifactKey: MessageRenderArtifactsV2] = [:]
+    private var layoutInsertionOrder: [LayoutKey] = []
+    private var artifactInsertionOrder: [ArtifactKey] = []
+    private let entryLimit = 1_500
 
-    func layout(for key: Key) -> MessageLayoutV2? {
+    func layout(for key: LayoutKey) -> MessageLayoutV2? {
         layouts[key]
     }
 
-    func store(_ layout: MessageLayoutV2, for key: Key) {
+    func store(_ layout: MessageLayoutV2, for key: LayoutKey) {
+        if layouts[key] == nil {
+            layoutInsertionOrder.append(key)
+        }
         layouts[key] = layout
+        evictLayoutsIfNeeded()
+    }
+
+    func renderArtifacts(for key: ArtifactKey) -> MessageRenderArtifactsV2? {
+        renderArtifacts[key]
+    }
+
+    func store(_ artifacts: MessageRenderArtifactsV2, for key: ArtifactKey) {
+        if renderArtifacts[key] == nil {
+            artifactInsertionOrder.append(key)
+        }
+        renderArtifacts[key] = artifacts
+        evictArtifactsIfNeeded()
     }
 
     func removeAll() {
         layouts.removeAll()
+        renderArtifacts.removeAll()
+        layoutInsertionOrder.removeAll()
+        artifactInsertionOrder.removeAll()
+    }
+
+    private func evictLayoutsIfNeeded() {
+        while layoutInsertionOrder.count > entryLimit {
+            let evictedKey = layoutInsertionOrder.removeFirst()
+            layouts[evictedKey] = nil
+        }
+    }
+
+    private func evictArtifactsIfNeeded() {
+        while artifactInsertionOrder.count > entryLimit {
+            let evictedKey = artifactInsertionOrder.removeFirst()
+            renderArtifacts[evictedKey] = nil
+        }
     }
 }
 
@@ -43,16 +88,23 @@ final class MessageRenderCoordinatorV2 {
     }
 
     func render(_ message: ChatMessageV2, containerWidth: CGFloat, traitCollection: UITraitCollection) -> RenderedMessageV2 {
-        let displayScale = max(traitCollection.displayScale, 1)
-        let key = MessageLayoutCacheV2.Key(
+        let artifactKey = MessageLayoutCacheV2.ArtifactKey(
             messageID: message.id,
-            contentHash: message.layoutHashValue,
+            contentHash: message.renderArtifactHashValue,
             isOutgoing: message.isOutgoing,
-            width: Int((containerWidth * displayScale).rounded()),
+            contentSizeCategory: traitCollection.preferredContentSizeCategory,
+            userInterfaceStyle: traitCollection.userInterfaceStyle
+        )
+        let layoutKey = MessageLayoutCacheV2.LayoutKey(
+            messageID: message.id,
+            layoutHash: message.layoutHashValue,
+            isOutgoing: message.isOutgoing,
+            pointWidthHundredths: Int((containerWidth * 100).rounded()),
             contentSizeCategory: traitCollection.preferredContentSizeCategory
         )
 
-        if let cached = layoutCache.layout(for: key) {
+        if let cachedLayout = layoutCache.layout(for: layoutKey),
+           let cachedArtifacts = layoutCache.renderArtifacts(for: artifactKey) {
             return RenderedMessageV2(
                 id: message.id,
                 sequence: message.sequence,
@@ -60,12 +112,18 @@ final class MessageRenderCoordinatorV2 {
                 blocks: message.blocks,
                 sender: message.sender,
                 status: message.status,
-                layout: cached
+                layout: cachedLayout,
+                renderArtifacts: cachedArtifacts,
+                renderScale: max(traitCollection.displayScale, 1)
             )
         }
 
-        let layout = makeLayout(for: message, containerWidth: containerWidth)
-        layoutCache.store(layout, for: key)
+        let artifacts = layoutCache.renderArtifacts(for: artifactKey)
+            ?? makeRenderArtifacts(for: message, traitCollection: traitCollection)
+        let layout = layoutCache.layout(for: layoutKey)
+            ?? makeLayout(for: message, renderArtifacts: artifacts, containerWidth: containerWidth)
+        layoutCache.store(layout, for: layoutKey)
+        layoutCache.store(artifacts, for: artifactKey)
         return RenderedMessageV2(
             id: message.id,
             sequence: message.sequence,
@@ -73,11 +131,57 @@ final class MessageRenderCoordinatorV2 {
             blocks: message.blocks,
             sender: message.sender,
             status: message.status,
-            layout: layout
+            layout: layout,
+            renderArtifacts: artifacts,
+            renderScale: max(traitCollection.displayScale, 1)
         )
     }
 
-    private func makeLayout(for message: ChatMessageV2, containerWidth: CGFloat) -> MessageLayoutV2 {
+    private func makeRenderArtifacts(
+        for message: ChatMessageV2,
+        traitCollection: UITraitCollection
+    ) -> MessageRenderArtifactsV2 {
+        var blocksByID: [String: BlockRenderArtifactV2] = [:]
+        blocksByID.reserveCapacity(message.blocks.count)
+
+        for block in message.blocks {
+            switch block {
+            case .text(let text):
+                let attributedText = MessageTextFormatterV2.attributedString(
+                    for: text.text.isEmpty ? " " : text.text,
+                    isOutgoing: message.isOutgoing,
+                    rendersMarkdown: text.isMarkdown
+                )
+                blocksByID[text.id] = .text(TextBlockRenderArtifactV2(attributedText: attributedText))
+            case .code(let code):
+                blocksByID[code.id] = .code(CodeBlockRenderArtifactV2(
+                    contentWidth: ChatCodeSyntaxHighlighterV2.contentWidth(for: code.code),
+                    plainAttributedText: ChatCodeSyntaxHighlighterV2.plainAttributedString(
+                        for: code.code,
+                        isOutgoing: message.isOutgoing,
+                        userInterfaceStyle: traitCollection.userInterfaceStyle
+                    )
+                ))
+            case .table(let table):
+                let metrics = ChatTableLayoutMetricsV2.metrics(for: table)
+                blocksByID[table.id] = .table(TableBlockRenderArtifactV2(
+                    columnWidths: metrics.columnWidths,
+                    contentWidth: metrics.contentWidth,
+                    contentHeight: metrics.contentHeight
+                ))
+            case .image, .audio, .document:
+                break
+            }
+        }
+
+        return MessageRenderArtifactsV2(blocksByID: blocksByID)
+    }
+
+    private func makeLayout(
+        for message: ChatMessageV2,
+        renderArtifacts: MessageRenderArtifactsV2,
+        containerWidth: CGFloat
+    ) -> MessageLayoutV2 {
         let safeWidth = max(containerWidth, 320)
         let horizontalInset: CGFloat = 12
         let verticalInset: CGFloat = 5
@@ -98,7 +202,11 @@ final class MessageRenderCoordinatorV2 {
         }
 
         for block in message.blocks {
-            let blockSize = size(for: block, maxBubbleWidth: maxBubbleWidth)
+            let blockSize = size(
+                for: block,
+                renderArtifacts: renderArtifacts,
+                maxBubbleWidth: maxBubbleWidth
+            )
             let blockX = message.isOutgoing
                 ? safeWidth - horizontalInset - blockSize.width
                 : horizontalInset + avatarSize + avatarGap
@@ -138,14 +246,30 @@ final class MessageRenderCoordinatorV2 {
         )
     }
 
-    private func size(for block: MessageBlockContentV2, maxBubbleWidth: CGFloat) -> CGSize {
+    private func size(
+        for block: MessageBlockContentV2,
+        renderArtifacts: MessageRenderArtifactsV2,
+        maxBubbleWidth: CGFloat
+    ) -> CGSize {
         switch block {
         case .text(let text):
-            return textSize(for: text, maxBubbleWidth: maxBubbleWidth)
+            return textSize(
+                for: text,
+                artifact: renderArtifacts.text(for: text.id),
+                maxBubbleWidth: maxBubbleWidth
+            )
         case .code(let code):
-            return codeSize(for: code, maxBubbleWidth: maxBubbleWidth)
+            return codeSize(
+                for: code,
+                artifact: renderArtifacts.code(for: code.id),
+                maxBubbleWidth: maxBubbleWidth
+            )
         case .table(let table):
-            return tableSize(for: table, maxBubbleWidth: maxBubbleWidth)
+            return tableSize(
+                for: table,
+                artifact: renderArtifacts.table(for: table.id),
+                maxBubbleWidth: maxBubbleWidth
+            )
         case .image(let image):
             return imageSize(for: image, maxBubbleWidth: maxBubbleWidth)
         case .audio(let audio):
@@ -155,11 +279,15 @@ final class MessageRenderCoordinatorV2 {
         }
     }
 
-    private func textSize(for block: TextBlockContentV2, maxBubbleWidth: CGFloat) -> CGSize {
+    private func textSize(
+        for block: TextBlockContentV2,
+        artifact: TextBlockRenderArtifactV2?,
+        maxBubbleWidth: CGFloat
+    ) -> CGSize {
         let textInsetX: CGFloat = 12
         let textInsetY: CGFloat = 10
         let maxTextWidth = max(1, maxBubbleWidth - textInsetX * 2)
-        let attributed = MessageTextFormatterV2.attributedString(
+        let attributed = artifact?.attributedText ?? MessageTextFormatterV2.attributedString(
             for: block.text.isEmpty ? " " : block.text,
             isOutgoing: false,
             rendersMarkdown: block.isMarkdown
@@ -177,7 +305,11 @@ final class MessageRenderCoordinatorV2 {
         )
     }
 
-    private func codeSize(for block: CodeBlockContentV2, maxBubbleWidth: CGFloat) -> CGSize {
+    private func codeSize(
+        for block: CodeBlockContentV2,
+        artifact: CodeBlockRenderArtifactV2?,
+        maxBubbleWidth: CGFloat
+    ) -> CGSize {
         let horizontalPadding: CGFloat = 12
         let verticalPadding: CGFloat = 14
         let languageHeight: CGFloat = block.language == nil ? 0 : 28
@@ -186,19 +318,27 @@ final class MessageRenderCoordinatorV2 {
         let lineCount = max(1, block.code.components(separatedBy: .newlines).count)
         let lineHeight = ceil(codeFont.lineHeight + 3)
         let contentHeight = CGFloat(lineCount) * lineHeight
-        let contentWidth = min(maxCodeWidth, max(84, ChatCodeSyntaxHighlighterV2.contentWidth(for: block.code)))
+        let measuredContentWidth = artifact?.contentWidth
+            ?? ChatCodeSyntaxHighlighterV2.contentWidth(for: block.code)
+        let contentWidth = min(maxCodeWidth, max(84, measuredContentWidth))
         return CGSize(
             width: max(120, min(maxBubbleWidth, contentWidth + horizontalPadding * 2)),
             height: max(48, ceil(contentHeight + verticalPadding * 2 + languageHeight))
         )
     }
 
-    private func tableSize(for block: TableBlockContentV2, maxBubbleWidth: CGFloat) -> CGSize {
-        let metrics = ChatTableLayoutMetricsV2.metrics(for: block)
-        let outerWidth = min(maxBubbleWidth, max(160, metrics.contentWidth))
+    private func tableSize(
+        for block: TableBlockContentV2,
+        artifact: TableBlockRenderArtifactV2?,
+        maxBubbleWidth: CGFloat
+    ) -> CGSize {
+        let fallbackMetrics = artifact == nil ? ChatTableLayoutMetricsV2.metrics(for: block) : nil
+        let contentWidth = artifact?.contentWidth ?? fallbackMetrics?.contentWidth ?? 0
+        let contentHeight = artifact?.contentHeight ?? fallbackMetrics?.contentHeight ?? 0
+        let outerWidth = min(maxBubbleWidth, max(160, contentWidth))
         return CGSize(
             width: ceil(outerWidth),
-            height: ceil(metrics.contentHeight)
+            height: ceil(contentHeight)
         )
     }
 
@@ -267,10 +407,10 @@ final class MessageRenderCoordinatorV2 {
 
 enum MessageTextFormatterV2 {
     static func attributedString(for text: String, isOutgoing: Bool, rendersMarkdown: Bool) -> NSAttributedString {
-        guard rendersMarkdown else {
-            return plainAttributedString(for: text, isOutgoing: isOutgoing)
-        }
-        return richMarkdownAttributedString(for: text, isOutgoing: isOutgoing)
+        let formatted = rendersMarkdown
+            ? richMarkdownAttributedString(for: text, isOutgoing: isOutgoing)
+            : plainAttributedString(for: text, isOutgoing: isOutgoing)
+        return attributedStringByDetectingLinks(in: formatted, isOutgoing: isOutgoing)
     }
 
     private static let inlineIntentKey = NSAttributedString.Key("NSInlinePresentationIntent")
@@ -278,12 +418,64 @@ enum MessageTextFormatterV2 {
     private static let inlineCodeIntent = 4
     private static let strongIntent = 2
     private static let emphasisIntent = 1
+    private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+    )
+    private static let regularExpressions: [String: NSRegularExpression] = {
+        let patterns = [
+            "^(#{1,6})\\s+(.+)$",
+            "^(\\s*)([-*+])\\s+(.+)$",
+            "^\\[( |x|X)\\]\\s+(.+)$",
+            "^(\\s*)(\\d+)[.)]\\s+(.+)$",
+            "^```([A-Za-z0-9_+.-]*)\\s*$",
+            "^([-*_])(?:\\s*\\1){2,}\\s*$",
+            "^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$"
+        ]
+        return Dictionary(uniqueKeysWithValues: patterns.compactMap { pattern in
+            (try? NSRegularExpression(pattern: pattern)).map { (pattern, $0) }
+        })
+    }()
 
     private static func plainAttributedString(for text: String, isOutgoing: Bool) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: text)
         let range = NSRange(location: 0, length: attributed.length)
         attributed.addAttributes(baseAttributes(isOutgoing: isOutgoing), range: range)
         return attributed
+    }
+
+    private static func attributedStringByDetectingLinks(
+        in attributed: NSAttributedString,
+        isOutgoing: Bool
+    ) -> NSAttributedString {
+        guard attributed.length > 0, let linkDetector else { return attributed }
+
+        let mutable = NSMutableAttributedString(attributedString: attributed)
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        linkDetector.enumerateMatches(in: mutable.string, range: fullRange) { result, _, _ in
+            guard let result,
+                  let url = result.url,
+                  result.range.location != NSNotFound,
+                  result.range.length > 0
+            else {
+                return
+            }
+
+            var alreadyLinked = false
+            mutable.enumerateAttribute(.link, in: result.range) { value, _, stop in
+                if value != nil {
+                    alreadyLinked = true
+                    stop.pointee = true
+                }
+            }
+            guard !alreadyLinked else { return }
+
+            mutable.addAttributes([
+                .link: url,
+                .foregroundColor: isOutgoing ? UIColor.white : UIColor.systemBlue,
+                .underlineStyle: NSUnderlineStyle.single.rawValue
+            ], range: result.range)
+        }
+        return mutable
     }
 
     private static func richMarkdownAttributedString(for text: String, isOutgoing: Bool) -> NSAttributedString {
@@ -727,7 +919,7 @@ enum MessageTextFormatterV2 {
     }
 
     private static func firstMatch(pattern: String, in text: String) -> NSTextCheckingResult? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        guard let regex = regularExpressions[pattern] else { return nil }
         let range = NSRange(location: 0, length: (text as NSString).length)
         return regex.firstMatch(in: text, range: range)
     }

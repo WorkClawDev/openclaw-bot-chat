@@ -39,7 +39,7 @@ struct ChatContext {
 }
 
 class ChatRoomViewModel: ObservableObject {
-    @Published var messages: [Message] = []
+    @Published private(set) var messages: [Message] = []
     @Published var inputText = ""
     @Published var isLoading = false
     @Published var isLoadingOlder = false
@@ -48,6 +48,8 @@ class ChatRoomViewModel: ObservableObject {
     @Published var isUploadingImage = false
     @Published var connectionState: RealtimeConnectionState = .idle
     @Published private(set) var visibleWindowReplacementVersion = 0
+    private(set) var messageSnapshotRevision: UInt64 = 0
+    private(set) var messageSnapshotChangedIDs: Set<String>?
 
     let conversationId: String
 
@@ -58,6 +60,7 @@ class ChatRoomViewModel: ObservableObject {
     private var syncTask: Task<Void, Never>?
     private var pendingConfirmationRefreshTask: Task<Void, Never>?
     private var botProfilesByID: [String: ChatPeerProfile] = [:]
+    private var messageIndexByID: [String: Int] = [:]
 #if DEBUG
     private static let isMessageTraceLoggingEnabled = false
 #endif
@@ -70,6 +73,7 @@ class ChatRoomViewModel: ObservableObject {
     ) {
         self.conversationId = conversationId
         self.messages = sortMessages(initialMessages)
+        rebuildMessageIndex()
         if let initialConnectionState {
             self.connectionState = initialConnectionState
         }
@@ -107,17 +111,28 @@ class ChatRoomViewModel: ObservableObject {
 
     func fetchMessages() {
         errorMessage = nil
-        loadCachedBotProfiles()
-        let cachedMessages = markStalePendingMessagesFailedIfNeeded(
-            LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: initialPageSize)
-        )
-        messages = sortMessages(enrichMessages(cachedMessages))
-        updateHistoryAvailability()
         isLoading = messages.isEmpty
 
         syncTask?.cancel()
-        syncTask = Task { [weak self] in
-            await self?.refreshLatestMessages()
+        syncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            async let cachedMessages = LocalMessageStore.shared.recentMessagesAsync(
+                conversationId: self.conversationId,
+                limit: self.initialPageSize
+            )
+            async let cachedBots = LocalMessageStore.shared.cachedBotsAsync()
+            let (localMessages, localBots) = await (cachedMessages, cachedBots)
+            guard !Task.isCancelled else { return }
+
+            self.applyBotProfiles(localBots)
+            let statusCheckedLocalMessages = self.markStalePendingMessagesFailedIfNeeded(localMessages)
+            let statusCheckedCurrentMessages = self.markStalePendingMessagesFailedIfNeeded(self.messages)
+            let enrichedLocalMessages = self.sortMessages(self.enrichMessages(statusCheckedLocalMessages))
+            self.publishMessages(self.mergeMessages(enrichedLocalMessages, with: statusCheckedCurrentMessages))
+            self.updateHistoryAvailability()
+            self.isLoading = self.messages.isEmpty
+            await self.refreshLatestMessages()
         }
     }
 
@@ -132,13 +147,13 @@ class ChatRoomViewModel: ObservableObject {
         isLoadingOlder = true
         defer { isLoadingOlder = false }
 
-        let localOlderMessages = LocalMessageStore.shared.messagesBefore(
+        let localOlderMessages = await LocalMessageStore.shared.messagesBeforeAsync(
             conversationId: conversationId,
             beforeSequence: beforeSequence,
             limit: historyPageSize
         )
         if !localOlderMessages.isEmpty {
-            messages = mergeMessages(messages, with: localOlderMessages)
+            publishMessages(mergeMessages(messages, with: localOlderMessages))
         }
 
         guard localOlderMessages.count < historyPageSize else {
@@ -151,7 +166,7 @@ class ChatRoomViewModel: ObservableObject {
             if !remoteOlderMessages.isEmpty {
                 RealtimeService.shared.acknowledgeDeliveredMessages(remoteOlderMessages)
                 LocalMessageStore.shared.upsert(messages: remoteOlderMessages)
-                messages = mergeMessages(messages, with: remoteOlderMessages)
+                publishMessages(mergeMessages(messages, with: remoteOlderMessages))
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -164,10 +179,31 @@ class ChatRoomViewModel: ObservableObject {
         Self.logMessageTrace(
             "MQTT TRACE ui accepted message_id=\(message.id) conversation_id=\(message.conversationId) topic=\(message.topic) current_conversation=\(conversationId)"
         )
-        messages = mergeMessages(messages, with: [enrichMessage(message)])
-        if message.pending, message.seq == nil {
+        let enriched = enrichMessage(message)
+        if enriched.pending, enriched.seq == nil {
             schedulePendingConfirmationRefresh()
         }
+        if let index = messageIndexByID[enriched.id], messages.indices.contains(index) {
+            let current = messages[index]
+            guard ChatRoomV2MessageContentSignature(current) != ChatRoomV2MessageContentSignature(enriched) else {
+                return
+            }
+
+            var updated = messages
+            updated[index] = enriched
+            let movedBeforePrevious = index > 0 && messageComesBefore(enriched, updated[index - 1])
+            let movedAfterNext = index + 1 < updated.count && messageComesBefore(updated[index + 1], enriched)
+            if movedBeforePrevious || movedAfterNext {
+                publishMessages(sortMessages(updated), changedIDs: [enriched.id], rebuildsIndex: true)
+            } else {
+                publishMessages(updated, changedIDs: [enriched.id], rebuildsIndex: false)
+            }
+            return
+        }
+
+        var updated = messages
+        updated.append(enriched)
+        publishMessages(sortMessages(updated), changedIDs: [enriched.id], rebuildsIndex: true)
     }
 
     @MainActor
@@ -176,7 +212,7 @@ class ChatRoomViewModel: ObservableObject {
 
         do {
             var remoteMessages: [Message] = []
-            if let lastSequence = LocalMessageStore.shared.highestSequence(conversationId: conversationId), lastSequence > 0 {
+            if let lastSequence = await LocalMessageStore.shared.highestSequenceAsync(conversationId: conversationId), lastSequence > 0 {
                 let catchupMessages = try await fetchRemoteMessages(
                     limit: RealtimeService.shared.historyMaxCatchupBatch,
                     afterSeq: lastSequence
@@ -192,12 +228,12 @@ class ChatRoomViewModel: ObservableObject {
                 LocalMessageStore.shared.upsert(messages: remoteMessages)
                 if shouldReplaceVisibleWindow(withLatestPage: latestMessages) {
                     let localStatusMessages = messages.filter { $0.seq == nil && ($0.pending || $0.failed) }
-                    messages = mergeMessages(latestMessages, with: localStatusMessages)
+                    publishMessages(mergeMessages(latestMessages, with: localStatusMessages))
                     if localStatusMessages.isEmpty {
                         visibleWindowReplacementVersion += 1
                     }
                 } else {
-                    messages = mergeMessages(messages, with: remoteMessages)
+                    publishMessages(mergeMessages(messages, with: remoteMessages))
                 }
             }
 
@@ -226,8 +262,6 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     func refreshBotProfiles() {
-        loadCachedBotProfiles()
-
         APIClient.shared.fetchBots()
             .receive(on: DispatchQueue.main)
             .sink { _ in
@@ -252,10 +286,6 @@ class ChatRoomViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func loadCachedBotProfiles() {
-        applyBotProfiles(LocalMessageStore.shared.cachedBots())
-    }
-
     private func applyBotProfiles(_ bots: [Bot]) {
         var changedProfiles = false
         prefetchBotAvatarImages(for: bots)
@@ -274,7 +304,7 @@ class ChatRoomViewModel: ObservableObject {
 
         let enriched = enrichMessages(messages)
         if messagesNeedReplacement(messages, enriched) {
-            messages = sortMessages(enriched)
+            publishMessages(sortMessages(enriched))
         }
     }
 
@@ -373,6 +403,27 @@ class ChatRoomViewModel: ObservableObject {
         }
     }
 
+    private func publishMessages(
+        _ nextMessages: [Message],
+        changedIDs: Set<String>? = nil,
+        rebuildsIndex: Bool = true
+    ) {
+        messageSnapshotChangedIDs = changedIDs
+        messageSnapshotRevision &+= 1
+        messages = nextMessages
+        if rebuildsIndex {
+            rebuildMessageIndex()
+        }
+    }
+
+    private func rebuildMessageIndex() {
+        messageIndexByID.removeAll(keepingCapacity: true)
+        messageIndexByID.reserveCapacity(messages.count)
+        for (index, message) in messages.enumerated() {
+            messageIndexByID[message.id] = index
+        }
+    }
+
     private func shouldReplaceVisibleWindow(withLatestPage latestMessages: [Message]) -> Bool {
         let latestPage = sortMessages(latestMessages)
         guard !latestPage.isEmpty else { return false }
@@ -395,37 +446,39 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     private func sortMessages(_ items: [Message]) -> [Message] {
-        items.sorted { lhs, rhs in
-            let leftReplyTarget = replyTargetID(for: lhs)
-            let rightReplyTarget = replyTargetID(for: rhs)
-            if leftReplyTarget == rhs.id {
-                return false
-            }
-            if rightReplyTarget == lhs.id {
-                return true
-            }
+        items.sorted(by: messageComesBefore)
+    }
 
-            let leftCreatedAt = lhs.createdAt?.timeIntervalSince1970 ?? 0
-            let rightCreatedAt = rhs.createdAt?.timeIntervalSince1970 ?? 0
-            if leftCreatedAt != rightCreatedAt {
-                return leftCreatedAt < rightCreatedAt
-            }
-
-            let leftTimestamp = lhs.timestamp ?? 0
-            let rightTimestamp = rhs.timestamp ?? 0
-            if leftTimestamp != rightTimestamp {
-                return leftTimestamp < rightTimestamp
-            }
-
-            if lhs.topic == rhs.topic,
-               let leftSeq = lhs.seq,
-               let rightSeq = rhs.seq,
-               leftSeq != rightSeq {
-                return leftSeq < rightSeq
-            }
-
-            return lhs.id < rhs.id
+    private func messageComesBefore(_ lhs: Message, _ rhs: Message) -> Bool {
+        let leftReplyTarget = replyTargetID(for: lhs)
+        let rightReplyTarget = replyTargetID(for: rhs)
+        if leftReplyTarget == rhs.id {
+            return false
         }
+        if rightReplyTarget == lhs.id {
+            return true
+        }
+
+        let leftCreatedAt = lhs.createdAt?.timeIntervalSince1970 ?? 0
+        let rightCreatedAt = rhs.createdAt?.timeIntervalSince1970 ?? 0
+        if leftCreatedAt != rightCreatedAt {
+            return leftCreatedAt < rightCreatedAt
+        }
+
+        let leftTimestamp = lhs.timestamp ?? 0
+        let rightTimestamp = rhs.timestamp ?? 0
+        if leftTimestamp != rightTimestamp {
+            return leftTimestamp < rightTimestamp
+        }
+
+        if lhs.topic == rhs.topic,
+           let leftSeq = lhs.seq,
+           let rightSeq = rhs.seq,
+           leftSeq != rightSeq {
+            return leftSeq < rightSeq
+        }
+
+        return lhs.id < rhs.id
     }
 
     private func replyTargetID(for message: Message) -> String? {
@@ -1084,8 +1137,11 @@ private struct ChatRoomLegacyView: View {
                 .onChange(of: viewModel.visibleWindowReplacementVersion) { _, _ in
                     scheduleBottomPosition(revealMessages: true)
                 }
-                .onChange(of: viewModel.messages.last?.id) { oldID, newID in
-                    guard shouldAutoScrollToBottom(oldLastID: oldID, newLastID: newID) else { return }
+                .onChange(of: latestMessageRenderSignature) { oldSignature, newSignature in
+                    guard shouldAutoScrollToBottom(
+                        oldSignature: oldSignature,
+                        newSignature: newSignature
+                    ) else { return }
                     guard hasPositionedInitialMessages else {
                         scheduleInitialMessagePositionIfNeeded()
                         return
@@ -1204,6 +1260,8 @@ private struct ChatRoomLegacyView: View {
             ChatRoomUIKitV2MessageListView(
                 context: context,
                 messages: viewModel.messages,
+                messageSnapshotRevision: viewModel.messageSnapshotRevision,
+                changedMessageIDs: viewModel.messageSnapshotChangedIDs,
                 currentUserID: effectiveCurrentUserID,
                 bottomAutoScrollThreshold: bottomAutoScrollThreshold,
                 historyPreloadDistance: historyPreloadDistance,
@@ -1847,9 +1905,16 @@ private struct ChatRoomLegacyView: View {
         return endFrame.minY < screenMaxY
     }
 
-    private func shouldAutoScrollToBottom(oldLastID: String?, newLastID: String?) -> Bool {
-        guard let newLastID else { return false }
-        return oldLastID == nil || oldLastID != newLastID
+    private func shouldAutoScrollToBottom(
+        oldSignature: MessageRenderSignature?,
+        newSignature: MessageRenderSignature?
+    ) -> Bool {
+        guard let newSignature else { return false }
+        return oldSignature == nil || oldSignature != newSignature
+    }
+
+    private var latestMessageRenderSignature: MessageRenderSignature? {
+        viewModel.messages.last.map(MessageRenderSignature.init)
     }
 
     private var latestMessageWasSentByCurrentUser: Bool {
