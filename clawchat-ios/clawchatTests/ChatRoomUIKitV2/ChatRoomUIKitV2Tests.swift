@@ -46,6 +46,34 @@ struct ChatRoomUIKitV2Tests {
         #expect(status.displayText == "09:31 · \(L10n.t("发送失败", "Failed"))")
     }
 
+    @Test func markdownDetectionKeepsOrdinaryChatTextOnPlainFastPath() {
+        #expect(!TextBlockContentV2.shouldRenderMarkdown("#995 Plain history row."))
+        #expect(!TextBlockContentV2.shouldRenderMarkdown("Looks good! (done)"))
+        #expect(!TextBlockContentV2.shouldRenderMarkdown("line one\nline two"))
+        #expect(!TextBlockContentV2.shouldRenderMarkdown("array[index]"))
+    }
+
+    @Test func markdownDetectionRecognizesSupportedSyntax() {
+        let markdownSamples = [
+            "# Heading",
+            "**bold**",
+            "*italic*",
+            "`inline code`",
+            "[link](https://example.com)",
+            "<https://example.com>",
+            "- list item",
+            "*\tlist item",
+            "1. ordered item",
+            "> quote",
+            "```swift\nlet value = 1\n```",
+            "| A | B |\n| --- | --- |"
+        ]
+
+        for sample in markdownSamples {
+            #expect(TextBlockContentV2.shouldRenderMarkdown(sample))
+        }
+    }
+
     @Test func storeReplaceAllAppliesSameIDUpdateAlongsideAppend() {
         let layout = MessageLayoutV2(itemSize: CGSize(width: 320, height: 44), blockLayouts: [])
         let original = RenderedMessageV2(

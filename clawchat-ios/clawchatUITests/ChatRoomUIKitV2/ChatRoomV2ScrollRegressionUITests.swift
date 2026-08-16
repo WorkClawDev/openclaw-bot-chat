@@ -1,8 +1,16 @@
 import XCTest
 
 final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
+    @MainActor
     override func setUpWithError() throws {
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    @MainActor
+    override func tearDownWithError() throws {
+        XCUIApplication().terminate()
+        XCUIDevice.shared.orientation = .portrait
     }
 
     @MainActor

@@ -1044,12 +1044,17 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             return
         }
 
-        let shouldStickToBottom = shouldStickToBottomDuringAutomaticUpdates
+        // A prepend must preserve the currently visible content even when the
+        // list happens to be near the bottom. Treating it like a pure append
+        // skips ChatLayout's offset restoration and can make history loading
+        // jump underneath the user's finger.
+        let shouldStickToBottom = change.prependCount == 0
+            && shouldStickToBottomDuringAutomaticUpdates
         let changedExistingIndexPaths = change.changedExistingIndices.map {
             IndexPath(item: $0, section: 0)
         }
-        let shouldPreserveTopAnchor = !shouldStickToBottom
-            && (change.prependCount > 0 || !changedExistingIndexPaths.isEmpty)
+        let shouldPreserveTopAnchor = change.prependCount > 0
+            || (!shouldStickToBottom && !changedExistingIndexPaths.isEmpty)
         let snapshot: ChatLayoutPositionSnapshot?
         if shouldPreserveTopAnchor {
             collectionView.layoutIfNeeded()

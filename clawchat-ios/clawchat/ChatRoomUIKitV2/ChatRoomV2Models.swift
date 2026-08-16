@@ -322,7 +322,69 @@ struct TextBlockContentV2: Hashable {
     let isMarkdown: Bool
 
     static func shouldRenderMarkdown(_ text: String) -> Bool {
-        text.rangeOfCharacter(from: CharacterSet(charactersIn: "`*_#[]()>!\n")) != nil
+        // Avoid sending ordinary chat punctuation (for example "#995" or
+        // "Looks good!") through Foundation's Markdown parser. History pages
+        // contain many such rows, so a broad character-set check turns a
+        // cheap plain-text render into repeated main-thread parsing work.
+        if text.contains("`")
+            || text.contains("](")
+            || text.contains("|")
+            || text.contains("://")
+            || (text.contains("<") && text.contains(">")) {
+            return true
+        }
+
+        let asterisks = text.reduce(into: 0) { count, character in
+            if character == "*" { count += 1 }
+        }
+        if asterisks >= 2 {
+            return true
+        }
+
+        let underscores = text.reduce(into: 0) { count, character in
+            if character == "_" { count += 1 }
+        }
+        if underscores >= 2 {
+            return true
+        }
+
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+            guard !trimmed.isEmpty else { continue }
+
+            let firstCharacter = trimmed.first
+            let startsListItem = (firstCharacter == "-" || firstCharacter == "*" || firstCharacter == "+")
+                && trimmed.dropFirst().first?.isWhitespace == true
+            if firstCharacter == ">" || startsListItem {
+                return true
+            }
+
+            let headingMarkers = trimmed.prefix(while: { $0 == "#" }).count
+            if (1...6).contains(headingMarkers),
+               trimmed.dropFirst(headingMarkers).first?.isWhitespace == true {
+                return true
+            }
+
+            let ordinalDigits = trimmed.prefix(while: { $0.isNumber }).count
+            if ordinalDigits > 0 {
+                let suffix = trimmed.dropFirst(ordinalDigits)
+                if let marker = suffix.first,
+                   (marker == "." || marker == ")"),
+                   suffix.dropFirst().first?.isWhitespace == true {
+                    return true
+                }
+            }
+
+            let thematic = trimmed.filter { !$0.isWhitespace }
+            if thematic.count >= 3,
+               let marker = thematic.first,
+               marker == "-" || marker == "*" || marker == "_",
+               thematic.allSatisfy({ $0 == marker }) {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
