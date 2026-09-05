@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   BOT_CHAT_DEFAULT_ACCOUNT_ID,
+  BOT_CHAT_SLASH_AUTOCOMPLETE_REQUEST_TOPIC,
   type BotChatChannelConfig,
   type BotChatConfigIssue,
   type BotChatMessage,
@@ -211,12 +212,30 @@ export function isBotChatSenderAllowed(params: {
   return entries.includes(normalizedUserId);
 }
 
-export function isBotChatSystemInbound(message: BotChatMessage): boolean {
+export function isBotChatControlTopic(topic: string): boolean {
+  return topic.startsWith(BOT_CHAT_SYSTEM_TOPIC_PREFIX);
+}
+
+export function isBotChatValidatedControlInbound(message: BotChatMessage): boolean {
   const topic = readString(message.metadata?.topic) ?? message.channelId;
-  if (topic.startsWith(BOT_CHAT_SYSTEM_TOPIC_PREFIX)) {
+  const contentType = readString(message.metadata?.content_type);
+  const isAutocompleteTopic =
+    contentType === "slash_autocomplete_request" || topic === BOT_CHAT_SLASH_AUTOCOMPLETE_REQUEST_TOPIC;
+  if (!isAutocompleteTopic) {
+    return false;
+  }
+  return Boolean(
+    readString(message.metadata?.request_id ?? message.metadata?.requestId) &&
+      readString(message.metadata?.response_topic ?? message.metadata?.responseTopic) &&
+      readString(message.metadata?.command_name ?? message.metadata?.commandName),
+  );
+}
+
+export function isBotChatSystemInbound(message: BotChatMessage): boolean {
+  if (readString(message.metadata?.senderType) === "bot") {
     return true;
   }
-  return readString(message.metadata?.senderType) === "bot";
+  return isBotChatValidatedControlInbound(message);
 }
 
 export function resolveBotChatDmPolicyMode(allowFrom?: string[]): "open" | "pairing" | "allowlist" {
@@ -232,11 +251,32 @@ export function resolveBotChatDmPolicyMode(allowFrom?: string[]): "open" | "pair
 export function evaluateBotChatAccess(params: {
   config: Record<string, unknown>;
   message: BotChatMessage;
-}): { allowed: boolean; reason?: string; requiresCustomApproval: boolean; pendingPairing?: boolean } {
-  if (isBotChatSystemInbound(params.message)) {
+}): {
+  allowed: boolean;
+  reason?: string;
+  requiresCustomApproval: boolean;
+  pendingPairing?: boolean;
+  invalidControl?: boolean;
+} {
+  const topic = readString(params.message.metadata?.topic) ?? params.message.channelId;
+  if (readString(params.message.metadata?.senderType) === "bot") {
     return {
       allowed: true,
       requiresCustomApproval: false,
+    };
+  }
+  if (isBotChatControlTopic(topic) || readString(params.message.metadata?.content_type) === "slash_autocomplete_request") {
+    if (isBotChatValidatedControlInbound(params.message)) {
+      return {
+        allowed: true,
+        requiresCustomApproval: false,
+      };
+    }
+    return {
+      allowed: false,
+      reason: "invalid control payload",
+      requiresCustomApproval: false,
+      invalidControl: true,
     };
   }
 

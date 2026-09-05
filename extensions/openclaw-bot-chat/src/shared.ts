@@ -46,13 +46,14 @@ export const botChatPairingAdapter: ChannelPairingAdapter = {
         import("./config.js"),
       ]);
       const account = resolveBotChatAccount(cfg, accountId);
-      const channelId = buildBotChatDirectTopic(id, account.botId);
+      const botId = getBotChatRuntime().getBotId?.() ?? account.config.botId ?? account.botId;
+      const channelId = buildBotChatDirectTopic(id, botId);
       await getBotChatRuntime().sendToChannel({
         channelId,
         userId: id,
         text: message,
         metadata: {
-          botId: account.botId,
+          botId,
           toType: "user",
           publishTopic: channelId,
         },

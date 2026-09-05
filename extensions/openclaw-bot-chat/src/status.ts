@@ -7,10 +7,16 @@ import {
   resolveBotChatDmPolicyMode,
 } from "./config.js";
 
+function resolveBotChatApprovalMode(account: ResolvedBotChatAccount): "open" | "pairing" | "allowlist" | "custom-approval" {
+  if (account.config.permissionApprovalEnabled === true) {
+    return "custom-approval";
+  }
+  return resolveBotChatDmPolicyMode(account.config.allowFrom);
+}
+
 export const botChatStatus: ChannelStatusAdapter<ResolvedBotChatAccount> = {
   getSnapshot: ({ cfg, accountId, runtimeState }) => {
     const account = resolveBotChatAccount(cfg, accountId);
-    const approvalMode = resolveBotChatDmPolicyMode(account.config.allowFrom);
     return {
       accountId: account.accountId,
       configured: account.configured,
@@ -21,7 +27,7 @@ export const botChatStatus: ChannelStatusAdapter<ResolvedBotChatAccount> = {
       mqttWsUrl: account.mqttWsUrl,
       lastError:
         typeof runtimeState?.lastError === "string" ? runtimeState.lastError : undefined,
-      approvalMode: approvalMode === "open" ? "custom-approval" : "pairing",
+      approvalMode: resolveBotChatApprovalMode(account),
       allowFromCount: account.config.allowFrom?.length ?? 0,
       hasDefaultTo: Boolean(account.config.defaultTo),
       historyCatchupLimit: account.config.historyCatchupLimit ?? 100,
@@ -37,7 +43,7 @@ export const botChatStatus: ChannelStatusAdapter<ResolvedBotChatAccount> = {
     backendUrl: account.backendUrl,
     mqttTcpUrl: account.mqttTcpUrl,
     mqttWsUrl: account.mqttWsUrl,
-    approvalMode: resolveBotChatDmPolicyMode(account.config.allowFrom) === "open" ? "custom-approval" : "pairing",
+    approvalMode: resolveBotChatApprovalMode(account),
     allowFromCount: account.config.allowFrom?.length ?? 0,
   }),
   probeAccount: async ({ account, timeoutMs }) => probeBotChatAccount({ account, timeoutMs }),

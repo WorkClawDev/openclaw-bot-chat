@@ -148,7 +148,7 @@ export type BotChatStatusSnapshot = {
   mqttTcpUrl?: string;
   mqttWsUrl?: string;
   lastError?: string;
-  approvalMode: "pairing" | "custom-approval";
+  approvalMode: "open" | "pairing" | "allowlist" | "custom-approval";
   allowFromCount: number;
   hasDefaultTo: boolean;
   historyCatchupLimit: number;
@@ -207,6 +207,18 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
           createTask(payload: Record<string, unknown>): Promise<unknown>;
         },
       ) => Promise<unknown>;
+      pairing?: {
+        upsertPairingRequest?: (params: {
+          channel: string;
+          id: string;
+          meta?: { name?: string };
+        }) => Promise<{ code: string; created: boolean }>;
+        buildPairingReply?: (params: {
+          channel: string;
+          idLine: string;
+          code: string;
+        }) => string;
+      };
       reply?: {
         dispatchReplyWithBufferedBlockDispatcher?: (params: {
           ctx: Record<string, unknown>;

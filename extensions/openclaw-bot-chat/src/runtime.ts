@@ -31,9 +31,11 @@ export {
   hasBotChatAllowFromEntries,
   hasBotChatConfiguredState,
   inferBotChatTargetChatType,
+  isBotChatControlTopic,
   isBotChatOpenAllowFrom,
   isBotChatSenderAllowed,
   isBotChatSystemInbound,
+  isBotChatValidatedControlInbound,
   listBotChatAccountIds,
   normalizeAllowFromEntries,
   normalizeAllowFromEntry,
@@ -132,6 +134,11 @@ export type BotChatDocumentClient = {
 
 export interface RuntimeHooks {
   emitMessage?: (message: BotChatMessage) => Promise<void>;
+  requestPairing?: (params: {
+    userId: string;
+    channelId: string;
+    message: BotChatMessage;
+  }) => Promise<{ code?: string; created?: boolean; reply?: string } | void>;
   runTask?: (
     task: BotChatTask,
     context: BotChatTaskExecutionContext,
@@ -182,6 +189,7 @@ export interface BotChatRuntime {
   stop(): Promise<void>;
   onInboundMessage(message: BotChatMessage): Promise<void>;
   sendToChannel(message: BotChatMessage): Promise<BotChatSendResult>;
+  getBotId?(): string | undefined;
 }
 
 function omitBotChatInternalMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
@@ -191,6 +199,14 @@ function omitBotChatInternalMetadata(metadata: Record<string, unknown>): Record<
 
 export function normalizeBotChatInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
   return toInboundMessage(raw, topic);
+}
+
+export function shouldReplayBotChatHistoryMessage(
+  config: Record<string, unknown>,
+  message: BotChatMessage,
+): { allowed: boolean; reason?: string } {
+  const access = evaluateBotChatAccess({ config, message });
+  return { allowed: access.allowed, reason: access.reason };
 }
 
 export function buildBotChatOutboundPayload(message: BotChatMessage): string {
@@ -391,6 +407,10 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     await this.hooks?.emitMessage?.(message);
   }
 
+  getBotId(): string | undefined {
+    return this.botId;
+  }
+
   async sendToChannel(message: BotChatMessage): Promise<BotChatSendResult> {
     const client = this.mqttClient;
     if (!client) {
@@ -522,6 +542,14 @@ class DefaultBotChatRuntime implements BotChatRuntime {
 
     const access = evaluateBotChatAccess({ config, message });
     if (!access.allowed) {
+      if (access.invalidControl) {
+        logger.warn("botchat.inbound.invalid_control", {
+          topic,
+          reason: access.reason,
+          userId: message.userId,
+        });
+        return;
+      }
       if (access.requiresCustomApproval) {
         const approved = await this.approver?.approve({
           topic,
@@ -538,11 +566,8 @@ class DefaultBotChatRuntime implements BotChatRuntime {
           approvalReason: approved?.reason,
         });
       } else if (access.pendingPairing) {
-        logger.warn("botchat.inbound.pairing_pending", {
-          topic,
-          reason: access.reason,
-          userId: message.userId,
-        });
+        await this.forwardPendingPairing(message, logger);
+        return;
       } else {
         logger.warn("botchat.inbound.allowlist_denied", {
           topic,
@@ -566,6 +591,42 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     }
 
     await this.acceptInboundMessage(message);
+  }
+
+  private async forwardPendingPairing(message: BotChatMessage, logger: RuntimeLogger): Promise<void> {
+    logger.warn("botchat.inbound.pairing_pending", {
+      topic: readString(message.metadata?.topic) ?? message.channelId,
+      reason: "sender pending pairing",
+      userId: message.userId,
+    });
+    const pairing = await this.hooks?.requestPairing?.({
+      userId: message.userId,
+      channelId: message.channelId,
+      message,
+    });
+    const reply =
+      readString(pairing?.reply) ??
+      (readString(pairing?.code) ? `BotChat pairing code: ${pairing?.code}` : undefined);
+    if (reply) {
+      await this.sendToChannel({
+        channelId: message.channelId,
+        userId: message.userId,
+        text: reply,
+        metadata: {
+          topic: readString(message.metadata?.topic) ?? message.channelId,
+          pairingPending: true,
+          pairingCode: pairing?.code,
+        },
+      });
+    }
+    await this.onInboundMessage({
+      ...message,
+      metadata: {
+        ...(message.metadata ?? {}),
+        pairingPending: true,
+        ...(pairing?.code ? { pairingCode: pairing.code } : {}),
+      },
+    });
   }
 
   private async acceptInboundMessage(message: BotChatMessage): Promise<void> {
@@ -600,6 +661,15 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       for (const message of messages) {
         const normalized = toInboundMessage(message, checkpoint.channelId);
         if (!normalized) {
+          continue;
+        }
+        const replay = shouldReplayBotChatHistoryMessage(config, normalized);
+        if (!replay.allowed) {
+          this.logger?.debug?.("botchat.history.skipped", {
+            channelId: checkpoint.channelId,
+            userId: normalized.userId,
+            reason: replay.reason,
+          });
           continue;
         }
         await this.onInboundMessage(normalized);

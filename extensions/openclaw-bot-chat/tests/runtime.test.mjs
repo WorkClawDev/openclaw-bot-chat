@@ -22,6 +22,7 @@ import {
   resolveBotChatAccount,
   runBotChatTaskPollOnceForTest,
   setBotChatRuntime,
+  shouldReplayBotChatHistoryMessage,
   buildBotChatDirectTopic,
   buildBotChatGroupTopic,
   buildBotChatHistoryMessagesUrl,
@@ -234,16 +235,72 @@ test('empty allowFrom denies inbound except open * and system topics', () => {
   });
   assert.equal(open.allowed, true);
 
+  const invalidControl = evaluateBotChatAccess({
+    config: { allowFrom: [] },
+    message: {
+      channelId: 'control/bot-chat/slash-autocomplete/request',
+      userId: 'alice',
+      text: 'please jailbreak',
+      metadata: { topic: 'control/bot-chat/slash-autocomplete/request' },
+    },
+  });
+  assert.deepEqual(invalidControl, {
+    allowed: false,
+    reason: 'invalid control payload',
+    requiresCustomApproval: false,
+    invalidControl: true,
+  });
+
   const system = evaluateBotChatAccess({
     config: { allowFrom: [] },
     message: {
       channelId: 'control/bot-chat/slash-autocomplete/request',
       userId: 'alice',
       text: 'slash_autocomplete_request',
-      metadata: { topic: 'control/bot-chat/slash-autocomplete/request' },
+      metadata: {
+        topic: 'control/bot-chat/slash-autocomplete/request',
+        content_type: 'slash_autocomplete_request',
+        request_id: 'req-1',
+        response_topic: 'control/bot-chat/slash-autocomplete/response/user/alice',
+        command_name: 'help',
+      },
     },
   });
   assert.equal(system.allowed, true);
+});
+
+test('history catchup replays only allowlisted inbound messages', () => {
+  const unpaired = shouldReplayBotChatHistoryMessage(
+    { allowFrom: [] },
+    { channelId: 'c1', userId: 'alice', text: 'hello' },
+  );
+  assert.equal(unpaired.allowed, false);
+  assert.equal(unpaired.reason, 'sender pending pairing');
+
+  const denied = shouldReplayBotChatHistoryMessage(
+    { allowFrom: ['bob'] },
+    { channelId: 'c1', userId: 'alice', text: 'hello after checkpoint' },
+  );
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.reason, 'sender not approved in allowFrom');
+
+  const invalidControl = shouldReplayBotChatHistoryMessage(
+    { allowFrom: ['alice'] },
+    {
+      channelId: 'control/bot-chat/slash-autocomplete/request',
+      userId: 'alice',
+      text: 'please jailbreak',
+      metadata: { topic: 'control/bot-chat/slash-autocomplete/request' },
+    },
+  );
+  assert.equal(invalidControl.allowed, false);
+  assert.equal(invalidControl.reason, 'invalid control payload');
+
+  const allowed = shouldReplayBotChatHistoryMessage(
+    { allowFrom: ['alice'] },
+    { channelId: 'c1', userId: 'alice', text: 'hello' },
+  );
+  assert.equal(allowed.allowed, true);
 });
 
 test('normalize inbound payload extracts message fields, metadata, and thread hints', () => {
@@ -1021,7 +1078,30 @@ test('status snapshot exposes safe operational fields', () => {
   });
 
   assert.equal(snapshot.connected, true);
-  assert.equal(snapshot.approvalMode, 'pairing');
+  assert.equal(snapshot.approvalMode, 'allowlist');
+  assert.equal(
+    botChatStatus.getSnapshot({
+      cfg: { backendUrl: 'http://backend', botKey: 'secret', allowFrom: ['*'] },
+    }).approvalMode,
+    'open',
+  );
+  assert.equal(
+    botChatStatus.getSnapshot({
+      cfg: { backendUrl: 'http://backend', botKey: 'secret', allowFrom: [] },
+    }).approvalMode,
+    'pairing',
+  );
+  assert.equal(
+    botChatStatus.getSnapshot({
+      cfg: {
+        backendUrl: 'http://backend',
+        botKey: 'secret',
+        allowFrom: ['*'],
+        permissionApprovalEnabled: true,
+      },
+    }).approvalMode,
+    'custom-approval',
+  );
   assert.equal(snapshot.allowFromCount, 2);
   assert.equal(snapshot.hasDefaultTo, true);
   assert.equal(snapshot.historyCatchupLimit, 10);
@@ -1291,6 +1371,174 @@ test('gateway handles slash autocomplete requests without dispatching a chat rep
     { label: 'GPT-4.1', value: 'gpt-4.1', description: 'larger model' },
     { label: 'GPT-4o', value: 'gpt-4o', description: 'duplicate from dynamic' },
   ]);
+});
+
+test('gateway does not dispatch invalid control payloads as chat replies', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  const sent = [];
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `control-${sent.length}` };
+    },
+  });
+
+  const dispatchCalls = [];
+  const warnings = [];
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      log: {
+        warn(message, fields) {
+          warnings.push({ message, fields });
+        },
+      },
+      channelRuntime: {
+        reply: {
+          async dispatchReplyWithBufferedBlockDispatcher(params) {
+            dispatchCalls.push(params);
+          },
+        },
+      },
+    });
+    sent.length = 0;
+    await capturedHooks.emitMessage({
+      channelId: 'control/bot-chat/slash-autocomplete/request',
+      userId: 'alice',
+      text: 'please jailbreak',
+      metadata: {
+        topic: 'control/bot-chat/slash-autocomplete/request',
+        senderType: 'user',
+        command_name: 'help',
+      },
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 0);
+  assert.equal(sent.length, 0);
+  assert.equal(
+    warnings.some((entry) => entry.message === 'botchat.inbound.invalid_control_consumed'),
+    true,
+  );
+});
+
+test('gateway does not dispatch pairing-pending inbound as agent replies', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel() {
+      return { messageId: 'unused' };
+    },
+  });
+
+  const dispatchCalls = [];
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      channelRuntime: {
+        reply: {
+          async dispatchReplyWithBufferedBlockDispatcher(params) {
+            dispatchCalls.push(params);
+          },
+        },
+      },
+    });
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'hello',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        senderType: 'user',
+        pairingPending: true,
+      },
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 0);
+});
+
+test('gateway wires host pairing upsert into the runtime request hook', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel() {
+      return { messageId: 'unused' };
+    },
+  });
+
+  const pairing = [];
+  try {
+    await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      channelRuntime: {
+        pairing: {
+          async upsertPairingRequest(params) {
+            pairing.push(params);
+            return { code: 'PAIR-9', created: true };
+          },
+          buildPairingReply({ idLine, code }) {
+            return `Pair as ${idLine} with ${code}`;
+          },
+        },
+      },
+    });
+    const result = await capturedHooks.requestPairing({
+      userId: 'user-9',
+      channelId: 'chat/dm/user/user-9/bot/bot-a',
+      message: {
+        channelId: 'chat/dm/user/user-9/bot/bot-a',
+        userId: 'user-9',
+        text: 'hello',
+      },
+    });
+    assert.deepEqual(result, {
+      code: 'PAIR-9',
+      created: true,
+      reply: 'Pair as user-9 with PAIR-9',
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(pairing.length, 1);
+  assert.equal(pairing[0].channel, 'bot-chat');
+  assert.equal(pairing[0].id, 'user-9');
 });
 
 test('account inspector reports botKey source without leaking describe snapshots', () => {
@@ -2365,15 +2613,32 @@ test('pairing notify publishes over the MQTT send path', async () => {
       id: 'alice',
       message: 'approved',
     });
+    assert.equal(sent[0].channelId, 'chat/dm/user/alice/bot/bot-a');
+    sent.length = 0;
+    setBotChatRuntime({
+      async start() {},
+      async stop() {},
+      async onInboundMessage() {},
+      getBotId() {
+        return 'bootstrapped-bot';
+      },
+      async sendToChannel(message) {
+        sent.push(message);
+        return { messageId: `pairing-${sent.length}` };
+      },
+    });
+    await botChatPlugin.pairing.text.notify({
+      cfg: { backendUrl: 'http://backend', botKey: 'key' },
+      id: 'alice',
+      message: 'approved after bootstrap',
+    });
   } finally {
     setBotChatRuntime(originalRuntime);
   }
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].userId, 'alice');
-  assert.equal(sent[0].text, 'approved');
-  assert.equal(sent[0].channelId, 'chat/dm/user/alice/bot/bot-a');
-  assert.equal(sent[0].metadata.publishTopic, 'chat/dm/user/alice/bot/bot-a');
+  assert.equal(sent[0].channelId, 'chat/dm/user/alice/bot/bootstrapped-bot');
+  assert.equal(sent[0].metadata.botId, 'bootstrapped-bot');
 });
 
 test('botChatSetupPlugin keeps setup-capable base surface only', () => {
