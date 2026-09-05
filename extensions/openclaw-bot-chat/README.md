@@ -103,6 +103,21 @@ Recommended config for local development:
 }
 ```
 
+`allowFrom` is a pairing allowlist:
+
+- omitted or `[]` denies inbound senders (pending pairing). System `control/bot-chat/*` topics still pass.
+- `["*"]` is the explicit open policy.
+- one or more user ids allow only those senders.
+
+Flag-driven setup:
+
+```bash
+openclaw channels add --channel bot-chat --backend-url http://127.0.0.1:8080 --bot-key ocbk_... --bot-id <uuid>
+openclaw channels add --channel bot-chat --use-env
+```
+
+`--use-env` reads `BOT_CHAT_BACKEND_URL`, `BOT_CHAT_BOT_KEY`, `BOT_CHAT_BOT_ID`, `BOT_CHAT_MQTT_TCP_URL`, and `BOT_CHAT_MQTT_WS_URL`. Validation still requires `backendUrl` and `botKey`.
+
 `botKey` can also be an OpenClaw secret reference:
 
 ```json
