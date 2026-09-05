@@ -138,7 +138,7 @@
     "setup": "node ./dist/src/bin/setup.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "mqtt": "^5.15.1",
