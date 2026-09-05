@@ -12,13 +12,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBotChatPluginBase } from "./shared.js";
 import { botChatStatus } from "./status.js";
-import { botChatSetupAdapter } from "./channel.setup.js";
+import { botChatSetupAdapter, botChatSetupContract } from "./channel.setup.js";
 import { botChatDoctor } from "./doctor.js";
 import { botChatSecrets } from "./secret-config-contract.js";
+import { probeBotChatAccount } from "./probe.js";
+import { isBotChatCommandAuthorized } from "./security.js";
+import { resolveBotChatAccount } from "./config.js";
 import {
   buildBotChatOutboundMessageTarget,
   getBotChatRuntime,
-  resolveBotChatAccount,
   type RuntimeHooks,
 } from "./runtime.js";
 
@@ -172,9 +174,11 @@ const botChatOutboundAdapter: ChannelOutboundAdapter = {
 
 export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
   ...createBotChatPluginBase({ setup: botChatSetupAdapter }),
+  setupContract: botChatSetupContract,
   doctor: botChatDoctor,
   secrets: botChatSecrets,
   status: botChatStatus,
+  probeAccount: async ({ account, timeoutMs }) => probeBotChatAccount({ account, timeoutMs }),
   gateway: {
     startAccount: async (ctx) => {
       const logger = {
@@ -391,7 +395,10 @@ async function dispatchBotChatReply(params: {
       ExplicitDeliverRoute: true,
       NativeChannelId: params.message.channelId,
       CommandSource: resolveBotChatCommandSource(params.message),
-      CommandAuthorized: true,
+      CommandAuthorized: isBotChatCommandAuthorized({
+        account: params.account,
+        userId: params.message.userId,
+      }),
       Timestamp: Date.now(),
     },
     ...(replyTarget.recipientType === "group"

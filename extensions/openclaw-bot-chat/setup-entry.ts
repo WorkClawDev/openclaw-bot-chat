@@ -6,10 +6,6 @@ export default defineBundledChannelSetupEntry({
     specifier: "./setup-plugin-api.js",
     exportName: "botChatSetupPlugin",
   },
-  runtime: {
-    specifier: "./runtime-api.js",
-    exportName: "setBotChatRuntime",
-  },
   secrets: {
     specifier: "./secret-config-contract-api.js",
     exportName: "botChatSecrets",

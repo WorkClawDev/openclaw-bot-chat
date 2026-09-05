@@ -24,6 +24,14 @@ export type BotChatChannelConfig = {
   permissionApprovalTimeoutMs?: number;
   permissionDeniedReply?: string;
   taskPollingIntervalMs?: number;
+  useEnv?: boolean;
+};
+
+export type BotChatMessage = {
+  channelId: string;
+  userId: string;
+  text: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type BotChatTarget =
@@ -120,6 +128,17 @@ export type ChannelSetupAdapter = {
   };
 };
 
+export type ChannelSetupContract = {
+  kind: "channel-owned";
+  metadata: {
+    fields: Array<Record<string, unknown>>;
+  };
+  fields?: Record<string, unknown>;
+  applyAccountConfig: ChannelSetupAdapter["applyAccountConfig"];
+  validateInput?: (params: { input: Record<string, unknown> }) => string | null;
+  legacyAdapter?: ChannelSetupAdapter;
+};
+
 export type BotChatStatusSnapshot = {
   accountId: string;
   configured: boolean;
@@ -144,6 +163,10 @@ export type ChannelStatusAdapter<ResolvedAccount> = {
     runtimeState?: Record<string, unknown>;
   }) => BotChatStatusSnapshot;
   describeAccount: (account: ResolvedAccount) => Record<string, unknown>;
+  probeAccount?: (params: {
+    account: ResolvedAccount;
+    timeoutMs?: number;
+  }) => Promise<Record<string, unknown>>;
 };
 
 export type ChannelGatewayAdapter<ResolvedAccount> = {
@@ -294,6 +317,9 @@ export type ChannelDoctorAdapter = {
     env: Record<string, string | undefined>;
     shouldRepair: boolean;
   }) => ChannelDoctorSequenceResult | Promise<ChannelDoctorSequenceResult>;
+  migrateState?: (params: {
+    cfg: Record<string, unknown>;
+  }) => ChannelDoctorConfigMutation | Promise<ChannelDoctorConfigMutation>;
 };
 
 export type SecretRef = {
@@ -345,6 +371,11 @@ export type ChannelPlugin<ResolvedAccount = unknown> = {
   config: ChannelConfigAdapter<ResolvedAccount>;
   commands?: ChannelCommandAdapter;
   setup?: ChannelSetupAdapter;
+  setupContract?: ChannelSetupContract;
+  probeAccount?: (params: {
+    account: ResolvedAccount;
+    timeoutMs?: number;
+  }) => Promise<Record<string, unknown>>;
   status?: ChannelStatusAdapter<ResolvedAccount>;
   gateway?: ChannelGatewayAdapter<ResolvedAccount>;
   outbound?: ChannelOutboundAdapter;
@@ -365,6 +396,14 @@ export type ChannelPlugin<ResolvedAccount = unknown> = {
     defaultPolicy: "allow" | "approve" | "deny";
     mode?: "allowFrom" | "customApproval";
     approveHint?: string;
+    resolveDmPolicy?: (params: {
+      cfg: Record<string, unknown>;
+      accountId?: string;
+    }) => "open" | "pairing" | "allowlist" | "disabled";
+    collectWarnings?: (params: {
+      cfg: Record<string, unknown>;
+      accountId?: string;
+    }) => string[];
   };
 };
 

@@ -1,1 +1,1 @@
-export { botChatSetupPlugin } from "./src/channel.setup.js";
+export { botChatSetupPlugin, botChatSetupContract, botChatSetupAdapter } from "./src/channel.setup.js";

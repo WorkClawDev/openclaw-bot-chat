@@ -11,8 +11,8 @@ import {
 } from "./channel-api.js";
 import { inspectBotChatAccount } from "./account-inspect.js";
 import { BotChatChannelConfigSchema } from "./config-schema.js";
+import { botChatSecurityAdapter } from "./security.js";
 import {
-  buildBotChatOutboundPayload,
   hasBotChatConfiguredState,
   inferBotChatTargetChatType,
   isBotChatSenderAllowed,
@@ -22,17 +22,16 @@ import {
   normalizeBotChatTarget,
   resolveBotChatAccount,
   resolveDefaultBotChatAccountId,
-} from "./runtime.js";
+} from "./config.js";
 
 export const botChatAllowlistAdapter: ChannelAllowlistAdapter = {
   normalizeEntry: normalizeAllowFromEntry,
   isAllowed: ({ cfg, accountId, userId }) => {
     const account = resolveBotChatAccount(cfg, accountId);
-    const allowFrom = account.config.allowFrom ?? [];
-    if (allowFrom.length === 0) {
-      return true;
-    }
-    return isBotChatSenderAllowed({ allowFrom, userId });
+    return isBotChatSenderAllowed({
+      allowFrom: account.config.allowFrom,
+      userId,
+    });
   },
 };
 
@@ -41,11 +40,22 @@ export const botChatPairingAdapter: ChannelPairingAdapter = {
     idLabel: "botChatUserId",
     message: BOT_CHAT_PAIRING_APPROVED_MESSAGE,
     normalizeAllowEntry: normalizeAllowFromEntry,
-    notify: async ({ message, id }) => {
-      buildBotChatOutboundPayload({
-        channelId: `pairing:${id}`,
+    notify: async ({ cfg, message, id, accountId }) => {
+      const [{ getBotChatRuntime }, { buildBotChatDirectTopic }] = await Promise.all([
+        import("./runtime.js"),
+        import("./config.js"),
+      ]);
+      const account = resolveBotChatAccount(cfg, accountId);
+      const channelId = buildBotChatDirectTopic(id, account.botId);
+      await getBotChatRuntime().sendToChannel({
+        channelId,
         userId: id,
         text: message,
+        metadata: {
+          botId: account.botId,
+          toType: "user",
+          publishTopic: channelId,
+        },
       });
     },
   },
@@ -112,11 +122,7 @@ export function createBotChatPluginBase(params: {
       normalizeTarget: normalizeBotChatTarget,
       inferTargetChatType: ({ to }) => inferBotChatTargetChatType(to),
     },
-    security: {
-      defaultPolicy: "approve",
-      mode: "allowFrom",
-      approveHint: "Add the sender id to allowFrom or approve the pairing request.",
-    },
+    security: botChatSecurityAdapter,
   };
 }
 

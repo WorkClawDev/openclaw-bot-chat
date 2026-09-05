@@ -36,6 +36,9 @@ import { botChatSetupPlugin } from '../src/channel.setup.ts';
 import { botChatDoctor } from '../src/doctor.ts';
 import { botChatSecrets } from '../src/secret-config-contract.ts';
 import { botChatStatus } from '../src/status.ts';
+import { probeBotChatAccount } from '../src/probe.ts';
+import { resolveBotChatDmPolicy } from '../src/security.ts';
+import { BOT_CHAT_EMPTY_ALLOW_FROM_MESSAGE } from '../src/config.ts';
 
 function jsonResponse(payload, status = 200) {
   return {
@@ -211,6 +214,36 @@ test('access evaluation uses allowFrom as primary gate', () => {
     reason: 'message blocked by metadata',
     requiresCustomApproval: true,
   });
+});
+
+test('empty allowFrom denies inbound except open * and system topics', () => {
+  const pending = evaluateBotChatAccess({
+    config: { allowFrom: [] },
+    message: { channelId: 'c1', userId: 'alice', text: 'hello' },
+  });
+  assert.deepEqual(pending, {
+    allowed: false,
+    reason: 'sender pending pairing',
+    requiresCustomApproval: false,
+    pendingPairing: true,
+  });
+
+  const open = evaluateBotChatAccess({
+    config: { allowFrom: ['*'] },
+    message: { channelId: 'c1', userId: 'whoever', text: 'hello' },
+  });
+  assert.equal(open.allowed, true);
+
+  const system = evaluateBotChatAccess({
+    config: { allowFrom: [] },
+    message: {
+      channelId: 'control/bot-chat/slash-autocomplete/request',
+      userId: 'alice',
+      text: 'slash_autocomplete_request',
+      metadata: { topic: 'control/bot-chat/slash-autocomplete/request' },
+    },
+  });
+  assert.equal(system.allowed, true);
 });
 
 test('normalize inbound payload extracts message fields, metadata, and thread hints', () => {
@@ -958,6 +991,7 @@ test('diagnostics report errors and warnings without leaking secrets', () => {
       ['warning', 'empty_allow_from', 'allowFrom'],
     ],
   );
+  assert.equal(issues.find((issue) => issue.code === 'empty_allow_from').message, BOT_CHAT_EMPTY_ALLOW_FROM_MESSAGE);
   assert.equal(JSON.stringify(issues).includes('super-secret'), false);
 });
 
@@ -1005,7 +1039,9 @@ test('botChatPlugin exposes formal channel plugin surface', () => {
   assert.equal(botChatPlugin.commands.nativeSkillsAutoEnabled, true);
   assert.ok(botChatPlugin.config);
   assert.ok(botChatPlugin.setup);
+  assert.ok(botChatPlugin.setupContract);
   assert.ok(botChatPlugin.status);
+  assert.ok(botChatPlugin.probeAccount);
   assert.ok(botChatPlugin.gateway);
   assert.ok(botChatPlugin.outbound);
   assert.ok(botChatPlugin.doctor);
@@ -1295,7 +1331,7 @@ test('doctor adapter maps config issues into formal warnings', async () => {
     doctorFixCommand: 'openclaw doctor --fix',
   });
   assert.deepEqual(warnings, [
-    '- BotChat warning empty_allow_from at allowFrom: allowFrom is empty; BotChat currently allows all senders until pairing writes allowFrom entries',
+    `- BotChat warning empty_allow_from at allowFrom: ${BOT_CHAT_EMPTY_ALLOW_FROM_MESSAGE}`,
   ]);
 
   const sequence = await botChatDoctor.runConfigSequence({
@@ -2090,11 +2126,12 @@ test('gateway dispatch marks autocomplete slash commands as native commands', as
   const abort = new AbortController();
   const dispatchCalls = [];
   const startPromise = botChatPlugin.gateway.startAccount({
-    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a', allowFrom: ['alice'] },
     account: resolveBotChatAccount({
       backendUrl: 'http://backend',
       botKey: 'key',
       botId: 'bot-a',
+      allowFrom: ['alice'],
     }),
     abortSignal: abort.signal,
     channelRuntime: {
@@ -2129,6 +2166,62 @@ test('gateway dispatch marks autocomplete slash commands as native commands', as
   assert.equal(dispatchCalls[0].ctx.CommandBody, '/help');
   assert.equal(dispatchCalls[0].ctx.CommandSource, 'native');
   assert.equal(dispatchCalls[0].ctx.CommandAuthorized, true);
+});
+
+test('gateway dispatch does not hardcode CommandAuthorized for unpaired senders', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel() {
+      return { messageId: 'unused-reply' };
+    },
+  });
+
+  const abort = new AbortController();
+  const dispatchCalls = [];
+  const startPromise = botChatPlugin.gateway.startAccount({
+    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+    account: resolveBotChatAccount({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+    }),
+    abortSignal: abort.signal,
+    channelRuntime: {
+      reply: {
+        async dispatchReplyWithBufferedBlockDispatcher(params) {
+          dispatchCalls.push(params);
+        },
+      },
+    },
+  });
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: '/help',
+      metadata: {
+        message_id: 'command-message-unpaired',
+        senderType: 'user',
+        command_source: 'native',
+        native_command_name: 'help',
+      },
+    });
+  } finally {
+    abort.abort();
+    await startPromise;
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].ctx.CommandAuthorized, false);
 });
 
 test('gateway dispatch includes BotChat image assets as attachments', async () => {
@@ -2249,12 +2342,155 @@ test('pairing and allowlist adapters normalize sender ids consistently', async (
     botChatPlugin.allowlist.isAllowed({ cfg: { allowFrom: ['user:alice'] }, userId: 'alice' }),
     true,
   );
-  await botChatPlugin.pairing.text.notify({ cfg: {}, id: 'alice', message: 'approved' });
+  assert.equal(botChatPlugin.allowlist.isAllowed({ cfg: { allowFrom: [] }, userId: 'alice' }), false);
+  assert.equal(botChatPlugin.allowlist.isAllowed({ cfg: { allowFrom: ['*'] }, userId: 'alice' }), true);
+});
+
+test('pairing notify publishes over the MQTT send path', async () => {
+  const originalRuntime = getBotChatRuntime();
+  const sent = [];
+  setBotChatRuntime({
+    async start() {},
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `pairing-${sent.length}` };
+    },
+  });
+
+  try {
+    await botChatPlugin.pairing.text.notify({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      id: 'alice',
+      message: 'approved',
+    });
+  } finally {
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].userId, 'alice');
+  assert.equal(sent[0].text, 'approved');
+  assert.equal(sent[0].channelId, 'chat/dm/user/alice/bot/bot-a');
+  assert.equal(sent[0].metadata.publishTopic, 'chat/dm/user/alice/bot/bot-a');
 });
 
 test('botChatSetupPlugin keeps setup-capable base surface only', () => {
   assert.equal(botChatSetupPlugin.id, 'bot-chat');
   assert.ok(botChatSetupPlugin.setup);
+  assert.ok(botChatSetupPlugin.setupContract);
   assert.ok(botChatSetupPlugin.config);
   assert.equal('gateway' in botChatSetupPlugin, false);
+  assert.deepEqual(
+    botChatSetupPlugin.setupContract.metadata.fields.map((field) => field.key),
+    ['backendUrl', 'botKey', 'botId', 'mqttTcpUrl', 'mqttWsUrl', 'useEnv'],
+  );
+});
+
+test('setup adapter collects backendUrl and botKey and supports useEnv', () => {
+  const missing = botChatSetupPlugin.setup.validateConfig({});
+  assert.equal(missing.ok, false);
+  assert.ok(missing.errors.includes('backendUrl is required'));
+  assert.ok(missing.errors.includes('botKey is required'));
+
+  const valid = botChatSetupPlugin.setup.validateConfig({
+    backendUrl: 'http://backend',
+    botKey: 'secret',
+    botId: 'bot-a',
+  });
+  assert.equal(valid.ok, true);
+
+  const env = {
+    BOT_CHAT_BACKEND_URL: 'http://from-env',
+    BOT_CHAT_BOT_KEY: 'env-key',
+    BOT_CHAT_BOT_ID: 'bot-env',
+  };
+  const previous = { ...process.env };
+  Object.assign(process.env, env);
+  try {
+    const applied = botChatSetupPlugin.setup.applyAccountConfig({
+      cfg: {},
+      input: { useEnv: true },
+    });
+    assert.equal(applied.channels['bot-chat'].backendUrl, 'http://from-env');
+    assert.deepEqual(applied.channels['bot-chat'].botKey, {
+      source: 'env',
+      provider: 'default',
+      id: 'BOT_CHAT_BOT_KEY',
+    });
+    assert.equal(applied.channels['bot-chat'].botId, 'bot-env');
+    assert.equal(botChatSetupPlugin.setup.validateConfig({ useEnv: true }).ok, true);
+  } finally {
+    for (const key of Object.keys(env)) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  }
+});
+
+test('security adapter resolves Discord-style allowFrom modes', () => {
+  assert.equal(resolveBotChatDmPolicy({ cfg: { allowFrom: [] } }), 'pairing');
+  assert.equal(resolveBotChatDmPolicy({ cfg: { allowFrom: ['*'] } }), 'open');
+  assert.equal(resolveBotChatDmPolicy({ cfg: { allowFrom: ['alice'] } }), 'allowlist');
+  assert.equal(botChatPlugin.security.resolveDmPolicy({ cfg: { allowFrom: [] } }), 'pairing');
+});
+
+test('status probe calls BotChat bootstrap', async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          data: {
+            bot: { id: 'bot-live' },
+            broker: { tcp_url: 'mqtt://broker', ws_url: 'wss://broker/mqtt' },
+          },
+        };
+      },
+    };
+  };
+
+  try {
+    const probe = await probeBotChatAccount({
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend/',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+      timeoutMs: 500,
+    });
+    assert.equal(probe.ok, true);
+    assert.equal(probe.botId, 'bot-live');
+    assert.equal(probe.mqttWsUrl, 'wss://broker/mqtt');
+    const snapshotProbe = await botChatPlugin.status.probeAccount({
+      account: resolveBotChatAccount({ backendUrl: 'http://backend', botKey: 'key' }),
+    });
+    assert.equal(snapshotProbe.ok, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls[0].url, 'http://backend/api/v1/bot-runtime/bootstrap');
+  assert.equal(fetchCalls[0].init.headers['X-Bot-Key'], 'key');
+});
+
+test('doctor repair normalizes allowFrom prefixes', async () => {
+  const repaired = await botChatDoctor.repairConfig({
+    cfg: {
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      allowFrom: ['user:alice', 'sender:bob'],
+    },
+    doctorFixCommand: 'openclaw doctor --fix',
+  });
+  assert.deepEqual(repaired.config.allowFrom, ['alice', 'bob']);
+  assert.ok(repaired.changes.some((change) => change.includes('normalized sender ids')));
 });
