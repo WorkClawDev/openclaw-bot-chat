@@ -1,0 +1,4 @@
+{
+  "name": "openclaw-bot-chat",
+  "install": "./scripts/cloud-agent-install.sh"
+}

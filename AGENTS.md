@@ -35,3 +35,7 @@ Start from `scripts/dev.env.example`, `scripts/test-agent.env.example`, or compo
 ## Local Test Accounts
 
 Do not commit usernames, passwords, access tokens, refresh tokens, bot keys, or deployment-specific user IDs. Use local seed scripts or the ignored `AGENTS.local.md` file to obtain disposable test credentials when needed.
+
+## Cursor Cloud specific instructions
+
+Cloud Agent `install` must use `./scripts/cloud-agent-install.sh` (or equivalent subshells / absolute paths). Do not use a multi-line script of relative `cd backend`, `cd frontend`, and `cd extensions/...` commands: those run in one shell, so the first `cd` makes later directories look missing. The install script only downloads Go modules and Node dependencies; keep Docker Compose / `./scripts/dev-up.sh` in `start` or a named terminal, not `install`.
