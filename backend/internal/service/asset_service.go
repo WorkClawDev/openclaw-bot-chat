@@ -187,6 +187,11 @@ func (s *AssetService) completeAssetUpload(ctx context.Context, ownerUserID uuid
 	if info.ContentType != "" {
 		asset.MIMEType = info.ContentType
 	}
+	if kind == model.AssetKindFile {
+		if err := s.verifyStoredFile(ctx, asset); err != nil {
+			return nil, err
+		}
+	}
 	asset.Status = model.AssetStatusReady
 	if err := s.repo.Update(ctx, asset); err != nil {
 		return nil, err
@@ -262,6 +267,9 @@ func (s *AssetService) ResolveMessageAsset(ctx context.Context, senderType strin
 		return model.UpsertAssetPayload(meta, resolved), nil
 	}
 
+	if kind == model.AssetKindFile {
+		return nil, ErrAssetInvalid
+	}
 	if payload.SourceURL != "" && senderType == "bot" {
 		botID, err := uuid.Parse(senderID)
 		if err != nil {
@@ -492,6 +500,8 @@ func assetOwnedBySender(asset *model.Asset, senderType string, senderID string) 
 
 func isAllowedAssetContentType(kind model.AssetKind, contentType string) bool {
 	switch kind {
+	case model.AssetKindFile:
+		return isAllowedFileContentType(contentType)
 	case model.AssetKindImage:
 		return isAllowedImageContentType(contentType)
 	case model.AssetKindAudio:
@@ -704,6 +714,8 @@ func normalizeAssetContentType(contentType string) string {
 
 func assetKindForMessageType(contentType string) (model.AssetKind, bool) {
 	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case string(model.MsgTypeFile):
+		return model.AssetKindFile, true
 	case string(model.MsgTypeImage):
 		return model.AssetKindImage, true
 	case string(model.MsgTypeAudio):
@@ -715,6 +727,8 @@ func assetKindForMessageType(contentType string) (model.AssetKind, bool) {
 
 func (s *AssetService) maxAssetSizeBytes(kind model.AssetKind) int64 {
 	switch kind {
+	case model.AssetKindFile:
+		return MaxFileSizeBytes
 	case model.AssetKindImage:
 		return int64(s.assetCfg.MaxImageSizeMB) * 1024 * 1024
 	case model.AssetKindAudio:

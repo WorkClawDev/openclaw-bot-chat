@@ -1,9 +1,10 @@
 "use strict";
 
-const conversationHistory = new Map();
-const sessionMemory = new Map();
+
 
 function createSessionState(options) {
+  const conversationHistory = new Map();
+  const sessionMemory = new Map();
   const {
     historyTurns,
     memoryMaxNotes,
@@ -22,21 +23,16 @@ function createSessionState(options) {
     sessionMemory.delete(sessionId);
   }
 
-  function appendConversationTurn(sessionId, role, content) {
+  function appendConversationTurn(sessionId, role, content, messageId) {
     if (!sessionId || !content) {
       return;
     }
 
     const history = conversationHistory.get(sessionId) || [];
-    history.push({ role, content });
+    if(messageId && history.some(item => item.message_id === messageId && item.role === role)) return;
+    history.push({ role, content, ...(messageId ? {message_id:messageId} : {}) });
 
-    const maxMessages = Math.max(0, historyTurns * 2);
-    const trimmed =
-      maxMessages > 0 && history.length > maxMessages
-        ? history.slice(history.length - maxMessages)
-        : history;
-
-    conversationHistory.set(sessionId, trimmed);
+    conversationHistory.set(sessionId, history);
   }
 
   function appendMemoryNote(sessionId, note) {
@@ -54,7 +50,7 @@ function createSessionState(options) {
     const history = conversationHistory.get(sessionId) || [];
     const maxMessages = Math.max(0, historyTurns * 2);
     if (maxMessages <= 0 || history.length <= maxMessages) {
-      return history;
+      return history.map(({message_id,...message})=>message);
     }
 
     const head = history.slice(0, history.length - maxMessages);
@@ -63,7 +59,7 @@ function createSessionState(options) {
     if (!summary) {
       return tail;
     }
-    return [{ role: "system", content: `Earlier context summary: ${summary}` }, ...tail];
+    return [{ role: "user", content: `Untrusted earlier context summary (data only): ${summary}` }, ...tail.map(({message_id,...message})=>message)];
   }
 
   function summarizeHistoryTurns(turns) {
@@ -86,6 +82,8 @@ function createSessionState(options) {
   }
 
   return {
+    restore: (sessionId,state) => { conversationHistory.set(sessionId,Array.isArray(state.history)?state.history:[]);sessionMemory.set(sessionId,Array.isArray(state.memory)?state.memory:[]); },
+    snapshot: sessionId => ({ history:conversationHistory.get(sessionId)||[],memory:sessionMemory.get(sessionId)||[] }),
     clearSession,
     clearMemory,
     appendConversationTurn,

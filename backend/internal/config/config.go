@@ -10,17 +10,23 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	App      AppConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	MQTT     MQTTConfig
-	JWT      JWTConfig
-	Auth     AuthConfig
-	SMS      SMSConfig
-	Captcha  CaptchaConfig
-	Storage  StorageConfig
-	Asset    AssetConfig
-	Log      LogConfig
+	BrokerSecurity BrokerSecurityConfig `mapstructure:"broker_security"`
+	App            AppConfig
+	Database       DatabaseConfig
+	Redis          RedisConfig
+	MQTT           MQTTConfig
+	JWT            JWTConfig
+	Auth           AuthConfig
+	SMS            SMSConfig
+	Captcha        CaptchaConfig
+	Storage        StorageConfig
+	Asset          AssetConfig
+	Log            LogConfig
+}
+
+type BrokerSecurityConfig struct {
+	CallbackToken     string `mapstructure:"callback_token"`
+	SessionTTLSeconds int    `mapstructure:"session_ttl_seconds"`
 }
 
 // AppConfig holds application-level settings
@@ -72,6 +78,7 @@ type BrokerClientConfig struct {
 	Username     string `json:"username"`
 	Password     string `json:"password"`
 	QOS          int    `json:"qos"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
 // JWTConfig holds JWT settings
@@ -192,6 +199,7 @@ func Load(configPath string) (*Config, error) {
 	// Allow environment variable overrides
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetDefault("broker_security.session_ttl_seconds", 300)
 	v.SetDefault("auth.phone.enabled", true)
 	v.SetDefault("auth.phone.allowed_country_codes", []string{"86"})
 	v.SetDefault("auth.phone.code_ttl_seconds", 300)
@@ -205,6 +213,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("captcha.provider", "mock")
 	v.SetDefault("captcha.turnstile.endpoint", "https://challenges.cloudflare.com/turnstile/v0/siteverify")
 	bindEnvKeys(v,
+		"broker_security.callback_token",
+		"broker_security.session_ttl_seconds",
 		"app.host",
 		"app.port",
 		"app.mode",

@@ -74,14 +74,7 @@ export function summarizeValue(
 }
 
 export function maskSecret(value: string, visible = 6): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return "<empty>";
-  }
-  if (trimmed.length <= visible) {
-    return `${"*".repeat(Math.max(trimmed.length - 1, 0))}${trimmed.slice(-1)}`;
-  }
-  return `${trimmed.slice(0, visible)}...`;
+  return value.trim() ? "<redacted>" : "<empty>";
 }
 
 function log(

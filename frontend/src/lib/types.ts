@@ -94,7 +94,7 @@ export interface PreparedUpload {
 }
 
 export interface ComposerMessageInput {
-  type: 'text' | 'image' | 'audio'
+  type: 'text' | 'image' | 'audio' | 'file'
   body?: string
   asset?: Asset
   meta?: Record<string, unknown>
@@ -347,6 +347,7 @@ export interface RealtimeSubscription {
 
 export interface RealtimeBootstrapResponse {
   broker: {
+    expires_at?: number
     tcp_url: string
     ws_url: string
     username?: string

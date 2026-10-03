@@ -159,6 +159,7 @@ func (Message) TableName() string { return "messages" }
 type AssetKind string
 
 const (
+	AssetKindFile  AssetKind = "file"
 	AssetKindImage AssetKind = "image"
 	AssetKindAudio AssetKind = "audio"
 )

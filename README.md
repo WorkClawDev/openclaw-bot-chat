@@ -6,7 +6,7 @@ The repository contains:
 
 - `backend/`: Go API service for authentication, business data, realtime bootstrap, message history, and MQTT message persistence.
 - `frontend/`: Next.js chat UI that connects directly to the MQTT broker over WebSocket.
-- `plugins/openclaw-bot-chat/`: OpenClaw bot runtime plugin / test agent that connects directly to the MQTT broker over TCP.
+- `test/openclaw-bot-chat/`: OpenClaw bot runtime plugin / test agent that connects directly to the MQTT broker over TCP.
 
 ## Architecture
 
@@ -60,7 +60,7 @@ This starts:
 Optionally start the test agent after providing the required bot key and model environment variables:
 
 ```bash
-docker compose --profile testagent up --build -d
+./scripts/test-agent.sh start
 ```
 
 Common local ports:
@@ -120,5 +120,12 @@ Useful test-agent commands:
 
 - API reference: `docs/API.md`
 - Backend setup and configuration: `backend/README.md`
-- Plugin / test-agent usage: `plugins/openclaw-bot-chat/README.md`
+- Plugin / test-agent usage: `test/openclaw-bot-chat/README.md`
 
+
+
+## Personal work assistant
+
+The standalone agent source is `test/openclaw-bot-chat`. Web `/assistant` and iOS Settings → Personal assistant manage execution, scoped tool approvals, verified-result reconciliation, files, confirmed memory and schedules. Use the dedicated isolated Compose project for the new scoped MQTT identity protocol.
+
+See [operations and acceptance](docs/PERSONAL_AGENT_OPERATIONS.md), [batch evidence](docs/PERSONAL_AGENT_PROGRESS.md), and [40-scenario evaluations](test/personal-agent-evals/scenarios.json). Real model/broker/PostgreSQL/storage/device/72-hour acceptance remains distinct from the passing deterministic and client UI tests.

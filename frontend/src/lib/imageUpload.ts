@@ -124,3 +124,13 @@ function buildAvatarFileName(fileName: string): string {
   const baseName = fileName.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-|-$/g, '')
   return `${baseName || 'bot-avatar'}-avatar.png`
 }
+
+export async function uploadFileAsset(file:File,options:{conversationId?:string}={}):Promise<Asset>{
+ if(file.size>8*1024*1024)throw new Error('文件超过 8 MiB 限制')
+ const mime:Record<string,string>={txt:'text/plain',md:'text/markdown',csv:'text/csv',pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+ const contentType=mime[file.name.split('.').at(-1)?.toLowerCase()||''];if(!contentType)throw new Error('文件格式不受支持')
+ const prepared=await assetsApi.prepareFileUpload({file_name:file.name,content_type:contentType,size:file.size,conversation_id:options.conversationId})
+ const uploaded=await fetch(prepared.upload.url,{method:prepared.upload.method||'PUT',headers:prepared.upload.headers,body:file})
+ if(!uploaded.ok)throw new Error('文件上传失败')
+ return assetsApi.completeFileUpload({asset_id:prepared.asset.id||'',object_key:prepared.asset.object_key||''})
+}

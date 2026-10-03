@@ -603,6 +603,7 @@ extension RealtimeService: CocoaMQTTDelegate {
     }
 
     func mqtt(_ mqtt: CocoaMQTT, didReceiveMessage message: CocoaMQTTMessage, id: UInt16) {
+        if message.topic.hasPrefix("agent/user/") { DispatchQueue.main.async { NotificationCenter.default.post(name:Notification.Name("agentUpdate"),object:nil) };return }
         log("receive raw topic=\(message.topic) packet_id=\(id) qos=\(message.qos.rawValue) bytes=\(message.payload.count)", highFrequency: true)
         guard let stringPayload = message.string else {
             log("receive dropped: payload is not utf8 topic=\(message.topic) bytes=\(message.payload.count)")

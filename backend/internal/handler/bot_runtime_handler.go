@@ -24,6 +24,7 @@ type BotRuntimeHandler struct {
 	assetSvc    *service.AssetService
 	documentSvc *service.DocumentService
 	broker      config.BrokerClientConfig
+	security    *service.BrokerSecurityService
 }
 
 type botRuntimeBootstrapResponse struct {
@@ -40,6 +41,7 @@ type botRuntimeBootstrapResponse struct {
 }
 
 type botRuntimeBotInfo struct {
+	OwnerID     string                 `json:"owner_id"`
 	ID          string                 `json:"id"`
 	Name        string                 `json:"name,omitempty"`
 	Description *string                `json:"description,omitempty"`
@@ -72,8 +74,6 @@ func NewBotRuntimeHandler(
 		broker: config.BrokerClientConfig{
 			TCPPublicURL: mqttCfg.TCPPublicURL,
 			WSPublicURL:  mqttCfg.WSPublicURL,
-			Username:     mqttCfg.Username,
-			Password:     mqttCfg.Password,
 			QOS:          int(mqttCfg.QOS),
 		},
 	}
@@ -140,16 +140,34 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 		status = response.Status
 	}
 
+	clientID := fmt.Sprintf("bot-%s-%s", bot.ID.String(), uuid.NewString()[:8])
+	broker := h.broker
+	subscriptions := service.UniqueTopicsForExport(append(subscriptionTopics, botChatSlashAutocompleteRequestTopic))
+	publications := service.UniqueTopicsForExport(append(publishTopics, botChatSlashCommandTopic))
+	publications = append(publications, fmt.Sprintf("chat/dm/user/+/bot/%s", bot.ID), fmt.Sprintf("chat/dm/bot/%s/bot/+", bot.ID), fmt.Sprintf("chat/dm/bot/+/bot/%s", bot.ID))
+	prefix := c.GetHeader("X-Bot-Key")
+	if len(prefix) >= 12 {
+		prefix = prefix[:12]
+	}
+	username, password, expiry, err := h.security.Mint(c.Request.Context(), service.BrokerSession{ClientID: clientID, ActorType: "bot", ActorID: bot.ID, OwnerID: bot.OwnerID, KeyPrefix: prefix, Subscribe: subscriptions, Publish: publications})
+	if err != nil {
+		c.JSON(503, gin.H{"message": "scoped broker credentials unavailable"})
+		return
+	}
+	broker.Username = username
+	broker.Password = password
+	broker.ExpiresAt = expiry
 	apiresponse.Success(c, botRuntimeBootstrapResponse{
 		Bot: botRuntimeBotInfo{
 			ID:          bot.ID.String(),
+			OwnerID:     bot.OwnerID.String(),
 			Name:        bot.Name,
 			Description: bot.Description,
 			Status:      status,
 			Config:      copyBotRuntimeMap(map[string]interface{}(bot.Config)),
 		},
-		Broker:        h.broker,
-		ClientID:      fmt.Sprintf("bot-%s-%s", bot.ID.String(), uuid.NewString()[:8]),
+		Broker:        broker,
+		ClientID:      clientID,
 		Groups:        groupInfos,
 		Conversations: dialogs,
 		Subscriptions: toRealtimeSubscriptions(
@@ -506,7 +524,7 @@ func (h *BotRuntimeHandler) GetConversationMessages(c *gin.Context) {
 		messages interface{}
 		err      error
 	)
-	if afterSeq > 0 {
+	if _, supplied := c.GetQuery("after_seq"); supplied && afterSeq >= 0 {
 		rawMessages, queryErr := h.msgService.GetMessagesAfterSeq(c.Request.Context(), conversationID, limit, afterSeq)
 		err = queryErr
 		messages = responsedto.NewMessageResponses(rawMessages)
@@ -533,4 +551,8 @@ func copyBotRuntimeMap(source map[string]interface{}) map[string]interface{} {
 		copied[key] = value
 	}
 	return copied
+}
+
+func (h *BotRuntimeHandler) SetBrokerSecurity(security *service.BrokerSecurityService) {
+	h.security = security
 }

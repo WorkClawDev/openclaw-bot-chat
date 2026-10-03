@@ -10,12 +10,14 @@ import (
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
 	"github.com/openclaw-bot-chat/backend/internal/model"
 	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
+	"github.com/openclaw-bot-chat/backend/internal/repository"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
 )
 
 type TaskRuntimeHandler struct {
 	taskService *service.TaskService
+	runRepo     *repository.AgentRunRepository
 }
 
 func NewTaskRuntimeHandler(taskService *service.TaskService) *TaskRuntimeHandler {
@@ -102,6 +104,9 @@ func (h *TaskRuntimeHandler) Progress(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.allowLegacyUpdate(c, bot, taskID) {
+		return
+	}
 	var req service.RuntimeTaskProgressRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		apiresponse.BadRequest(c, "invalid request: "+err.Error())
@@ -156,6 +161,9 @@ func (h *TaskRuntimeHandler) Fail(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.allowLegacyUpdate(c, bot, taskID) {
+		return
+	}
 	var req service.RuntimeTaskFailRequest
 	if err := bindOptionalJSON(c, &req); err != nil {
 		apiresponse.BadRequest(c, "invalid request: "+err.Error())
@@ -175,4 +183,21 @@ func bindOptionalJSON(c *gin.Context, req interface{}) error {
 		return nil
 	}
 	return err
+}
+
+func (h *TaskRuntimeHandler) SetRunRepository(repo *repository.AgentRunRepository) { h.runRepo = repo }
+func (h *TaskRuntimeHandler) allowLegacyUpdate(c *gin.Context, bot *model.Bot, taskID uuid.UUID) bool {
+	if h.runRepo == nil {
+		return true
+	}
+	exists, err := h.runRepo.HasTaskRun(c.Request.Context(), bot.OwnerID, taskID)
+	if err != nil {
+		apiresponse.InternalError(c, "run lookup failed")
+		return false
+	}
+	if exists {
+		c.JSON(409, gin.H{"message": "task execution requires a valid run lease; use the run transition API"})
+		return false
+	}
+	return true
 }

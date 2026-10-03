@@ -143,6 +143,11 @@ func TestS3PresignedURLsUsePublicEndpoint(t *testing.T) {
 		t.Fatalf("CreatePresignedDownload() error = %v", err)
 	}
 	assertURLHost(t, downloadURL, "http", "127.0.0.1:9000")
+	internal, err := provider.CreateInternalDownload(context.Background(), "images/test.png", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertURLHost(t, internal, "https", "minio:9000")
 }
 
 func assertURLHost(t *testing.T, raw string, wantScheme string, wantHost string) {

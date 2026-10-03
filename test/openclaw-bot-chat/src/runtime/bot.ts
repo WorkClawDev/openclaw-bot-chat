@@ -1,4 +1,7 @@
+import {createHash} from "node:crypto";
 import path from "node:path";
+import {RunExecutor} from "./run-executor";
+import {ExecutionGate, recoverHistory} from "./execution";
 
 import {
   getEnabledBots,
@@ -21,6 +24,7 @@ import {
   toBotChatOutgoingMessage,
   toRealtimePublishPayload,
   toOpenClawRequest,
+  stableReplyId,
 } from "../router/message";
 import type {
   BootstrapResponse,
@@ -67,6 +71,8 @@ export class OpenClawBotRuntime {
     );
   }
 
+  healthy():boolean {return this.runtimes.every(runtime=>runtime.healthy());}
+
   async start(): Promise<void> {
     const started: ManagedBotRuntime[] = [];
     try {
@@ -85,20 +91,30 @@ export class OpenClawBotRuntime {
   }
 }
 
-class ManagedBotRuntime {
+const workerExecutionGate = new ExecutionGate();
+
+export class ManagedBotRuntime {
   private readonly checkpointStore: CheckpointStore;
   private readonly channelState = new ChannelState();
   private readonly httpClient: BotChatHttpClient;
   private readonly logger: ReturnType<typeof createRuntimeLogger>;
   private readonly sessionManager: SessionManager;
+  private readonly executor:RunExecutor;
+  private tasksPolling=false;
 
   private readonly processedMessages = new Map<string, number>();
   private readonly dialogQueues = new Map<string, Promise<void>>();
 
   private bootstrap?: BootstrapResponse;
   private botId?: string;
+  private ownerId?: string;
+  private refreshingBroker = false;
   private mqttClient?: BotChatMqttClient;
   private stopped = false;
+  private resumeTimer?: ReturnType<typeof setInterval>;
+  private resuming = false;
+  private readonly executionGate = workerExecutionGate;
+  private readonly activeRequests = new Map<string, AbortController>();
 
   constructor(
     private readonly config: PluginConfig,
@@ -117,6 +133,7 @@ class ManagedBotRuntime {
       botConfig.accessKey,
       config.httpTimeoutMs,
     );
+    this.executor = new RunExecutor(this.httpClient,agent,process.env.OPENAI_COMPAT_WORKSPACE_ID ?? createHash("sha256").update(JSON.stringify([botStateDir,process.env.OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS??"",process.env.OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS??""])).digest("hex"));
     this.checkpointStore = new CheckpointStore(
       path.join(botStateDir, "checkpoints.json"),
     );
@@ -124,6 +141,8 @@ class ManagedBotRuntime {
       path.join(botStateDir, "sessions.json"),
     );
   }
+
+  healthy():boolean {return !this.stopped && this.mqttClient?.getState()==="open";}
 
   async start(): Promise<void> {
     this.stopped = false;
@@ -138,12 +157,11 @@ class ManagedBotRuntime {
 
     this.bootstrap = await this.httpClient.bootstrap();
     this.botId = this.botConfig.id ?? this.bootstrap.bot.id;
+    if (!this.bootstrap.bot.owner_id) throw new Error("Personal agent bootstrap requires an owner identity");
+    this.ownerId = this.bootstrap.bot.owner_id;
     if (!this.botId) {
       throw new Error(`${this.logPrefix()} bot id is required`);
     }
-    await this.checkpointStore.merge(
-      this.bootstrap.conversations.map((item) => toCheckpoint(item)),
-    );
     this.hydrateChannelState();
 
     const resolvedClientId = this.resolveClientId(this.bootstrap);
@@ -168,6 +186,8 @@ class ManagedBotRuntime {
         await this.recoverPendingMessages();
       },
       onMessage: async (topic: string, payload: unknown) => {
+        // The transport topic, rather than attacker-controlled payload routing, binds the owner.
+        if (topic !== `chat/dm/user/${this.ownerId}/bot/${this.botId}`) return;
         const message = normalizeBotChatMessage(payload, topic);
         if (message) {
           await this.handleIncomingMessage(message);
@@ -193,6 +213,8 @@ class ManagedBotRuntime {
     }
 
     await this.recoverPendingMessages();
+    await this.resumeInbox();
+    this.resumeTimer = setInterval(() => void this.pollWork().catch(error => this.logger.error("work.poll.failed",undefined,error)), 5000);
     this.logger.info("runtime.started", {
       resolvedBotId: this.botId,
       subscriptions: subscriptions.length,
@@ -205,7 +227,11 @@ class ManagedBotRuntime {
       return;
     }
     this.stopped = true;
+    if(this.resumeTimer) clearInterval(this.resumeTimer);
+    this.executor.stop();
+    for (const controller of this.activeRequests.values()) controller.abort(new Error("Worker stopping"));
 
+    await Promise.allSettled([...this.dialogQueues.values()]);
     await this.checkpointStore.flush();
     await this.sessionManager.flush();
     await this.mqttClient?.close();
@@ -327,6 +353,7 @@ class ManagedBotRuntime {
       });
       return;
     }
+    if (message.from_type !== "user" || message.from_id !== this.ownerId || message.to_type !== "bot" || message.to_id !== this.botId) return;
     if (!shouldProcessMessage(message, this.botId)) {
       if (isRuntimeDebugEnabled()) {
         this.logger.debug(
@@ -346,6 +373,10 @@ class ManagedBotRuntime {
       return;
     }
 
+    if (message.from_type === "user" && message.body.trim() === "/stop") {
+      this.activeRequests.get(message.dialog_id)?.abort(new Error("Cancelled by user"));
+    }
+    await this.httpClient.agentJournal("POST", "/inbox", {message_id:message.message_id,message});
     const routed = routeIncomingMessage(message, this.botId, this.botConfig);
     const queueKey = `${buildChannelScopeKey(routed.channel)}::${message.dialog_id}`;
 
@@ -359,6 +390,11 @@ class ManagedBotRuntime {
     await this.enqueueByDialog(queueKey, async () => {
       const startedAt = Date.now();
       try {
+        const inbox = await this.httpClient.agentJournal<{status:string;response?:NonNullable<ReturnType<typeof toBotChatOutgoingMessage>>;delivered:boolean}>("POST", "/inbox", {message_id:message.message_id,message});
+        if(inbox.status === "completed" || inbox.status === "cancelled") {
+          if(inbox.response && !inbox.delivered) { await this.dispatchReply(inbox.response,message,this.botId!);await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{}); }
+          this.markMessageProcessed(message.message_id);return;
+        }
         const botId = this.botId;
         if (!botId || this.isMessageProcessed(message.message_id)) {
           return;
@@ -401,6 +437,8 @@ class ManagedBotRuntime {
               existingSessionId,
               routed.channel,
             );
+            await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/finish`,{status:"completed",response:null});
+            await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
             this.markMessageProcessed(message.message_id);
             return;
           }
@@ -410,7 +448,7 @@ class ManagedBotRuntime {
           this.channelState.getSession(routed.channel, message.dialog_id) ??
           (await this.sessionManager.getOrCreate(
             message.dialog_id,
-            checkpoint?.session_id,
+            checkpoint?.session_id ?? stableReplyId(botId,message.dialog_id,"session"),
           ));
         this.channelState.setSession(
           routed.channel,
@@ -425,9 +463,20 @@ class ManagedBotRuntime {
           requestMetadata: summarizeValue(request.metadata),
         });
 
-        const response = await this.agent.respond(request);
-        const outgoing = toBotChatOutgoingMessage(response, message, botId);
-
+        const run = await this.executor.create(`chat:${message.message_id}`,message.dialog_id,{message_id:message.message_id});
+        const controller = new AbortController();
+        this.activeRequests.set(message.dialog_id, controller);
+        request.signal=controller.signal;
+        let outgoing:ReturnType<typeof toBotChatOutgoingMessage> = null;
+        let response;
+        try {
+          response = await this.executor.execute(run,request,async (result,lease) => {
+            outgoing = toBotChatOutgoingMessage(result,message,botId);
+            const state=String(result.metadata?.run_state ?? "succeeded");
+            return {message_id:message.message_id,status:state === "succeeded" ? "completed" : state === "queued" ? "accepted" : state === "failed" || state === "paused" ? "waiting_input" : state,response:outgoing};
+          });
+        } finally { this.activeRequests.delete(message.dialog_id); }
+        if(!response)return;
         this.logger.debug("agent.response.received", {
           messageId: message.message_id,
           dialogId: message.dialog_id,
@@ -437,8 +486,10 @@ class ManagedBotRuntime {
           hasOutgoingMessage: Boolean(outgoing),
         });
 
+        const inboxStatus=String(response.metadata?.run_state ?? "succeeded");
         if (outgoing) {
           await this.dispatchReply(outgoing, message, botId);
+          await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
         } else {
           this.logger.warn("reply.skipped.empty", {
             messageId: message.message_id,
@@ -447,8 +498,9 @@ class ManagedBotRuntime {
           });
         }
 
+        await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
         await this.saveCheckpoint(message, sessionId, routed.channel);
-        this.markMessageProcessed(message.message_id);
+        if(inboxStatus === "succeeded" || inboxStatus === "cancelled") this.markMessageProcessed(message.message_id);
         this.logger.info("message.processed", {
           ...this.summarizeIncomingMessage(message),
           sessionId,
@@ -518,57 +570,53 @@ class ManagedBotRuntime {
 
   private async recoverDialog(dialogId: string): Promise<void> {
     const checkpoint = this.checkpointStore.get(dialogId);
-    const limit =
-      this.bootstrap?.history?.max_catchup_batch ?? DEFAULT_HISTORY_LIMIT;
-    let rawMessages: unknown[];
-    try {
-      rawMessages = await this.httpClient.getConversationMessages(dialogId, {
-        ...(checkpoint?.last_seq !== undefined
-          ? { afterSeq: checkpoint.last_seq }
-          : {}),
-        limit,
-      });
-    } catch (error) {
-      if (error instanceof BotChatHttpError) {
-        if (error.status === 404 || error.status === 400) {
-          this.logger.warn("recovery.dialog_skipped", {
-            dialogId,
-            status: error.status,
-          });
-          return;
-        }
+    const limit=Math.min(this.bootstrap?.history?.max_catchup_batch ?? DEFAULT_HISTORY_LIMIT,200);
+    await recoverHistory(async (afterSeq,limit) => (await this.httpClient.getConversationMessages(dialogId,{afterSeq,limit})).map(item=>normalizeBotChatMessage(item)).filter((item):item is BotChatMessage=>item!==null && item.dialog_id===dialogId),message=>this.handleIncomingMessage(message),checkpoint?.last_seq??0,limit);
+  }
+
+  private async pollWork():Promise<void>{
+    const expires = this.bootstrap?.broker.expires_at;
+    if (expires && expires * 1000 - Date.now() < 60000 && !this.refreshingBroker && !this.stopped) {
+      this.refreshingBroker = true;
+      try {
+        const fresh = await this.httpClient.bootstrap();
+        if (fresh.bot.id !== this.botId || fresh.bot.owner_id !== this.ownerId) throw new Error("Broker renewal changed identity");
+        if (!fresh.broker.username || !fresh.broker.password) throw new Error("Scoped broker credentials unavailable");
+        await this.mqttClient?.rotateCredentials({clientId:fresh.client_id, username:fresh.broker.username, password:fresh.broker.password});
+        this.bootstrap = fresh;
+      } finally { this.refreshingBroker = false; }
+    }
+    await this.resumeInbox();
+    if(this.tasksPolling || this.stopped)return;
+    this.tasksPolling=true;
+    try{
+      const tasks=await this.httpClient.tasks();
+      for(const task of tasks){
+        if(this.stopped)break;
+        if(!["available","claimed","in_progress"].includes(task.status))continue;
+        try{
+          const claimed = task.status === "available" ? await this.httpClient.claimTask(task.id) : task;
+          if(claimed.assignee_bot_id && claimed.assignee_bot_id !== this.botId)continue;
+          const run=await this.executor.create(`task:${task.id}`,"",{title:task.title,description:task.description??""},task.id);
+          await this.executionGate.run(()=>this.executor.execute(run,{session_id:`task:${task.id}`,content:`任务：${task.title}\n${String(task.description??"")}\n执行实际工作，保存步骤和可验证成果；需要信息时调用 local__request_input。`,metadata:{task_id:task.id,bot_id:this.botId}}));
+        }catch(error){if(error instanceof BotChatHttpError&&error.status===409)continue;this.logger.error("task.execution.failed",{taskId:task.id},error);}
       }
-      throw error;
-    }
+    }finally{this.tasksPolling=false;}
+  }
 
-    let messages = rawMessages
-      .map((item) => normalizeBotChatMessage(item))
-      .filter((item): item is BotChatMessage => item !== null)
-      .filter((item) => item.dialog_id === dialogId)
-      .sort((left, right) => {
-        const leftSeq = left.seq ?? 0;
-        const rightSeq = right.seq ?? 0;
-        if (leftSeq !== rightSeq) {
-          return leftSeq - rightSeq;
+  private async resumeInbox():Promise<void>{
+    if(this.stopped || this.resuming)return;
+    this.resuming=true;
+    try {
+      const rows=await this.httpClient.agentJournal<Array<{message:BotChatMessage;status:string}>>("GET","/inbox/pending");
+      for(const row of rows) {
+        if(row.status==="waiting_input") {
+          const runs=await this.httpClient.agentJournal<Array<{trigger_key:string;status:string}>>("GET","/runs");
+          if(!runs.some(run=>run.trigger_key===`chat:${row.message.message_id}` && run.status==="queued"))continue;
         }
-        return left.timestamp - right.timestamp;
-      });
-
-    messages = this.filterRecoveredMessages(messages, checkpoint);
-
-    if (messages.length > 0 || isRuntimeDebugEnabled()) {
-      this.logger.debug("recovery.dialog_messages", {
-        dialogId,
-        fetched: rawMessages.length,
-        replaying: messages.length,
-        checkpointSeq: checkpoint?.last_seq,
-        checkpointMessageId: checkpoint?.last_message_id,
-      });
-    }
-
-    for (const message of messages) {
-      await this.handleIncomingMessage(message);
-    }
+        await this.handleIncomingMessage(row.message);
+      }
+    } finally {this.resuming=false;}
   }
 
   private filterRecoveredMessages(
@@ -659,7 +707,7 @@ class ManagedBotRuntime {
     const current = this.dialogQueues.get(queueKey) ?? Promise.resolve();
     const next = current
       .catch(() => undefined)
-      .then(task)
+      .then(() => this.executionGate.run(task))
       .finally(() => {
         if (this.dialogQueues.get(queueKey) === next) {
           this.dialogQueues.delete(queueKey);

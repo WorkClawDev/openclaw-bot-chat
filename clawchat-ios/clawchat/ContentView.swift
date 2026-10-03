@@ -26,6 +26,8 @@ struct ContentView: View {
                 )
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
                 ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "assistantConsole" {
+                NavigationStack { AssistantView() }
             } else if ChatRoomV2FeatureFlag.uiTestMode == "tasksConsole" {
                 TasksView(viewModel: TasksViewModel(fixture: .sample))
             } else if ChatRoomV2FeatureFlag.uiTestMode?.hasPrefix("ipadWorkspace") == true {
