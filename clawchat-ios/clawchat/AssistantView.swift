@@ -10,6 +10,7 @@ private struct AssistantRun: Codable, Identifiable {
  let error: String?
  let result: AssistantResult?
 }
+private struct AssistantArtifact:Codable,Identifiable {let id:String;let file_name:String;let version:Int;let document_id:String?}
 private struct AssistantResult: Codable { let content: String? }
 private struct AssistantApproval: Codable, Identifiable {
  let id: String
@@ -22,6 +23,8 @@ private struct AssistantApproval: Codable, Identifiable {
 }
 private struct AssistantActionResult: Codable { let status: String }
 struct AssistantView: View {
+ @Environment(\.openURL) private var openURL
+ @State private var artifacts:[String:[AssistantArtifact]]=[:]
  @State private var runs: [AssistantRun] = []
  @State private var approvals: [AssistantApproval] = []
  @State private var inputs: [String:String] = [:]
@@ -35,6 +38,10 @@ struct AssistantView: View {
      VStack(alignment:.leading,spacing:8) {
       Text(run.task_id == nil ? "会话工作" : "派发任务").font(.headline)
       Text("\(run.cancel_requested ? "正在停止" : run.status) · \(run.steps)/\(run.max_steps) 步")
+      ForEach(artifacts[run.id] ?? []) { file in
+       Button("下载 \(file.file_name) · 版本 \(file.version)") { Task { await download(file.id) } }
+       if let raw=file.document_id,let document=UUID(uuidString:raw) { NavigationLink("查看文档") { DocumentDetailView(documentID:document) } }
+      }
       if let message = run.error, !message.isEmpty { Text(message) }
       if let result = run.result?.content { Text(result).textSelection(.enabled) }
       if ["queued","running","waiting_input","waiting_approval","paused"].contains(run.status) { Button("停止",role:.destructive) { Task { await action(run.id,"cancel") } } }
@@ -61,8 +68,11 @@ struct AssistantView: View {
    }
   }.navigationTitle("个人助手").refreshable { await reload() }.task { while !Task.isCancelled { await reload();try? await Task.sleep(for:.seconds(5)) } }
  }
+ @MainActor private func download(_ id:String) async {
+  do { let asset:Asset = try await APIClient.shared.requestValue("/api/v1/agent/artifacts/\(id)/download");if let raw=asset.downloadURL,let url=URL(string:raw) { openURL(url) } } catch { self.error=error.localizedDescription }
+ }
  @MainActor private func reload() async {
-  do { async let executions: [AssistantRun] = APIClient.shared.requestValue("/api/v1/agent/runs");async let decisions: [AssistantApproval] = APIClient.shared.requestValue("/api/v1/agent/approvals");runs=try await executions;approvals=try await decisions;error=nil }
+  do { async let executions: [AssistantRun] = APIClient.shared.requestValue("/api/v1/agent/runs");async let decisions: [AssistantApproval] = APIClient.shared.requestValue("/api/v1/agent/approvals");runs=try await executions;approvals=try await decisions;for run in runs { artifacts[run.id]=try await APIClient.shared.requestValue("/api/v1/agent/runs/\(run.id)/artifacts") };error=nil }
   catch { self.error=error.localizedDescription }
  }
  @MainActor private func action(_ id:String,_ action:String) async {

@@ -20,6 +20,18 @@ func NewAssetHandler(assetService *service.AssetService) *AssetHandler {
 	return &AssetHandler{assetService: assetService}
 }
 
+func (h *AssetHandler) PrepareFileUpload(c *gin.Context)  { h.prepareUpload(c, "file") }
+func (h *AssetHandler) CompleteFileUpload(c *gin.Context) { h.completeUpload(c, "file") }
+func (h *AssetHandler) GetFile(c *gin.Context) {
+	owner, _ := middleware.GetUserID(c)
+	payload, err := h.assetService.FileForOwner(c.Request.Context(), owner, nil, c.Param("id"))
+	if err != nil {
+		apiresponse.NotFound(c, "file unavailable or not owned")
+		return
+	}
+	apiresponse.Success(c, payload)
+}
+
 func (h *AssetHandler) PrepareImageUpload(c *gin.Context) {
 	h.prepareUpload(c, "image")
 }
@@ -44,6 +56,8 @@ func (h *AssetHandler) prepareUpload(c *gin.Context, kind string) {
 	var prepared *service.PreparedUpload
 	var err error
 	switch kind {
+	case "file":
+		prepared, err = h.assetService.PrepareFileUpload(c.Request.Context(), userID, req)
 	case "audio":
 		prepared, err = h.assetService.PrepareAudioUpload(c.Request.Context(), userID, req)
 	default:
@@ -89,6 +103,8 @@ func (h *AssetHandler) completeUpload(c *gin.Context, kind string) {
 	var asset *model.AssetPayload
 	var err error
 	switch kind {
+	case "file":
+		asset, err = h.assetService.CompleteFileUpload(c.Request.Context(), userID, req)
 	case "audio":
 		asset, err = h.assetService.CompleteAudioUpload(c.Request.Context(), userID, req)
 	default:

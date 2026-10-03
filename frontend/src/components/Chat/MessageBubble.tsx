@@ -2,6 +2,7 @@
 
 import React from 'react'
 import Link from 'next/link'
+import {assetsApi} from '@/lib/api'
 import { Avatar } from '@/components/Avatar'
 import { Markdown } from '@/components/Markdown'
 import { StatusPill } from '@/components/StatusPill'
@@ -17,6 +18,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }: MessageBubbleProps) {
   const isBot = message.sender_type === 'bot'
   const isSystem = message.sender_type === 'system'
+  const [fileError,setFileError]=React.useState('')
   const isImageMessage = message.content.type === 'image'
   const isAudioMessage = message.content.type === 'audio'
   const asset = readAsset(message.content.meta)
@@ -114,6 +116,7 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
               </div>
             )}
             
+            {message.content.type === "file" && <div><button onClick={async()=>{try{if(!asset?.id)throw new Error("附件记录缺失");const file=await assetsApi.file(asset.id);const url=file.download_url;if(!url)throw new Error("下载地址不可用");window.open(url,"_blank","noopener,noreferrer")}catch(error){setFileError(error instanceof Error?error.message:"下载失败")}}}>下载 {asset?.file_name||message.content.name||"附件"}</button>{fileError&&<p role="alert">{fileError}</p>}</div>}
             {isImageMessage && (
               <div className="space-y-2">
                 {imageURL ? (
@@ -303,6 +306,7 @@ function readAsset(meta?: Record<string, unknown>) {
   }
 
   return meta.asset as {
+    id?:string
     file_name?: string
     download_url?: string
     external_url?: string

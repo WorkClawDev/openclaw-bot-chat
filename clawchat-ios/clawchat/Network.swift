@@ -765,6 +765,13 @@ class APIClient {
         )
     }
 
+    func uploadFileData(_ data:Data,fileName:String,mimeType:String,conversationID:String) async throws -> Asset {
+        guard !data.isEmpty, data.count <= 8*1024*1024 else { throw APIError.invalidURL }
+        let prepared:PreparedUpload = try await encodedRequestValue("/api/v1/assets/file/upload-prepare",method:"POST",body:PrepareImageUploadRequest(fileName:fileName,contentType:mimeType,size:data.count,conversationId:conversationID))
+        try await uploadImageData(data,with:prepared.upload)
+        return try await encodedRequestValue("/api/v1/assets/file/complete",method:"POST",body:CompleteImageUploadRequest(assetId:prepared.asset.id ?? "",objectKey:prepared.asset.objectKey ?? ""))
+    }
+
     func uploadImageData(_ data: Data, with upload: PresignedUpload) async throws {
         guard let url = URL(string: upload.url) else {
             throw APIError.invalidURL

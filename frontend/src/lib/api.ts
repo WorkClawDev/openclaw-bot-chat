@@ -273,6 +273,10 @@ export const realtimeApi = {
 }
 
 export const assetsApi = {
+  prepareFileUpload: (data: {file_name:string;content_type:string;size:number;conversation_id?:string}) => request<PreparedUpload>("/api/v1/assets/file/upload-prepare",{method:"POST",body:JSON.stringify(data)}),
+  completeFileUpload: (data:{asset_id:string;object_key:string}) => request<Asset>("/api/v1/assets/file/complete",{method:"POST",body:JSON.stringify(data)}),
+  file: (id:string) => request<Asset>(`/api/v1/assets/file/${encodeURIComponent(id)}`),
+
   prepareImageUpload: (data: { file_name: string; content_type: string; size: number; conversation_id?: string }) =>
     request<PreparedUpload>('/api/v1/assets/image/upload-prepare', {
       method: 'POST',
@@ -445,3 +449,6 @@ export const runsApi = {
  events:(id:string,after=0)=>request<AgentRunEvent[]>(`/api/v1/agent/runs/${encodeURIComponent(id)}/events?after_seq=${after}`),
  action:(id:string,action:"cancel"|"resume",input="")=>request<unknown>(`/api/v1/agent/runs/${encodeURIComponent(id)}/${action}`,{method:"POST",body:JSON.stringify({input})}),
 }
+
+export interface AgentArtifact {id:string;run_id:string;file_name:string;mime_type:string;sha256:string;version:number;size:number;document_id?:string}
+export const artifactsApi={list:(run:string)=>request<AgentArtifact[]>(`/api/v1/agent/runs/${run}/artifacts`),download:(id:string)=>request<Asset>(`/api/v1/agent/artifacts/${id}/download`)}

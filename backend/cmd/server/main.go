@@ -161,6 +161,9 @@ func main() {
 	runUserRoutes := router.Group("/api/v1/agent")
 	runUserRoutes.Use(middleware.JWTAuth(jwtManager))
 	runHandler.RegisterUser(runUserRoutes)
+	fileHandler := handler.NewAgentFileHandler(assetService, documentService, repository.NewAgentArtifactRepository(db), runHandler)
+	fileHandler.RegisterRuntime(journalRoutes)
+	fileHandler.RegisterUser(runUserRoutes)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -232,6 +235,7 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.AgentToolCall{},
 		&model.AgentRun{},
 		&model.AgentRunEvent{},
+		&model.AgentArtifact{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
@@ -350,6 +354,9 @@ func setupRoutes(
 		protected.GET("/messages", msgHandler.GetMessages)
 		protected.GET("/messages/*conversation_id", msgHandler.GetMessagesByConversation)
 		protected.GET("/conversations", msgHandler.GetConversations)
+		protected.POST("/assets/file/upload-prepare", assetHandler.PrepareFileUpload)
+		protected.POST("/assets/file/complete", assetHandler.CompleteFileUpload)
+		protected.GET("/assets/file/:id", assetHandler.GetFile)
 		protected.POST("/assets/image/upload-prepare", assetHandler.PrepareImageUpload)
 		protected.POST("/assets/image/complete", assetHandler.CompleteImageUpload)
 		protected.POST("/assets/audio/upload-prepare", assetHandler.PrepareAudioUpload)

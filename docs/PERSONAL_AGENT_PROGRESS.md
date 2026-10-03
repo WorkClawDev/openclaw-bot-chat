@@ -8,7 +8,7 @@
 | B | 自动测试通过 | 工具策略、路径安全、审批、隔离、取消 |
 | C | 自动测试通过 | 持久上下文、inbox/outbox、分页、恢复 |
 | D | 自动测试通过 | 持续执行、run 租约、输入和审核 |
-| E | 未开始 | 附件和可下载成果 |
+| E | 自动测试通过 | 附件和可下载成果 |
 | F | 未开始 | 记忆和计划任务 |
 | G | 未开始 | 事件和 Web/iOS 体验 |
 | H | 未开始 | 运行保障、评测及真实验收 |
@@ -38,3 +38,9 @@ Agent ci: 17 tests passed, including 501-message paging, 100 duplicate deliverie
 AgentRun now owns task/chat execution via the same worker executor. Claims use a database row lock, expiring lease and monotonic fencing; journal writes lock the same run before mutation. Heartbeats stop cancelled or stale workers. Tool/model events count real steps against the persisted budget, finite slices save and continue, budget exhaustion pauses, questions/approval release the lease, and authenticated users supply input or cancel. Existing Task APIs reject unfenced writes once managed by a run. Task results and inbox/outbox receipts commit atomically with run completion; task success enters awaiting_review and only user acceptance completes it. Web /assistant and iOS Settings > Personal assistant expose states, questions, approval details, stop and resume.
 
 Agent ci: 20 tests passed; Go full suite passed, including concurrent claim winner, replacement fencing, waiting lease release, cancellation preventing new tools, ordered events and actual Task acceptance. Frontend production build passed. iOS generic simulator build passed (independent DerivedData, no signing); live simulator is available after normal permission escalation, real UI acceptance follows in G. Deterministic HTTP/SQLite tests do not establish live EMQX/PostgreSQL/model/72h acceptance.
+
+## Batch E
+
+Private file assets support TXT, Markdown, CSV, text PDF, DOCX and XLSX up to 8 MiB. Backend verifies signatures, UTF-8 and stored SHA256; owner-scoped downloads never accept arbitrary external file URLs. Parsing runs in a bounded worker with empty environment, 15-second termination, archive size/ratio/entry caps, PDF page/text caps and explicit OCR-required errors. This worker is a resource boundary, not an OS sandbox; production parser containment remains a live acceptance requirement. Tables produce actual CSV/XLSX files; delivery uploads real bytes to the existing asset store, records run/task/hash/version, and creates Documents for text output. Asset, Document and artifact journal mutations share the fenced transaction. Web and iOS send attachments, show errors and retrieve persisted artifacts; docs open through existing Document views.
+
+Agent full suite: 24 tests passed before the added table case; all 5 E parser/table tests passed separately (25 total cases). Go full suite passed including ownership/version and format refusal; frontend production build and iOS simulator build passed. npm audit reports zero vulnerabilities after patch upgrades and uuid override. Tests use real format bytes and deterministic HTTP/SQLite; live object-store uploads, provider CORS and cross-device downloads remain unverified. Storage writes can leave unreferenced objects after a database rollback; operational cleanup is covered in H.

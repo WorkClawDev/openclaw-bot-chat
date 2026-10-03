@@ -560,6 +560,24 @@ class ChatRoomViewModel: ObservableObject {
     }
 #endif
 
+    @MainActor
+    fileprivate func sendFile(_ url:URL) async {
+        guard !isUploadingImage,connectionState == .connected else { return }
+        isUploadingImage=true;defer { isUploadingImage=false }
+        let scoped=url.startAccessingSecurityScopedResource();defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let size=try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
+            guard size>0,size<=8*1024*1024 else { errorMessage="文件超过 8 MiB 限制或为空";return }
+            let types=["txt":"text/plain","md":"text/markdown","csv":"text/csv","pdf":"application/pdf","docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","xlsx":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+            guard let mime=types[url.pathExtension.lowercased()] else { errorMessage="文件格式不受支持";return }
+            let data=try Data(contentsOf:url)
+            let asset=try await APIClient.shared.uploadFileData(data,fileName:url.lastPathComponent,mimeType:mime,conversationID:conversationId)
+            let content=RealtimeContentPayload(type:"file",body:inputText.isEmpty ? url.lastPathComponent : inputText,url:asset.downloadURL,name:asset.fileName,size:asset.size,meta:["asset":asset.metaValue])
+            guard RealtimeService.shared.sendMessage(conversationId:conversationId,content:content,topic:conversationId) else { throw ChatImageError.messageSendFailed }
+            inputText=""
+        } catch { errorMessage=error.localizedDescription }
+    }
+
     private func sendPreparedImage(_ preparedImage: UploadImagePayload, caption: String) async throws {
         let preparedUpload = try await APIClient.shared.prepareImageUpload(
             fileName: preparedImage.fileName,
@@ -1009,6 +1027,7 @@ private struct ChatRoomLegacyView: View {
     @ObservedObject private var realtimeService = RealtimeService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showGroupSheet = false
+    @State private var showFileImporter = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var previewMessage: Message?
     @State private var pendingImageSelection: PendingImageSelection?
@@ -1144,6 +1163,9 @@ private struct ChatRoomLegacyView: View {
                     }
                 }
             )
+        }
+        .fileImporter(isPresented:$showFileImporter,allowedContentTypes:[.plainText,.pdf,.commaSeparatedText,UTType(filenameExtension:"md") ?? .text,UTType(filenameExtension:"docx") ?? .data,UTType(filenameExtension:"xlsx") ?? .data]) { result in
+            switch result { case .success(let url): Task { await viewModel.sendFile(url) }; case .failure(let error): viewModel.errorMessage=error.localizedDescription }
         }
         .fullScreenCover(item: $previewMessage) { message in
             ChatImagePreviewScreen(message: message)
@@ -1319,9 +1341,8 @@ private struct ChatRoomLegacyView: View {
             slashCommandSuggestions
 
             HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                    ChatComposerIconButton(systemName: "plus", isUploading: false)
-                }
+                Button { showFileImporter=true } label: { ChatComposerIconButton(systemName:"doc.badge.plus",isUploading:viewModel.isUploadingImage) }
+                .accessibilityIdentifier("chat.file.attach")
                 .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
 
                 PhotosPicker(selection: photoPickerSelection, matching: .images) {

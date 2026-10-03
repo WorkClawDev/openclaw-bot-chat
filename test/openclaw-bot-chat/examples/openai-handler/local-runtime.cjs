@@ -49,6 +49,7 @@ function createLocalToolRuntime(options) {
     };
 
     const defs = [
+      ...require("./files.cjs").fileTools(readRoots,allowHidden,writeRoots),
       { name:"local__request_input", description:"Persist a question and pause the run until the user supplies required information.", parameters:{type:"object",properties:{question:{type:"string"}},required:["question"]}, invoke:(args,signal,context)=>{if(context.supplement)return {user_input:context.supplement};const error=new Error(args.question);error.code="INPUT_REQUIRED";throw error;} },
       {
         name: "local__fs_read_text",
@@ -207,7 +208,7 @@ function createLocalToolRuntime(options) {
     runtime.definitions = new Map();
     for (const tool of defs) {
       if(!enabled && tool.name !== "local__request_input")continue;
-      tool.policy = { idempotent: args => !args.append && tool.name !== "local__bash_exec" && tool.name !== "local__fs_replace_text", capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
+      tool.policy = tool.policy || { idempotent: args => !args.append && tool.name !== "local__bash_exec" && tool.name !== "local__fs_replace_text", capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
       runtime.definitions.set(tool.name, tool);
       runtime.tools.push({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } });
       runtime.invokers.set(tool.name, tool.invoke);

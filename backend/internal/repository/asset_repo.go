@@ -17,16 +17,16 @@ func NewAssetRepository(db *gorm.DB) *AssetRepository {
 }
 
 func (r *AssetRepository) Create(ctx context.Context, asset *model.Asset) error {
-	return r.db.WithContext(ctx).Create(asset).Error
+	return agentDB(ctx, r.db).Create(asset).Error
 }
 
 func (r *AssetRepository) Update(ctx context.Context, asset *model.Asset) error {
-	return r.db.WithContext(ctx).Save(asset).Error
+	return agentDB(ctx, r.db).Save(asset).Error
 }
 
 func (r *AssetRepository) GetByID(ctx context.Context, id uuid.UUID) (*model.Asset, error) {
 	var asset model.Asset
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&asset).Error; err != nil {
+	if err := agentDB(ctx, r.db).Where("id = ?", id).First(&asset).Error; err != nil {
 		return nil, err
 	}
 	return &asset, nil
@@ -34,7 +34,7 @@ func (r *AssetRepository) GetByID(ctx context.Context, id uuid.UUID) (*model.Ass
 
 func (r *AssetRepository) GetByObjectKey(ctx context.Context, objectKey string) (*model.Asset, error) {
 	var asset model.Asset
-	if err := r.db.WithContext(ctx).Where("object_key = ?", objectKey).First(&asset).Error; err != nil {
+	if err := agentDB(ctx, r.db).Where("object_key = ?", objectKey).First(&asset).Error; err != nil {
 		return nil, err
 	}
 	return &asset, nil

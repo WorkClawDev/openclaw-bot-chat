@@ -21,12 +21,12 @@ func (r *DocumentRepository) Create(ctx context.Context, document *model.Documen
 	if document.ID == uuid.Nil {
 		document.ID = uuid.New()
 	}
-	return r.db.WithContext(ctx).Create(document).Error
+	return agentDB(ctx, r.db).Create(document).Error
 }
 
 func (r *DocumentRepository) ListByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]model.Document, error) {
 	var documents []model.Document
-	query := r.db.WithContext(ctx).
+	query := agentDB(ctx, r.db).
 		Where("owner_id = ? AND status = ?", ownerID, model.DocumentStatusActive)
 	if limit <= 0 || limit > 200 {
 		limit = 100
@@ -40,7 +40,7 @@ func (r *DocumentRepository) ListByOwner(ctx context.Context, ownerID uuid.UUID,
 
 func (r *DocumentRepository) GetActiveByIDAndOwner(ctx context.Context, id, ownerID uuid.UUID) (*model.Document, error) {
 	var document model.Document
-	err := r.db.WithContext(ctx).
+	err := agentDB(ctx, r.db).
 		Where("id = ? AND owner_id = ? AND status = ?", id, ownerID, model.DocumentStatusActive).
 		First(&document).Error
 	if err != nil {
@@ -51,11 +51,11 @@ func (r *DocumentRepository) GetActiveByIDAndOwner(ctx context.Context, id, owne
 
 func (r *DocumentRepository) Update(ctx context.Context, document *model.Document) error {
 	document.UpdatedAt = time.Now()
-	return r.db.WithContext(ctx).Save(document).Error
+	return agentDB(ctx, r.db).Save(document).Error
 }
 
 func (r *DocumentRepository) Archive(ctx context.Context, id, ownerID uuid.UUID) error {
-	result := r.db.WithContext(ctx).Model(&model.Document{}).
+	result := agentDB(ctx, r.db).Model(&model.Document{}).
 		Where("id = ? AND owner_id = ? AND status = ?", id, ownerID, model.DocumentStatusActive).
 		Updates(map[string]interface{}{
 			"status":     model.DocumentStatusArchived,

@@ -94,7 +94,7 @@ export interface PreparedUpload {
 }
 
 export interface ComposerMessageInput {
-  type: 'text' | 'image' | 'audio'
+  type: 'text' | 'image' | 'audio' | 'file'
   body?: string
   asset?: Asset
   meta?: Record<string, unknown>
