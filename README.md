@@ -6,7 +6,7 @@ The repository contains:
 
 - `backend/`: Go API service for authentication, business data, realtime bootstrap, message history, and MQTT message persistence.
 - `frontend/`: Next.js chat UI that connects directly to the MQTT broker over WebSocket.
-- `plugins/openclaw-bot-chat/`: OpenClaw bot runtime plugin / test agent that connects directly to the MQTT broker over TCP.
+- `test/openclaw-bot-chat/`: OpenClaw bot runtime plugin / test agent that connects directly to the MQTT broker over TCP.
 
 ## Architecture
 
@@ -60,7 +60,7 @@ This starts:
 Optionally start the test agent after providing the required bot key and model environment variables:
 
 ```bash
-docker compose --profile testagent up --build -d
+./scripts/test-agent.sh start
 ```
 
 Common local ports:
@@ -120,5 +120,5 @@ Useful test-agent commands:
 
 - API reference: `docs/API.md`
 - Backend setup and configuration: `backend/README.md`
-- Plugin / test-agent usage: `plugins/openclaw-bot-chat/README.md`
+- Plugin / test-agent usage: `test/openclaw-bot-chat/README.md`
 

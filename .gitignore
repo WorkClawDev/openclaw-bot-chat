@@ -65,3 +65,10 @@ clawchat-ios/build/
 *.test
 .coverprofile
 coverage.out
+
+# Standalone personal agent runtime
+/test/openclaw-bot-chat/node_modules/
+/test/openclaw-bot-chat/dist/
+/test/openclaw-bot-chat/data/
+/test/openclaw-bot-chat/.test-agent*.config.json
+/scripts/.managed-agents/

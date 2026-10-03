@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-PLUGIN_DIR="$REPO_DIR/plugins/openclaw-bot-chat"
+PLUGIN_DIR="$REPO_DIR/test/openclaw-bot-chat"
 ENV_FILE="${BOT_CHAT_TEST_AGENT_ENV:-$SCRIPT_DIR/test-agent.env}"
 GENERATED_CONFIG_DEFAULT="$PLUGIN_DIR/.test-agent.config.json"
 COMMAND="${1:-start}"
@@ -14,6 +14,7 @@ usage() {
 Usage:
   ./scripts/test-agent.sh start
   ./scripts/test-agent.sh stop
+  ./scripts/test-agent.sh doctor
   ./scripts/test-agent.sh check
   ./scripts/test-agent.sh print-config
 
@@ -37,6 +38,8 @@ load_env() {
     die "missing env file: $ENV_FILE. Copy ./scripts/test-agent.env.example to ./scripts/test-agent.env first."
   fi
 
+  umask 077
+  node -e 'if (Number(process.versions.node.split(".")[0]) < 22) { console.error("Node >=22 is required; select a supported Node in PATH"); process.exit(1) }'
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
@@ -117,7 +120,7 @@ prepare_log_file() {
   local log_file
   local timestamp
 
-  log_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_LOG_DIR:-plugins/openclaw-bot-chat/data/test-agent/logs}")"
+  log_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_LOG_DIR:-test/openclaw-bot-chat/data/test-agent/logs}")"
   mkdir -p "$log_dir"
 
   if [[ -n "${BOT_CHAT_TEST_AGENT_LOG_FILE:-}" ]]; then
@@ -134,7 +137,7 @@ prepare_log_file() {
 
 lock_file_path() {
   local state_dir
-  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-plugins/openclaw-bot-chat/data/test-agent}")"
+  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-test/openclaw-bot-chat/data/test-agent}")"
   mkdir -p "$state_dir"
   printf '%s\n' "$state_dir/.runtime.lock"
 }
@@ -153,8 +156,8 @@ write_generated_config() {
   bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID || true)"
   bot_chat_mqtt_tcp_url="$(read_env_value BOT_CHAT_MQTT_TCP_URL || true)"
 
-  handler_path="$(resolve_path "${BOT_CHAT_TEST_AGENT_HANDLER:-plugins/openclaw-bot-chat/examples/openai-compatible-handler.cjs}")"
-  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-plugins/openclaw-bot-chat/data/test-agent}")"
+  handler_path="$(resolve_path "${BOT_CHAT_TEST_AGENT_HANDLER:-test/openclaw-bot-chat/examples/openai-compatible-handler.cjs}")"
+  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-test/openclaw-bot-chat/data/test-agent}")"
   generated_config="$(resolve_path "${BOT_CHAT_TEST_AGENT_CONFIG:-$GENERATED_CONFIG_DEFAULT}")"
 
   mkdir -p "$(dirname -- "$generated_config")" "$state_dir"
@@ -265,9 +268,9 @@ Starting Bot Chat test agent
   config file:  $generated_config
   backend url:  $bot_chat_backend_url
   mqtt tcp:     ${bot_chat_mqtt_tcp_url:-<from bootstrap>}
-  bot key:      ${bot_chat_bot_key:0:12}...
+  bot key:      <redacted>
   bot id:       ${bot_chat_bot_id:-<auto>}
-  handler:      $(resolve_path "${BOT_CHAT_TEST_AGENT_HANDLER:-plugins/openclaw-bot-chat/examples/openai-compatible-handler.cjs}")
+  handler:      $(resolve_path "${BOT_CHAT_TEST_AGENT_HANDLER:-test/openclaw-bot-chat/examples/openai-compatible-handler.cjs}")
   model url:    ${OPENAI_COMPAT_BASE_URL:-<required by default>}
   model:        ${OPENAI_COMPAT_MODEL:-gpt-4o-mini}
   log file:     $log_file
@@ -284,7 +287,7 @@ run_start() {
   local openai_api_key
   local lock_file
 
-  handler_setting="${BOT_CHAT_TEST_AGENT_HANDLER:-plugins/openclaw-bot-chat/examples/openai-compatible-handler.cjs}"
+  handler_setting="${BOT_CHAT_TEST_AGENT_HANDLER:-test/openclaw-bot-chat/examples/openai-compatible-handler.cjs}"
   resolved_handler="$(resolve_path "$handler_setting")"
   if [[ "$resolved_handler" == *"/openai-compatible-handler.cjs" ]]; then
     assign_required_env openai_base_url OPENAI_COMPAT_BASE_URL
@@ -304,18 +307,23 @@ run_start() {
 
   (
     cd "$PLUGIN_DIR"
-    exec 9>"$lock_file"
-    if ! flock -n 9; then
-      echo "Error: test agent is already running for state dir $(dirname -- "$lock_file")" >&2
-      echo "Use './scripts/test-agent.sh stop' or stop the existing process first." >&2
+    lock_dir="${lock_file}.d"
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+      echo "Error: agent state directory is locked. Stop that instance or inspect the stale lock: $lock_dir" >&2
       exit 1
     fi
+    trap 'rm -rf -- "$lock_dir"' EXIT
+    printf '%s\n' "$$" > "$lock_dir/owner.pid"
     exec > >(tee -a "$log_file") 2>&1
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] launching test agent"
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] BOT_CHAT_CONFIG=$generated_config"
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] BOT_CHAT_RUNTIME_DEBUG=$BOT_CHAT_RUNTIME_DEBUG"
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] LOCK_FILE=$lock_file"
-    exec npm start
+    node dist/index.js &
+    child_pid=$!
+    printf '%s\n' "$child_pid" > "$lock_dir/child.pid"
+    trap 'kill "$child_pid" 2>/dev/null || true' TERM INT
+    wait "$child_pid"
   )
 }
 
@@ -324,22 +332,24 @@ run_stop() {
   local lock_file
   local stopped=0
 
-  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-plugins/openclaw-bot-chat/data/test-agent}")"
+  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-test/openclaw-bot-chat/data/test-agent}")"
   lock_file="$state_dir/.runtime.lock"
 
-  while read -r pid _; do
-    [[ -n "${pid:-}" ]] || continue
-    kill "$pid" 2>/dev/null || true
-    stopped=1
-  done < <(pgrep -af "scripts/test-agent.sh start|node dist/index.js|@openclaw/openclaw-bot-chat")
-
-  rm -f "$lock_file"
-
-  if [[ "$stopped" -eq 1 ]]; then
-    echo "Stopped test agent processes."
-  else
-    echo "No test agent process found."
+  lock_dir="${lock_file}.d"
+  if [[ -f "$lock_dir/owner.pid" && -f "$lock_dir/child.pid" ]]; then
+    read -r owner_pid < "$lock_dir/owner.pid"
+    read -r child_pid < "$lock_dir/child.pid"
+    # Never signal a reused PID belonging to a different command.
+    if [[ "$(ps -p "$owner_pid" -o args= 2>/dev/null || true)" == *"test-agent.sh start"* ]] &&
+       [[ "$(ps -p "$child_pid" -o args= 2>/dev/null || true)" == *"node dist/index.js"* ]]; then
+      kill -TERM "$owner_pid"
+      echo "Requested stop for this agent instance."
+      return
+    fi
+    die "stale lock: inspect $lock_dir before removing it"
   fi
+  echo "No running instance for state directory $state_dir."
+
 }
 
 run_check() {
@@ -361,7 +371,11 @@ run_print_config() {
 
   generated_config="$(write_generated_config)"
   echo "$generated_config"
-  cat "$generated_config"
+  node - "$generated_config" <<'NODE'
+const fs = require("node:fs");
+const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(JSON.stringify(value, (key, item) => /key|secret|password|token/i.test(key) ? "<redacted>" : item, 2));
+NODE
 }
 
 main() {
@@ -380,6 +394,12 @@ main() {
     check)
       load_env
       run_check
+      ;;
+    doctor)
+      load_env
+      export BOT_CHAT_CONFIG="$(write_generated_config)"
+      ensure_plugin_dependencies
+      (cd "$PLUGIN_DIR" && npm run doctor)
       ;;
     print-config)
       load_env
