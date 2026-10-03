@@ -96,6 +96,8 @@ node scripts/personal-agent-stability.cjs --analyze
 
 ## 发布前待验收及集成边界
 
+独立worker、Web、iOS与OpenClaw扩展均按短期凭证刷新/重连；扩展已有本地真实MQTT CONNECT/SUBSCRIBE续期和停止中止测试（58项扩展测试全部通过），仍须在实际EMQX验收callback、过期、撤销和多次续期。
+
 真实模型上下文/工具调用/费用、远端MCP和不确定结果核对、PostgreSQL竞争与迁移、EMQX callback/expiry/重连、对象存储上传/CORS/两端下载、隔离runner、备份恢复、p95接收/取消时延、真机及72小时需要实际环境证据。原分支删除了具名tracked配置，但Git历史可能仍含凭据；真实轮换/历史治理、远端push/PR/部署未执行。
 
 原工作区有大量未提交改动（包括其独立broker ACL、Web/iOS/runtime等），本分支没有携带或覆盖它们。集成前逐项比较main路由、bootstrap、MQTT配置、assets、Task保护、iOS项目与前端package锁，不直接整体覆盖原目录。broker ACL应选定统一协议并合并撤销语义；不能并列启用旧共享身份与新HTTP身份后宣称完成权限验证。已知读订阅撤销最多5分钟窗口、文件解析OS隔离及孤立blob清理限制需在发布决策中保留。

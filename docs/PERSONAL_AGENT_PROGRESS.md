@@ -71,3 +71,7 @@ Compose config --quiet and shell/Node syntax validation passed; Docker daemon in
 ## Local batch commits
 
 A39652be; B95eea6f; Ca431c77; D90d83d4; E8d6a255; F9cef00e; G56d2946. H commit is the commit containing this entry (identify with git log); no remote push. Original uncommitted edits remain outside this worktree.
+
+## Compatibility follow-up after H
+
+Final cross-runtime inspection found the legacy OpenClaw extension reusing the initial MQTT password indefinitely. It now refreshes scoped bootstrap credentials before expiry, validates the same bot and a fresh identity/expiry, reconnects with updated CONNECT credentials, replaces subscription scopes, and disables MQTT automatic stale resubscriptions. Stop clears the timer and aborts in-flight bootstrap; bootstrap requests have a25-second deadline. CI now runs extension type-check and build as well as tests. Extension check/build passed;58/58 tests passed, including actual local TCP MQTT CONNECT/SUBSCRIBE packets and aborting a pending HTTP renewal on stop (30-second behavior test). This is real MQTT wire behavior against a test server, not EMQX callback/revocation acceptance.
