@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 import type { BotConfig } from "../config";
 import type { ChannelContext } from "../types/channel";
@@ -261,7 +261,7 @@ export function toBotChatOutgoingMessage(
   });
 
   return {
-    message_id: randomUUID(),
+    message_id: stableReplyId(botId, sourceMessage.message_id, String(response.metadata?.run_state ?? "final")),
     topic,
     conversation_id: sourceMessage.dialog_id,
     from_type: "bot",
@@ -799,4 +799,9 @@ function normalizeContentType(value?: string): BotChatMessage["content_type"] {
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function stableReplyId(botId:string,messageId:string,phase="final"):string {
+ const hex=createHash("sha256").update(JSON.stringify([botId,messageId,phase])).digest("hex");
+ return `${hex.slice(0,8)}-${hex.slice(8,12)}-5${hex.slice(13,16)}-a${hex.slice(17,20)}-${hex.slice(20,32)}`;
 }

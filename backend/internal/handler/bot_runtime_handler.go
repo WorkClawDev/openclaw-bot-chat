@@ -506,7 +506,7 @@ func (h *BotRuntimeHandler) GetConversationMessages(c *gin.Context) {
 		messages interface{}
 		err      error
 	)
-	if afterSeq > 0 {
+	if _, supplied := c.GetQuery("after_seq"); supplied && afterSeq >= 0 {
 		rawMessages, queryErr := h.msgService.GetMessagesAfterSeq(c.Request.Context(), conversationID, limit, afterSeq)
 		err = queryErr
 		messages = responsedto.NewMessageResponses(rawMessages)

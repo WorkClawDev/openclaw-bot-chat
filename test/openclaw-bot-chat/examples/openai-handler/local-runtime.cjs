@@ -205,7 +205,7 @@ function createLocalToolRuntime(options) {
     };
     runtime.definitions = new Map();
     for (const tool of defs) {
-      tool.policy = { capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
+      tool.policy = { idempotent: args => !args.append && tool.name !== "local__bash_exec" && tool.name !== "local__fs_replace_text", capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
       runtime.definitions.set(tool.name, tool);
       runtime.tools.push({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } });
       runtime.invokers.set(tool.name, tool.invoke);
@@ -266,7 +266,7 @@ function createLocalToolRuntime(options) {
       for (let i = 0; i < settled.length; i += 1) {
         const item = settled[i];
         const toolCall = batch[i];
-        if (item.status === "rejected" && (item.reason.code === "APPROVAL_PENDING" || context.signal?.aborted)) throw item.reason;
+        if (item.status === "rejected" && (["APPROVAL_PENDING","TOOL_UNCERTAIN"].includes(item.reason.code) || context.signal?.aborted)) throw item.reason;
         outputs.push(item.status === "fulfilled"
           ? { tool_call_id: toolCall.id, content: item.value }
           : { tool_call_id: toolCall.id, content: `Tool execution failed: ${serializeError(item.reason).message || "unknown error"}` });

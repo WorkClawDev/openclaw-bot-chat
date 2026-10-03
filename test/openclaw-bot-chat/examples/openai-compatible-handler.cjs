@@ -11,6 +11,7 @@ const {
   truncateText,
   serializeError,
 } = require("./openai-handler/utils.cjs");
+const { compactContext } = require("./openai-handler/context.cjs");
 const { createSessionState } = require("./openai-handler/session-state.cjs");
 const { createModelClient } = require("./openai-handler/model-client.cjs");
 const { createMcpRuntimeManager } = require("./openai-handler/mcp-runtime.cjs");
@@ -163,7 +164,7 @@ const modelClient = createModelClient({
   debugLog,
 });
 
-exports.respond = async function respond(request) {
+async function respondInternal(request) {
   request.signal?.throwIfAborted();
   const startedAt = Date.now();
   const content = String(request && request.content ? request.content : "").trim();
@@ -273,11 +274,11 @@ exports.respond = async function respond(request) {
     timeoutMs: readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000),
     logBase,
     startedAt,
-    context: { signal: request.signal, runId: metadata.run_id, authorize: request.authorize, audit: request.audit },
+    context: { signal: request.signal, runId: metadata.run_id, authorize: request.authorize, audit: request.audit, beforeTool:request.beforeTool, afterTool:request.afterTool, loadExecution:request.loadExecution, saveExecution:request.saveExecution },
   });
 
-  sessionState.appendConversationTurn(sessionId, "user", content);
-  sessionState.appendConversationTurn(sessionId, "assistant", text);
+  sessionState.appendConversationTurn(sessionId, "user", content, metadata.message_id);
+  sessionState.appendConversationTurn(sessionId, "assistant", text, metadata.message_id);
   return { content: text, metadata: { content_type: "text" } };
 };
 
@@ -287,6 +288,15 @@ async function runModelLoop(options) {
   const localToolBudget = localToolRuntime.createToolBudget();
   const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
   let compressionAttempts = 0;
+  const recovered = await context?.loadExecution?.();
+  if (Array.isArray(recovered?.messages) && recovered.messages.length) requestState.messages = recovered.messages;
+  if (recovered?.completed) return recovered.text;
+  const pendingAssistant=requestState.messages.at(-1);
+  if(pendingAssistant?.role === "assistant" && pendingAssistant.tool_calls?.length) {
+    const results=await executeToolCalls({toolCalls:pendingAssistant.tool_calls,mcpRuntime,mcpBudget:toolBudget,localRuntime,localBudget:localToolBudget,context});
+    for(const result of results)requestState.messages.push({role:"tool",tool_call_id:result.tool_call_id,content:result.content});
+    await context?.saveExecution?.({messages:requestState.messages});
+  }
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     context?.signal?.throwIfAborted();
@@ -347,6 +357,7 @@ async function runModelLoop(options) {
 
     if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
       requestState.messages.push(assistantMessage.raw);
+      await context?.saveExecution?.({messages:requestState.messages});
       const toolResults = await executeToolCalls({
         toolCalls: assistantMessage.tool_calls,
         mcpRuntime,
@@ -358,6 +369,7 @@ async function runModelLoop(options) {
       for (const result of toolResults) {
         requestState.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: result.content });
       }
+      await context?.saveExecution?.({messages:requestState.messages});
       if (CONTEXT_COMPRESSION_ENABLED) {
         const applied = tryCompressByWindowUsage({
           requestState,
@@ -385,6 +397,7 @@ async function runModelLoop(options) {
       response_preview: previewText(text),
     });
 
+    await context?.saveExecution?.({messages:requestState.messages,completed:true,text});
     return text;
   }
 
@@ -410,54 +423,7 @@ function isContextOverflowError(status, parsed, rawText) {
 }
 
 function compressMessagesForContextWindow(messages) {
-  if (!Array.isArray(messages) || messages.length <= 2) {
-    return Array.isArray(messages) ? messages : [];
-  }
-
-  const systemMessage = messages[0] && messages[0].role === "system" ? messages[0] : null;
-  const body = systemMessage ? messages.slice(1) : messages.slice();
-
-  const recentCharBudget = Math.max(
-    800,
-    Math.floor(CONTEXT_COMPRESSION_TARGET_CHARS * CONTEXT_COMPRESSION_RECENT_RATIO),
-  );
-  let usedChars = 0;
-  const recent = [];
-  const archived = [];
-
-  for (let index = body.length - 1; index >= 0; index -= 1) {
-    const message = truncateMessageForCompression(body[index]);
-    const size = estimateSingleMessageChars(message);
-    if (usedChars + size <= recentCharBudget || recent.length === 0) {
-      recent.unshift(message);
-      usedChars += size;
-    } else {
-      archived.unshift(message);
-    }
-  }
-
-  const summary = summarizeArchivedMessages(archived);
-  const compressed = [];
-  if (systemMessage) {
-    compressed.push(systemMessage);
-  }
-  if (summary) {
-    compressed.push({
-      role: "system",
-      content: `Compressed earlier context:\n${summary}`,
-    });
-  }
-  compressed.push(...recent);
-
-  while (estimateMessagesChars(compressed) > CONTEXT_COMPRESSION_TARGET_CHARS && compressed.length > 2) {
-    const removableIndex = summary ? 2 : 1;
-    if (compressed.length <= removableIndex) {
-      break;
-    }
-    compressed.splice(removableIndex, 1);
-  }
-
-  return compressed;
+  return compactContext(messages,CONTEXT_COMPRESSION_TARGET_CHARS,CONTEXT_COMPRESSION_SUMMARY_CHARS);
 }
 
 function tryCompressByWindowUsage(options) {
@@ -559,10 +525,11 @@ function buildRequestState(options) {
           `Session metadata: ${metadataSummary}`,
           `Runtime capabilities: ${capabilitySummary}`,
           `User intent hints: ${buildIntentHints(content)}`,
-          `Session memory notes: ${memory.length > 0 ? memory.join(" | ") : "(none)"}`,
+
           "Behavior policy: always ground your answer in user input and tool outputs; never fabricate tool execution.",
         ].join("\n\n"),
       },
+      {role:"user",content:`User-confirmed memory as reference data: ${memory.join(" | ") || "(none)"}`},
       ...history,
       { role: "user", content: userContent },
     ],
@@ -778,3 +745,10 @@ function parseCsvEnv(name) {
 }
 
 exports.close = () => mcpManager.close();
+
+exports.respond = async request => {
+ const sessionId=readString(request.session_id)||"default";
+ if(request.loadState)sessionState.restore(sessionId,await request.loadState());
+ try{return await respondInternal(request);}
+ finally{if(request.saveState)await request.saveState(sessionState.snapshot(sessionId));}
+};

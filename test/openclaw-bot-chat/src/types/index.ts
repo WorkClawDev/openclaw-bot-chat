@@ -79,6 +79,12 @@ export interface BootstrapResponse {
 
 export interface OpenClawRequest {
   signal?: AbortSignal;
+  loadState?: () => Promise<Record<string,unknown>>;
+  saveState?: (state:Record<string,unknown>) => Promise<void>;
+  loadExecution?: () => Promise<Record<string,unknown>>;
+  saveExecution?: (state:Record<string,unknown>) => Promise<void>;
+  beforeTool?: (intent:Record<string,unknown>) => Promise<{status:string;result?:{value:unknown}}>;
+  afterTool?: (intent:Record<string,unknown>) => Promise<void>;
   authorize?: (intent: {tool:string;parameter_hash:string;run_id?:string;arguments?:Record<string,unknown>}) => Promise<{approved:boolean;run_id:string;parameter_hash:string;expires_at:string}>;
   audit?: (event: Record<string,unknown>) => Promise<void>;
   session_id: string;

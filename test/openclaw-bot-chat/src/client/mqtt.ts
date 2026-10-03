@@ -76,7 +76,7 @@ export class BotChatMqttClient {
         this.setState("open");
         this.resubscribeAll();
         if (wasConnected) {
-          void this.options.onReconnect?.();
+          Promise.resolve(this.options.onReconnect?.()).catch(error => this.options.onError?.(error instanceof Error ? error : new Error(String(error))));
         } else {
           this.options.onConnect?.();
         }
@@ -91,7 +91,7 @@ export class BotChatMqttClient {
 
       const onMessage = (topic: string, payload: Buffer) => {
         const decoded = parsePayload(payload);
-        void this.options.onMessage?.(topic, decoded);
+        Promise.resolve(this.options.onMessage?.(topic, decoded)).catch(error => this.options.onError?.(error instanceof Error ? error : new Error(String(error))));
       };
 
       const onError = (error: Error) => {

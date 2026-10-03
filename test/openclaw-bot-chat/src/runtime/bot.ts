@@ -1,4 +1,6 @@
 import path from "node:path";
+import {createHash} from "node:crypto";
+import {ExecutionGate, recoverHistory} from "./execution";
 
 import {
   getEnabledBots,
@@ -85,7 +87,9 @@ export class OpenClawBotRuntime {
   }
 }
 
-class ManagedBotRuntime {
+const workerExecutionGate = new ExecutionGate();
+
+export class ManagedBotRuntime {
   private readonly checkpointStore: CheckpointStore;
   private readonly channelState = new ChannelState();
   private readonly httpClient: BotChatHttpClient;
@@ -99,6 +103,9 @@ class ManagedBotRuntime {
   private botId?: string;
   private mqttClient?: BotChatMqttClient;
   private stopped = false;
+  private resumeTimer?: ReturnType<typeof setInterval>;
+  private resuming = false;
+  private readonly executionGate = workerExecutionGate;
   private readonly activeRequests = new Map<string, AbortController>();
 
   constructor(
@@ -142,9 +149,6 @@ class ManagedBotRuntime {
     if (!this.botId) {
       throw new Error(`${this.logPrefix()} bot id is required`);
     }
-    await this.checkpointStore.merge(
-      this.bootstrap.conversations.map((item) => toCheckpoint(item)),
-    );
     this.hydrateChannelState();
 
     const resolvedClientId = this.resolveClientId(this.bootstrap);
@@ -194,6 +198,8 @@ class ManagedBotRuntime {
     }
 
     await this.recoverPendingMessages();
+    await this.resumeInbox();
+    this.resumeTimer = setInterval(() => void this.resumeInbox().catch(error => this.logger.error("inbox.resume.failed",undefined,error)), 5000);
     this.logger.info("runtime.started", {
       resolvedBotId: this.botId,
       subscriptions: subscriptions.length,
@@ -206,8 +212,10 @@ class ManagedBotRuntime {
       return;
     }
     this.stopped = true;
+    if(this.resumeTimer) clearInterval(this.resumeTimer);
     for (const controller of this.activeRequests.values()) controller.abort(new Error("Worker stopping"));
 
+    await Promise.allSettled([...this.dialogQueues.values()]);
     await this.checkpointStore.flush();
     await this.sessionManager.flush();
     await this.mqttClient?.close();
@@ -351,6 +359,7 @@ class ManagedBotRuntime {
     if (message.from_type === "user" && message.body.trim() === "/stop") {
       this.activeRequests.get(message.dialog_id)?.abort(new Error("Cancelled by user"));
     }
+    await this.httpClient.agentJournal("POST", "/inbox", {message_id:message.message_id,message});
     const routed = routeIncomingMessage(message, this.botId, this.botConfig);
     const queueKey = `${buildChannelScopeKey(routed.channel)}::${message.dialog_id}`;
 
@@ -364,6 +373,11 @@ class ManagedBotRuntime {
     await this.enqueueByDialog(queueKey, async () => {
       const startedAt = Date.now();
       try {
+        const inbox = await this.httpClient.agentJournal<{status:string;response?:NonNullable<ReturnType<typeof toBotChatOutgoingMessage>>;delivered:boolean}>("POST", "/inbox", {message_id:message.message_id,message});
+        if(inbox.status === "completed" || inbox.status === "cancelled") {
+          if(inbox.response && !inbox.delivered) { await this.dispatchReply(inbox.response,message,this.botId!);await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{}); }
+          this.markMessageProcessed(message.message_id);return;
+        }
         const botId = this.botId;
         if (!botId || this.isMessageProcessed(message.message_id)) {
           return;
@@ -406,6 +420,8 @@ class ManagedBotRuntime {
               existingSessionId,
               routed.channel,
             );
+            await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/finish`,{status:"completed",response:null});
+            await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
             this.markMessageProcessed(message.message_id);
             return;
           }
@@ -433,6 +449,14 @@ class ManagedBotRuntime {
         const controller = new AbortController();
         this.activeRequests.set(message.dialog_id, controller);
         request.signal = controller.signal;
+        const scope = createHash("sha256").update(JSON.stringify([this.config.stateDir,sessionId])).digest("hex");
+        request.loadState = () => this.httpClient.agentJournal("GET",`/context/${scope}`);
+        request.saveState = state => this.httpClient.agentJournal("PUT",`/context/${scope}`,state);
+        const executionScope = createHash("sha256").update(`run:${message.message_id}`).digest("hex");
+        request.loadExecution = () => this.httpClient.agentJournal("GET",`/context/${executionScope}`);
+        request.saveExecution = state => this.httpClient.agentJournal("PUT",`/context/${executionScope}`,state);
+        request.beforeTool = intent => this.httpClient.agentJournal("POST","/tool-calls/prepare",intent);
+        request.afterTool = intent => this.httpClient.agentJournal("POST","/tool-calls/complete",intent);
         request.metadata.run_id = `chat:${message.message_id}`;
         request.authorize = async intent => {
           const approval = await this.httpClient.approval({ ...intent, run_id: `chat:${message.message_id}` });
@@ -446,8 +470,10 @@ class ManagedBotRuntime {
         let response;
         try { response = await this.agent.respond(request); }
         catch (error) {
-          if ((error as {code?:string}).code !== "APPROVAL_PENDING") throw error;
-          response = { content: (error as Error).message, metadata: {run_id:request.metadata.run_id, run_state:"waiting_approval"} };
+          if(controller.signal.aborted) {
+            response = {content:"执行已停止，已完成的操作保留，尚未执行的步骤已取消。",metadata:{run_state:"cancelled"}};
+          } else if (!["APPROVAL_PENDING","TOOL_UNCERTAIN"].includes((error as {code?:string}).code ?? "")) throw error;
+          else response = { content: (error as Error).message, metadata: {run_id:request.metadata.run_id, run_state:(error as {code?:string}).code === "TOOL_UNCERTAIN" ? "waiting_input" : "waiting_approval"} };
         }
         finally { this.activeRequests.delete(message.dialog_id); }
         const outgoing = toBotChatOutgoingMessage(response, message, botId);
@@ -461,8 +487,11 @@ class ManagedBotRuntime {
           hasOutgoingMessage: Boolean(outgoing),
         });
 
+        const inboxStatus=String(response.metadata?.run_state ?? "completed");
+        await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/finish`,{status:inboxStatus,response:outgoing});
         if (outgoing) {
           await this.dispatchReply(outgoing, message, botId);
+          await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
         } else {
           this.logger.warn("reply.skipped.empty", {
             messageId: message.message_id,
@@ -471,8 +500,9 @@ class ManagedBotRuntime {
           });
         }
 
+        await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
         await this.saveCheckpoint(message, sessionId, routed.channel);
-        this.markMessageProcessed(message.message_id);
+        if(!inboxStatus.startsWith("waiting_")) this.markMessageProcessed(message.message_id);
         this.logger.info("message.processed", {
           ...this.summarizeIncomingMessage(message),
           sessionId,
@@ -542,57 +572,20 @@ class ManagedBotRuntime {
 
   private async recoverDialog(dialogId: string): Promise<void> {
     const checkpoint = this.checkpointStore.get(dialogId);
-    const limit =
-      this.bootstrap?.history?.max_catchup_batch ?? DEFAULT_HISTORY_LIMIT;
-    let rawMessages: unknown[];
+    const limit=Math.min(this.bootstrap?.history?.max_catchup_batch ?? DEFAULT_HISTORY_LIMIT,200);
+    await recoverHistory(async (afterSeq,limit) => (await this.httpClient.getConversationMessages(dialogId,{afterSeq,limit})).map(item=>normalizeBotChatMessage(item)).filter((item):item is BotChatMessage=>item!==null && item.dialog_id===dialogId),message=>this.handleIncomingMessage(message),checkpoint?.last_seq??0,limit);
+  }
+
+  private async resumeInbox():Promise<void>{
+    if(this.stopped || this.resuming)return;
+    this.resuming=true;
     try {
-      rawMessages = await this.httpClient.getConversationMessages(dialogId, {
-        ...(checkpoint?.last_seq !== undefined
-          ? { afterSeq: checkpoint.last_seq }
-          : {}),
-        limit,
-      });
-    } catch (error) {
-      if (error instanceof BotChatHttpError) {
-        if (error.status === 404 || error.status === 400) {
-          this.logger.warn("recovery.dialog_skipped", {
-            dialogId,
-            status: error.status,
-          });
-          return;
-        }
+      const rows=await this.httpClient.agentJournal<Array<{message:BotChatMessage;status:string}>>("GET","/inbox/pending");
+      for(const row of rows) {
+        if(row.status==="waiting_input")continue;
+        await this.handleIncomingMessage(row.message);
       }
-      throw error;
-    }
-
-    let messages = rawMessages
-      .map((item) => normalizeBotChatMessage(item))
-      .filter((item): item is BotChatMessage => item !== null)
-      .filter((item) => item.dialog_id === dialogId)
-      .sort((left, right) => {
-        const leftSeq = left.seq ?? 0;
-        const rightSeq = right.seq ?? 0;
-        if (leftSeq !== rightSeq) {
-          return leftSeq - rightSeq;
-        }
-        return left.timestamp - right.timestamp;
-      });
-
-    messages = this.filterRecoveredMessages(messages, checkpoint);
-
-    if (messages.length > 0 || isRuntimeDebugEnabled()) {
-      this.logger.debug("recovery.dialog_messages", {
-        dialogId,
-        fetched: rawMessages.length,
-        replaying: messages.length,
-        checkpointSeq: checkpoint?.last_seq,
-        checkpointMessageId: checkpoint?.last_message_id,
-      });
-    }
-
-    for (const message of messages) {
-      await this.handleIncomingMessage(message);
-    }
+    } finally {this.resuming=false;}
   }
 
   private filterRecoveredMessages(
@@ -683,7 +676,7 @@ class ManagedBotRuntime {
     const current = this.dialogQueues.get(queueKey) ?? Promise.resolve();
     const next = current
       .catch(() => undefined)
-      .then(task)
+      .then(() => this.executionGate.run(task))
       .finally(() => {
         if (this.dialogQueues.get(queueKey) === next) {
           this.dialogQueues.delete(queueKey);

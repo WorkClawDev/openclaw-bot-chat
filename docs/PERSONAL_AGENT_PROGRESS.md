@@ -26,3 +26,9 @@
 Implemented shared schema and capabilities, deny-by-default roots, symlink and hidden path refusal, O_NOFOLLOW, bounded asynchronous processes and Docker-only shell. MCP needs explicit per-tool policy and receives minimal environment. JWT owner decisions persist in agent_approvals, scoped to run/tool/parameter hash with expiry. Web /assistant supports approve and deny.
 
 Agent ci: 9 tests passed. Go full suite passed, including approval ownership, changed parameters and expiry. Frontend clean install and build passed. Docker daemon unavailable: actual container isolation remains unverified; shell stays disabled. Auto-resume after approval continues in batch C.
+
+## Batch C
+
+PostgreSQL now owns durable inbox/outbox, context and tool intent/results. Worker no longer merges remote newest sequence into processed checkpoints. Explicit after_seq=0 retrieves oldest pending messages, pagination advances through all batches. Reply IDs are stable, persisted responses are republished without calling the model. Default CJS stores conversation/memory and exact tool transcript through authenticated backend callbacks, resumes after approval, and refuses uncertain non-idempotent side effects. Compression preserves tool pairs and treats historical/file/memory material as user reference data. Global worker gate limits concurrent work and bounded queues; shutdown aborts and drains.
+
+Agent ci: 17 tests passed, including 501-message paging, 100 duplicate deliveries, saved-outbox publish failure, handler restart with memory and approval, tool uncertainty, context grouping, and queue bounds. Go full suite passed, including duplicate durable records and bot-isolated context. Test fixtures are deterministic local HTTP and SQLite, not live MQTT/PostgreSQL/model acceptance. Two worker execution fencing follows in D; until that is complete only one worker may run per bot.

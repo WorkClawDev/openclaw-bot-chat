@@ -173,6 +173,7 @@ function createMcpRuntimeManager(options) {
           originalName: tool.name,
           definition: { name: exposedName, parameters: tool.inputSchema || { type: "object", additionalProperties: true }, policy: {
             capabilities: policy.capabilities,
+            idempotent: policy.idempotent === true,
             approvalRequired: policy.approvalRequired !== false,
             paths: Array.isArray(policy.paths) ? policy.paths : [],
           } },
@@ -258,7 +259,7 @@ function createMcpRuntimeManager(options) {
       for (let i = 0; i < settled.length; i += 1) {
         const item = settled[i];
         const toolCall = batch[i];
-        if (item.status === "rejected" && (item.reason.code === "APPROVAL_PENDING" || context.signal?.aborted)) throw item.reason;
+        if (item.status === "rejected" && (["APPROVAL_PENDING","TOOL_UNCERTAIN"].includes(item.reason.code) || context.signal?.aborted)) throw item.reason;
         if (item.status === "fulfilled") {
           outputs.push({ tool_call_id: toolCall.id, content: item.value });
         } else {

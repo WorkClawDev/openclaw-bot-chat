@@ -64,7 +64,12 @@ async function executeTool(def,args,context,invoke) {
   }
   signal?.throwIfAborted();
   await context?.audit?.({type:'tool_intent',tool:def.name,parameter_hash:parameterHash(def.name,args)});
+  const intent={run_id:context?.runId,key:parameterHash(def.name,args),tool:def.name,idempotent:typeof def.policy.idempotent === "function" ? def.policy.idempotent(args) : def.policy.idempotent === true};
+  const previous=await context?.beforeTool?.(intent);
+  if(previous?.status === "completed")return previous.result.value;
+  if(previous?.status === "uncertain") {const error=new Error("Previous external operation has an uncertain result; reconcile it before retry");error.code="TOOL_UNCERTAIN";throw error;}
   const result=await invoke(args,signal);
+  await context?.afterTool?.({...intent,result:{value:result}});
   signal?.throwIfAborted();
   await context?.audit?.({type:'tool_result',tool:def.name,parameter_hash:parameterHash(def.name,args)});
   return result;
