@@ -70,7 +70,7 @@ func (h *RealtimeHandler) Bootstrap(c *gin.Context) {
 		return
 	}
 	responseTopic := fmt.Sprintf(botChatSlashAutocompleteResponseTopicFmt, userID.String())
-	subscriptionTopics := service.UniqueTopicsForExport(append(topics, botChatSlashCommandTopic, responseTopic))
+	subscriptionTopics := service.UniqueTopicsForExport(append(topics, botChatSlashCommandTopic, responseTopic, "agent/user/"+userID.String()+"/events"))
 	publishTopics := service.UniqueTopicsForExport(append(topics, botChatSlashAutocompleteRequestTopic))
 
 	apiresponse.Success(c, realtimeBootstrapResponse{

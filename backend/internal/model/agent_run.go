@@ -28,6 +28,7 @@ type AgentRun struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 type AgentRunEvent struct {
+	Published bool      `gorm:"not null;default:false" json:"-"`
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	RunID     uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:agent_event_seq" json:"run_id"`
 	Seq       int64     `gorm:"not null;uniqueIndex:agent_event_seq" json:"seq"`

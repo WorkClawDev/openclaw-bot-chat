@@ -169,6 +169,7 @@ func main() {
 	memoryScheduleHandler.RegisterRuntime(journalRoutes)
 	schedulerContext, schedulerCancel := context.WithCancel(context.Background())
 	defer schedulerCancel()
+	service.StartAgentEventPublisher(schedulerContext, runHandler.Repo, mqttClient.PublishAgentNotice)
 	memoryScheduleHandler.Start(schedulerContext, func(err error) { log.Error().Err(err).Msg("agent scheduler failed") })
 
 	// --- HTTP Server ---

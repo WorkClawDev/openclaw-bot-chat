@@ -2726,6 +2726,7 @@ extension Theme {
 }
 
 struct ChatBubbleRow: View {
+    @State private var fileDownloadError:String?
     let message: Message
     let currentUserID: String?
     let showsSenderInfo: Bool
@@ -2859,6 +2860,8 @@ struct ChatBubbleRow: View {
 
                 if isImageMessage {
                     imageMessageView
+                } else if message.content.type.lowercased() == "file" {
+                    VStack(alignment:.leading){Button("下载 \(message.content.asset?.fileName ?? message.content.name ?? "附件")"){Task{await downloadFile()}};if let fileDownloadError{Text(fileDownloadError).foregroundStyle(.red)}}
                 } else if isAudioMessage {
                     ChatAudioMessageBubble(message: message, isMe: isMe)
                 } else if let body = message.content.body {
@@ -2876,6 +2879,10 @@ struct ChatBubbleRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isMe ? .trailing : .leading)
+    }
+
+    @MainActor private func downloadFile()async {
+        do { guard let id=message.content.asset?.id else{fileDownloadError="附件记录缺失";return};let asset:Asset=try await APIClient.shared.requestValue("/api/v1/assets/file/\(id)");guard let raw=asset.downloadURL,let url=URL(string:raw) else{fileDownloadError="下载地址不可用";return};openURL(url) }catch{fileDownloadError=error.localizedDescription}
     }
 
     private var senderAvatar: some View {

@@ -10,7 +10,7 @@
 | D | 自动测试通过 | 持续执行、run 租约、输入和审核 |
 | E | 自动测试通过 | 附件和可下载成果 |
 | F | 自动测试通过 | 记忆和计划任务 |
-| G | 未开始 | 事件和 Web/iOS 体验 |
+| G | 自动测试和两端 UI 通过 | 事件和 Web/iOS 体验 |
 | H | 未开始 | 运行保障、评测及真实验收 |
 
 真实模型、MCP、broker、设备与 72 小时验收尚未执行。不得把确定性测试替身报告为真实服务验收。
@@ -50,3 +50,9 @@ Agent full suite: 24 tests passed before the added table case; the 4 parser case
 Structured confirmed memories now have owner/bot/scope/source records, explicit command or UI saves, edit/delete/export, and persistent revision namespaces. Deletes remove derived contexts; revision changes prevent running workers from making old context retrievable again. Memory remains user reference data, with no vector database or implicit model confirmation. Schedules support once/daily/weekly, IANA timezone, local-time validation including DST gaps, pause/resume/cancel, missed-once or skip, and unique durable occurrences. A backend scheduler creates the existing assigned Task and TaskEvent in the same occurrence transaction; multiple restarts or schedulers cannot duplicate it. Results keep the Task review lifecycle. Both clients manage memory and schedules and show the latest task failure in-app; native push/email notifications are not implemented.
 
 Agent full suite: 26 passed, including durable provider commands and deletion. Go full suite passed plus confirmed-only/ownership/reopen/context invalidation, missed-once dedup, pause, skip, and 23-hour DST day behavior. Frontend production and iOS simulator builds passed. The E workbook fixture now uses canonical macOS temporary paths and passes. Live scheduler on PostgreSQL, real worker scheduled completion, native-device notifications and model recall remain pending acceptance.
+
+## Batch G
+
+Model SSE consumption preserves split UTF-8 and complete tool arguments, persists actual assistant text, refuses truncated streams, bounds response size and obeys cancellation. Ordered run events drive step cards and current text. Backend event notices use a persisted outbox and QoS 1; only acknowledged notices are marked delivered, with replay-safe seq on Web/iOS and authenticated paged history fallback. Both clients show questions, approval arguments/expiry, budgets, errors, stop/resume, artifacts and Task review routes. Task resume now synchronizes the business Task to claimed; success notes no longer appear as errors. SwiftUI row buttons use explicit borderless style so one action cannot trigger another button in the same row.
+
+Agent: 29 cases passed. Go full suite passed, including event-notice restart/ack. Actual Chrome UI: 2/2 passed, covering approval, input, event dedup, downloaded real fixture bytes, memory management and schedule pause/resume/cancel. Actual iPhone 17 Pro simulator (iOS 26.4), dedicated PersonalAgent-Acceptance: 1/1 UI test passed after independent fixture-port separation and button-style repair. Screenshot attachments were exported from the successful xcresult and visually inspected. Screenshots and results live under /private/tmp/personal-agent-* and are ignored, not committed. Frontend production build passed. These are actual client interactions against deterministic HTTP fixtures, not live model/EMQX/PostgreSQL/device acceptance; real broker event delivery and latency remain unverified.

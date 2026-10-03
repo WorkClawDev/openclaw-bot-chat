@@ -40,7 +40,7 @@ function createModelClient(options) {
     const payload = {
       model,
       messages,
-      stream: false,
+      stream: process.env.OPENAI_COMPAT_STREAM !== "false",
     };
 
     if (mcpRuntime && mcpRuntime.tools.length > 0) {
@@ -85,7 +85,9 @@ function createModelClient(options) {
           body: JSON.stringify(payload),
           signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
+        if(response.ok && response.headers.get("content-type")?.includes("text/event-stream")){const parsed=await require("./model-stream.cjs").consumeStream(response,{signal,onDelta:params.onDelta});return{response,parsed,rawText:JSON.stringify(parsed)};}
         rawText = await response.text();
+        if(rawText.length>2*1024*1024)throw new Error("Model response exceeds limit");
       } catch (error) {
         if (signal?.aborted) throw signal.reason;
         if (attempt >= maxRetries) {

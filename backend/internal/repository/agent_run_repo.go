@@ -219,9 +219,13 @@ func (r *AgentRunRepository) Transition(ctx context.Context, bot *model.Bot, id 
 		}
 		row.Status = status
 		row.Result = result
-		row.Error = note
+		errorNote := ""
+		if status == "failed" {
+			errorNote = note
+		}
+		row.Error = errorNote
 		row.LeaseUntil = 0
-		if err := tx.Model(&model.AgentRun{}).Where("id = ? AND fence = ?", id, fence).Updates(map[string]interface{}{"status": status, "result": result, "error": note, "lease_until": 0, "updated_at": time.Now().UTC()}).Error; err != nil {
+		if err := tx.Model(&model.AgentRun{}).Where("id = ? AND fence = ?", id, fence).Updates(map[string]interface{}{"status": status, "result": result, "error": errorNote, "lease_until": 0, "updated_at": time.Now().UTC()}).Error; err != nil {
 			return err
 		}
 		if row.TaskID != nil && (status == "succeeded" || status == "failed" || status == "cancelled") {
@@ -308,6 +312,11 @@ func (r *AgentRunRepository) UserAction(ctx context.Context, owner, id uuid.UUID
 			changes["input"] = row.Input
 			if strings.HasPrefix(row.TriggerKey, "chat:") {
 				if err := tx.Model(&model.AgentInbox{}).Where("bot_id = ? AND message_id = ?", row.BotID, strings.TrimPrefix(row.TriggerKey, "chat:")).Update("status", "accepted").Error; err != nil {
+					return err
+				}
+			}
+			if row.TaskID != nil {
+				if err := tx.Model(&model.Task{}).Where("id = ? AND owner_id = ? AND assignee_bot_id = ?", *row.TaskID, owner, row.BotID).Updates(map[string]interface{}{"status": model.TaskStatusClaimed, "actual_end_at": nil, "error": nil}).Error; err != nil {
 					return err
 				}
 			}

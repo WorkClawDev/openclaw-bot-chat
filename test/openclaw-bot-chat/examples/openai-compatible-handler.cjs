@@ -328,7 +328,9 @@ async function runModelLoop(options) {
 
     await context?.audit?.({type:"model_request",round,model});
     const payload = modelClient.buildPayload(model, requestState.messages, combinedRuntime);
+    const streamId=require("node:crypto").randomUUID();
     const { response, parsed, rawText } = await modelClient.requestModelWithRetry({
+      onDelta: text => context?.audit?.({type:"assistant_delta",stream_id:streamId,round,text}),
       endpoint,
       apiKey,
       payload,

@@ -48,7 +48,7 @@ struct AssistantManagementView:View {
      }
     }
    }
-  }.navigationTitle("记忆与计划").task{await reload()}.refreshable{await reload()}
+  }.buttonStyle(.borderless).navigationTitle("记忆与计划").task{await reload()}.refreshable{await reload()}
  }
  @MainActor private func reload()async{do{bots=try await APIClient.shared.fetchBotsValue();memories=try await APIClient.shared.requestValue("/api/v1/agent/memories");schedules=try await APIClient.shared.requestValue("/api/v1/agent/schedules");if botID.isEmpty{botID=bots.first?.id.uuidString.lowercased() ?? ""};error=nil}catch{self.error=error.localizedDescription}}
  @MainActor private func saveMemory()async{do{let body=try JSONSerialization.data(withJSONObject:["bot_id":botID,"scope":"personal","content":memory,"source":"user_confirmation","confirmed":true]);let _:ConfirmedMemory=try await APIClient.shared.requestValue("/api/v1/agent/memories"+(editingID.map{"/"+$0} ?? ""),method:editingID==nil ? "POST" : "PUT",body:body);memory="";editingID=nil;await reload()}catch{self.error=error.localizedDescription}}

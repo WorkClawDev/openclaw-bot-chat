@@ -102,3 +102,39 @@ func TestRunCompetitionFencingAndWaiting(t *testing.T) {
 		}
 	}
 }
+func TestEventOutboxRecoversAndMarksDelivery(t *testing.T) {
+	_, r, bot := runRepoFixture(t)
+	ctx := context.Background()
+	run, err := r.Create(ctx, bot, "chat:notice", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := r.Claim(ctx, bot, run.ID, "worker", time.Now().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.Event(ctx, bot, run.ID, "worker", claimed.Fence, "assistant_delta", model.JSONMap{"text": "actual"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.PendingNotices(ctx)
+	if err != nil || len(rows) == 0 {
+		t.Fatal("outbox absent", err)
+	}
+	reopened := NewAgentRunRepository(r.db)
+	again, _ := reopened.PendingNotices(ctx)
+	if len(again) != len(rows) {
+		t.Fatal("outbox lost on restart")
+	}
+	for _, row := range rows {
+		if row.OwnerID != bot.OwnerID {
+			t.Fatal("notification owner")
+		}
+		if err = reopened.NoticeDelivered(ctx, row.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remaining, _ := r.PendingNotices(ctx)
+	if len(remaining) != 0 {
+		t.Fatal("notice not acknowledged")
+	}
+}
