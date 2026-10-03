@@ -164,6 +164,12 @@ func main() {
 	fileHandler := handler.NewAgentFileHandler(assetService, documentService, repository.NewAgentArtifactRepository(db), runHandler)
 	fileHandler.RegisterRuntime(journalRoutes)
 	fileHandler.RegisterUser(runUserRoutes)
+	memoryScheduleHandler := &handler.AgentMemoryScheduleHandler{Memory: repository.NewAgentMemoryRepository(db), Schedules: repository.NewAgentScheduleRepository(db)}
+	memoryScheduleHandler.RegisterUser(runUserRoutes)
+	memoryScheduleHandler.RegisterRuntime(journalRoutes)
+	schedulerContext, schedulerCancel := context.WithCancel(context.Background())
+	defer schedulerCancel()
+	memoryScheduleHandler.Start(schedulerContext, func(err error) { log.Error().Err(err).Msg("agent scheduler failed") })
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -233,6 +239,10 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.AgentInbox{},
 		&model.AgentContext{},
 		&model.AgentToolCall{},
+		&model.AgentMemory{},
+		&model.AgentMemoryRevision{},
+		&model.AgentSchedule{},
+		&model.AgentScheduleOccurrence{},
 		&model.AgentRun{},
 		&model.AgentRunEvent{},
 		&model.AgentArtifact{},

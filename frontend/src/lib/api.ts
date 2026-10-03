@@ -452,3 +452,7 @@ export const runsApi = {
 
 export interface AgentArtifact {id:string;run_id:string;file_name:string;mime_type:string;sha256:string;version:number;size:number;document_id?:string}
 export const artifactsApi={list:(run:string)=>request<AgentArtifact[]>(`/api/v1/agent/runs/${run}/artifacts`),download:(id:string)=>request<Asset>(`/api/v1/agent/artifacts/${id}/download`)}
+export interface AgentMemory {id:string;bot_id:string;scope:string;content:string;source:string;confirmed:boolean}
+export interface AgentSchedule {id:string;bot_id:string;title:string;prompt:string;timezone:string;recurrence:string;missed_policy:string;status:string;next_at:string;last_task_id?:string;last_task_status?:string;last_task_note?:string}
+export const memoryApi={list:()=>request<AgentMemory[]>('/api/v1/agent/memories'),save:(data:Omit<AgentMemory,'id'>,id?:string)=>request<AgentMemory>(`/api/v1/agent/memories${id?'/'+id:''}`,{method:id?'PUT':'POST',body:JSON.stringify(data)}),remove:(id:string)=>request(`/api/v1/agent/memories/${id}`,{method:'DELETE'}),export:()=>request<AgentMemory[]>('/api/v1/agent/memories/export')}
+export const schedulesApi={list:()=>request<AgentSchedule[]>('/api/v1/agent/schedules'),create:(data:Record<string,unknown>)=>request<AgentSchedule>('/api/v1/agent/schedules',{method:'POST',body:JSON.stringify(data)}),action:(id:string,action:'pause'|'resume'|'cancel')=>request(`/api/v1/agent/schedules/${id}/${action}`,{method:'POST'})}

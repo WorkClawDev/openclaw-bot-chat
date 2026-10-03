@@ -32,6 +32,7 @@ struct AssistantView: View {
  var body: some View {
   List {
    if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("assistant.error") }
+   NavigationLink("记忆与计划") { AssistantManagementView() }
    Section("执行中的工作") {
     if runs.isEmpty { Text("暂无工作") }
     ForEach(runs) { run in

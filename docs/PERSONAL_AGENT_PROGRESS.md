@@ -9,7 +9,7 @@
 | C | 自动测试通过 | 持久上下文、inbox/outbox、分页、恢复 |
 | D | 自动测试通过 | 持续执行、run 租约、输入和审核 |
 | E | 自动测试通过 | 附件和可下载成果 |
-| F | 未开始 | 记忆和计划任务 |
+| F | 自动测试通过 | 记忆和计划任务 |
 | G | 未开始 | 事件和 Web/iOS 体验 |
 | H | 未开始 | 运行保障、评测及真实验收 |
 
@@ -43,4 +43,10 @@ Agent ci: 20 tests passed; Go full suite passed, including concurrent claim winn
 
 Private file assets support TXT, Markdown, CSV, text PDF, DOCX and XLSX up to 8 MiB. Backend verifies signatures, UTF-8 and stored SHA256; owner-scoped downloads never accept arbitrary external file URLs. Parsing runs in a bounded worker with empty environment, 15-second termination, archive size/ratio/entry caps, PDF page/text caps and explicit OCR-required errors. This worker is a resource boundary, not an OS sandbox; production parser containment remains a live acceptance requirement. Tables produce actual CSV/XLSX files; delivery uploads real bytes to the existing asset store, records run/task/hash/version, and creates Documents for text output. Asset, Document and artifact journal mutations share the fenced transaction. Web and iOS send attachments, show errors and retrieve persisted artifacts; docs open through existing Document views.
 
-Agent full suite: 24 tests passed before the added table case; all 5 E parser/table tests passed separately (25 total cases). Go full suite passed including ownership/version and format refusal; frontend production build and iOS simulator build passed. npm audit reports zero vulnerabilities after patch upgrades and uuid override. Tests use real format bytes and deterministic HTTP/SQLite; live object-store uploads, provider CORS and cross-device downloads remain unverified. Storage writes can leave unreferenced objects after a database rollback; operational cleanup is covered in H.
+Agent full suite: 24 tests passed before the added table case; the 4 parser cases passed; the added table test initially used a noncanonical macOS temporary path and failed the intended path policy. The fixture was corrected to its real path in F and retested (25 total cases). Go full suite passed including ownership/version and format refusal; frontend production build and iOS simulator build passed. npm audit reports zero vulnerabilities after patch upgrades and uuid override. Tests use real format bytes and deterministic HTTP/SQLite; live object-store uploads, provider CORS and cross-device downloads remain unverified. Storage writes can leave unreferenced objects after a database rollback; operational cleanup is covered in H.
+
+## Batch F
+
+Structured confirmed memories now have owner/bot/scope/source records, explicit command or UI saves, edit/delete/export, and persistent revision namespaces. Deletes remove derived contexts; revision changes prevent running workers from making old context retrievable again. Memory remains user reference data, with no vector database or implicit model confirmation. Schedules support once/daily/weekly, IANA timezone, local-time validation including DST gaps, pause/resume/cancel, missed-once or skip, and unique durable occurrences. A backend scheduler creates the existing assigned Task and TaskEvent in the same occurrence transaction; multiple restarts or schedulers cannot duplicate it. Results keep the Task review lifecycle. Both clients manage memory and schedules and show the latest task failure in-app; native push/email notifications are not implemented.
+
+Agent full suite: 26 passed, including durable provider commands and deletion. Go full suite passed plus confirmed-only/ownership/reopen/context invalidation, missed-once dedup, pause, skip, and 23-hour DST day behavior. Frontend production and iOS simulator builds passed. The E workbook fixture now uses canonical macOS temporary paths and passes. Live scheduler on PostgreSQL, real worker scheduled completion, native-device notifications and model recall remain pending acceptance.

@@ -17,3 +17,11 @@ test('restarting handler preserves approved memory and resumes exact pending too
   await handler.respond(request);assert.equal(calls,2);assert.equal(state.history.length,2);
  }finally{await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});for(const key of ['OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS','OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS','OPENAI_COMPAT_BASE_URL','OPENAI_COMPAT_API_KEY'])delete process.env[key];}
 });
+test('confirmed memory commands use durable provider and delete derived history',async()=>{
+ let state={history:[{role:'user',content:'old summary'}],memory:['old memo']},records=[{id:'m1',content:'confirmed fact',source:'user',scope:'personal'}],saved;
+ const request={session_id:'memory-provider',metadata:{},loadState:async()=>state,saveState:async value=>state=value,memories:records,saveMemory:async content=>saved=content,deleteMemory:async id=>records=records.filter(row=>row.id!==id)};
+ let handler=reload();assert.match((await handler.respond({...request,content:'/memory'})).content,/confirmed fact/);
+ await handler.respond({...request,content:'/memory New confirmed value'});assert.equal(saved,'New confirmed value');
+ await handler.respond({...request,content:'/memory delete m1'});assert.equal(records.length,0);assert.deepEqual(state,{history:[],memory:[]});
+ handler=reload();assert.equal((await handler.respond({...request,memories:records,content:'/memory'})).content,'暂无已确认记忆。');
+});

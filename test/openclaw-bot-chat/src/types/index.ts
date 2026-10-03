@@ -83,6 +83,9 @@ export interface OpenClawRequest {
   saveState?: (state:Record<string,unknown>) => Promise<void>;
   loadExecution?: () => Promise<Record<string,unknown>>;
   saveExecution?: (state:Record<string,unknown>) => Promise<void>;
+  memories?: Array<{id:string;content:string;source:string;scope:string}>;
+  saveMemory?: (content:string) => Promise<unknown>;
+  deleteMemory?: (id:string) => Promise<unknown>;
   getFile?: (id:string) => Promise<Record<string,unknown>>;
   deliverArtifact?: (input:Record<string,unknown>) => Promise<Record<string,unknown>>;
   beforeTool?: (intent:Record<string,unknown>) => Promise<{status:string;result?:{value:unknown}}>;

@@ -220,6 +220,19 @@ async function respondInternal(request) {
     };
   }
 
+  if(request.memories){
+    sessionState.clearMemory(sessionId);
+    for(const memory of request.memories)sessionState.appendMemoryNote(sessionId,memory.content);
+    if(content === "/memory clear" || content.startsWith("/memory delete ")){
+      const records=content === "/memory clear" ? request.memories : request.memories.filter(row=>row.id===content.slice(15).trim());
+      for(const row of records)await request.deleteMemory(row.id);sessionState.clearSession(sessionId);
+      return {content:`已删除 ${records.length} 条记忆并清除派生上下文。`,metadata:{content_type:"text"}};
+    }
+    if(content.startsWith("/memory ") && content !== "/memory clear"){
+      await request.saveMemory(content.slice(8).trim());return {content:"已按你的明确指令保存记忆。",metadata:{content_type:"text"}};
+    }
+    if(content === "/memory")return {content:request.memories.map(row=>`${row.id} · ${row.content} · 来源 ${row.source}`).join("\n") || "暂无已确认记忆。",metadata:{content_type:"text"}};
+  }
   if (content === "/memory") {
     const notes = sessionState.getMemoryNotes(sessionId);
     return {
