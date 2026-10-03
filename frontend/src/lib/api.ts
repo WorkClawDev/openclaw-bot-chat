@@ -431,3 +431,9 @@ export const healthApi = {
 }
 
 export { AUTH_SESSION_EXPIRED_EVENT, getApiBase, getToken }
+
+export interface AgentApproval {id:string;run_id:string;tool:string;parameter_hash:string;arguments:Record<string,unknown>;status:string;expires_at:string}
+export const agentApi = {
+  approvals: () => request<AgentApproval[]>("/api/v1/agent/approvals"),
+  decide: (id:string, approved:boolean) => request<unknown>(`/api/v1/agent/approvals/${encodeURIComponent(id)}/decision`, {method:"POST",body:JSON.stringify({approved})}),
+}

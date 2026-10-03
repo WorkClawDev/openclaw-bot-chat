@@ -70,9 +70,12 @@ function createModelClient(options) {
       maxRetries,
       retryBackoffMs,
       logBase,
+      signal,
     } = params;
 
+    signal?.throwIfAborted();
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      signal?.throwIfAborted();
       let response;
       let rawText = "";
       try {
@@ -80,10 +83,11 @@ function createModelClient(options) {
           method: "POST",
           headers: buildHeaders(apiKey),
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
         rawText = await response.text();
       } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         if (attempt >= maxRetries) {
           throw error;
         }

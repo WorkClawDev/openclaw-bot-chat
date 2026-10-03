@@ -99,6 +99,7 @@ class ManagedBotRuntime {
   private botId?: string;
   private mqttClient?: BotChatMqttClient;
   private stopped = false;
+  private readonly activeRequests = new Map<string, AbortController>();
 
   constructor(
     private readonly config: PluginConfig,
@@ -205,6 +206,7 @@ class ManagedBotRuntime {
       return;
     }
     this.stopped = true;
+    for (const controller of this.activeRequests.values()) controller.abort(new Error("Worker stopping"));
 
     await this.checkpointStore.flush();
     await this.sessionManager.flush();
@@ -346,6 +348,9 @@ class ManagedBotRuntime {
       return;
     }
 
+    if (message.from_type === "user" && message.body.trim() === "/stop") {
+      this.activeRequests.get(message.dialog_id)?.abort(new Error("Cancelled by user"));
+    }
     const routed = routeIncomingMessage(message, this.botId, this.botConfig);
     const queueKey = `${buildChannelScopeKey(routed.channel)}::${message.dialog_id}`;
 
@@ -425,7 +430,26 @@ class ManagedBotRuntime {
           requestMetadata: summarizeValue(request.metadata),
         });
 
-        const response = await this.agent.respond(request);
+        const controller = new AbortController();
+        this.activeRequests.set(message.dialog_id, controller);
+        request.signal = controller.signal;
+        request.metadata.run_id = `chat:${message.message_id}`;
+        request.authorize = async intent => {
+          const approval = await this.httpClient.approval({ ...intent, run_id: `chat:${message.message_id}` });
+          if (approval.status === "pending") {
+            const error = new Error(`操作等待授权：${intent.tool}。请在个人助手页面批准后继续。`) as Error & {code:string};
+            error.code = "APPROVAL_PENDING";
+            throw error;
+          }
+          return { approved: approval.status === "approved", run_id: approval.run_id, parameter_hash: approval.parameter_hash, expires_at: approval.expires_at };
+        };
+        let response;
+        try { response = await this.agent.respond(request); }
+        catch (error) {
+          if ((error as {code?:string}).code !== "APPROVAL_PENDING") throw error;
+          response = { content: (error as Error).message, metadata: {run_id:request.metadata.run_id, run_state:"waiting_approval"} };
+        }
+        finally { this.activeRequests.delete(message.dialog_id); }
         const outgoing = toBotChatOutgoingMessage(response, message, botId);
 
         this.logger.debug("agent.response.received", {

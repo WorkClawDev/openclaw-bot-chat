@@ -38,6 +38,10 @@ export class BotChatHttpClient {
     private readonly timeoutMs: number,
   ) {}
 
+  async approval(intent: {tool:string;parameter_hash:string;run_id:string;arguments?:Record<string,unknown>}): Promise<{id:string;status:string;run_id:string;parameter_hash:string;expires_at:string}> {
+    return this.request("POST", "/api/v1/bot-runtime/approvals", {body:intent});
+  }
+
   async bootstrap(): Promise<BootstrapResponse> {
     return this.request<BootstrapResponse>("GET", "/api/v1/bot-runtime/bootstrap");
   }

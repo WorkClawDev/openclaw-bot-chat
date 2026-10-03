@@ -20,3 +20,9 @@
 独立 worktree `npm ci` 成功，Node 24.4.0；`npm run check`、`npm test`（4 项默认 CJS/HTTP/持久状态/doctor 行为测试）通过；扩展 `npm ci && npm test`（57 项）通过；`bash -n` 和 `git diff --check` 通过。未启动用户服务，未使用真实密钥。当前提交包含任务书和实施计划。
 
 基线不存在原工作区新增 broker ACL 实现；后续不能依赖该未提交能力。下一批 B：默认拒绝、真实路径、安全 runner、统一工具执行和取消。
+
+## Batch B
+
+Implemented shared schema and capabilities, deny-by-default roots, symlink and hidden path refusal, O_NOFOLLOW, bounded asynchronous processes and Docker-only shell. MCP needs explicit per-tool policy and receives minimal environment. JWT owner decisions persist in agent_approvals, scoped to run/tool/parameter hash with expiry. Web /assistant supports approve and deny.
+
+Agent ci: 9 tests passed. Go full suite passed, including approval ownership, changed parameters and expiry. Frontend clean install and build passed. Docker daemon unavailable: actual container isolation remains unverified; shell stays disabled. Auto-resume after approval continues in batch C.

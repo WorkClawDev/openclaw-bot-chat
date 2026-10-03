@@ -77,6 +77,8 @@ func main() {
 	groupRepo := repository.NewGroupRepository(db)
 	assetRepo := repository.NewAssetRepository(db)
 	auditRepo := repository.NewAuditLogRepository(db)
+	approvalService := service.NewAgentApprovalService(repository.NewAgentApprovalRepository(db))
+	approvalHandler := handler.NewAgentApprovalHandler(approvalService)
 	taskRepo := repository.NewTaskRepository(db)
 	documentRepo := repository.NewDocumentRepository(db)
 
@@ -147,7 +149,7 @@ func main() {
 	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager)
+	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -213,6 +215,7 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.TaskDependency{},
 		&model.TaskEvent{},
 		&model.AuditLog{},
+		&model.AgentApproval{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
@@ -252,6 +255,7 @@ func setupRoutes(
 	documentHandler *handler.DocumentHandler,
 	botService *service.BotService,
 	jwtManager *jwt.Manager,
+	approvalHandlers ...*handler.AgentApprovalHandler,
 ) {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -272,6 +276,10 @@ func setupRoutes(
 	botRuntime := api.Group("/bot-runtime")
 	botRuntime.Use(middleware.BotKeyAuth(botService))
 	{
+		if len(approvalHandlers) > 0 {
+			botRuntime.POST("/approvals", approvalHandlers[0].Request)
+			botRuntime.GET("/approvals/:id", approvalHandlers[0].Get)
+		}
 		botRuntime.GET("/bootstrap", botRuntimeHandler.Bootstrap)
 		botRuntime.GET("/messages/*conversation_id", botRuntimeHandler.GetConversationMessages)
 		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
@@ -297,6 +305,10 @@ func setupRoutes(
 	protected := api.Group("")
 	protected.Use(middleware.JWTAuth(jwtManager))
 	{
+		if len(approvalHandlers) > 0 {
+			protected.GET("/agent/approvals", approvalHandlers[0].List)
+			protected.POST("/agent/approvals/:id/decision", approvalHandlers[0].Decide)
+		}
 		protected.POST("/auth/logout", authHandler.Logout)
 		protected.GET("/auth/me", authHandler.Me)
 		protected.PUT("/auth/me", authHandler.UpdateMe)

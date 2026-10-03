@@ -156,7 +156,7 @@ function createHttpAgent(url: string, timeoutMs: number): OpenClawAgent {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       });
 
       const rawText = await response.text();

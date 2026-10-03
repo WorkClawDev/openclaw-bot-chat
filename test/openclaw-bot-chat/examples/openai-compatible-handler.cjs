@@ -164,6 +164,7 @@ const modelClient = createModelClient({
 });
 
 exports.respond = async function respond(request) {
+  request.signal?.throwIfAborted();
   const startedAt = Date.now();
   const content = String(request && request.content ? request.content : "").trim();
   const metadata = isRecord(request && request.metadata) ? request.metadata : {};
@@ -272,6 +273,7 @@ exports.respond = async function respond(request) {
     timeoutMs: readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000),
     logBase,
     startedAt,
+    context: { signal: request.signal, runId: metadata.run_id, authorize: request.authorize, audit: request.audit },
   });
 
   sessionState.appendConversationTurn(sessionId, "user", content);
@@ -280,13 +282,14 @@ exports.respond = async function respond(request) {
 };
 
 async function runModelLoop(options) {
-  const { endpoint, apiKey, model, requestState, mcpRuntime, localRuntime, timeoutMs, logBase, startedAt } = options;
+  const { endpoint, apiKey, model, requestState, mcpRuntime, localRuntime, timeoutMs, logBase, startedAt, context } = options;
   const toolBudget = mcpManager.createToolBudget();
   const localToolBudget = localToolRuntime.createToolBudget();
   const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
   let compressionAttempts = 0;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+    context?.signal?.throwIfAborted();
     if (CONTEXT_COMPRESSION_ENABLED) {
       const applied = tryCompressByWindowUsage({
         requestState,
@@ -308,6 +311,7 @@ async function runModelLoop(options) {
       maxRetries: OPENAI_MAX_RETRIES,
       retryBackoffMs: OPENAI_RETRY_BACKOFF_MS,
       logBase: { ...logBase, round },
+      signal: context?.signal,
     });
 
     if (!response.ok) {
@@ -349,6 +353,7 @@ async function runModelLoop(options) {
         mcpBudget: toolBudget,
         localRuntime,
         localBudget: localToolBudget,
+        context,
       });
       for (const result of toolResults) {
         requestState.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: result.content });
@@ -574,17 +579,17 @@ function combineRuntime(localRuntime, mcpRuntime) {
 }
 
 async function executeToolCalls(options) {
-  const { toolCalls, mcpRuntime, mcpBudget, localRuntime, localBudget } = options;
+  const { toolCalls, mcpRuntime, mcpBudget, localRuntime, localBudget, context } = options;
   const outputs = [];
   for (const toolCall of toolCalls) {
     const toolName = toolCall && toolCall.function ? toolCall.function.name : undefined;
     if (localToolRuntime.hasTool(localRuntime, toolName)) {
-      const result = await localToolRuntime.callToolsRound(localRuntime, [toolCall], localBudget);
+      const result = await localToolRuntime.callToolsRound(localRuntime, [toolCall], localBudget, context);
       outputs.push(...result);
       continue;
     }
     if (mcpManager.hasTool(mcpRuntime, toolName)) {
-      const result = await mcpManager.callToolsRound(mcpRuntime, [toolCall], mcpBudget);
+      const result = await mcpManager.callToolsRound(mcpRuntime, [toolCall], mcpBudget, context);
       outputs.push(...result);
       continue;
     }
@@ -771,3 +776,5 @@ function parseCsvEnv(name) {
   }
   return raw.split(",");
 }
+
+exports.close = () => mcpManager.close();

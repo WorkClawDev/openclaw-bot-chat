@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { authorizePath, executeTool, runProcess, isolatedShell } = require("./tool-policy.cjs");
 
 function createLocalToolRuntime(options) {
   const {
@@ -130,7 +130,7 @@ function createLocalToolRuntime(options) {
           },
           required: ["pattern"],
         },
-        invoke: (args) => codeSearchRg(args, { roots: readRoots, allowHidden, maxMatches: rgMaxMatches, maxBytes: rgMaxBytes }),
+        invoke: (args, signal) => codeSearchRg(args, { roots: readRoots, allowHidden, maxMatches: rgMaxMatches, maxBytes: rgMaxBytes, signal }),
       },
       {
         name: "local__fs_replace_text",
@@ -160,7 +160,9 @@ function createLocalToolRuntime(options) {
           },
           required: ["command"],
         },
-        invoke: (args) => runBash(args, {
+        invoke: (args, signal) => runBash(args, {
+          signal,
+          image: process.env.OPENAI_COMPAT_RUNNER_IMAGE,
           enabled: bashEnabled,
           allowedRoots: bashAllowedRoots,
           allowHidden,
@@ -196,7 +198,15 @@ function createLocalToolRuntime(options) {
       },
     ];
 
+    const capabilities = {
+      local__fs_read_text: ["read"], local__fs_read_base64: ["read"], local__fs_list_dir: ["read"],
+      local__code_search_rg: ["read"], local__fs_write_text: ["write"], local__fs_write_base64: ["write"],
+      local__fs_replace_text: ["write"], local__bash_exec: ["exec"], local__text_encode: [], local__text_decode: [],
+    };
+    runtime.definitions = new Map();
     for (const tool of defs) {
+      tool.policy = { capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
+      runtime.definitions.set(tool.name, tool);
       runtime.tools.push({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } });
       runtime.invokers.set(tool.name, tool.invoke);
     }
@@ -217,7 +227,7 @@ function createLocalToolRuntime(options) {
     };
   }
 
-  async function callTool(runtime, toolCall, toolBudget) {
+  async function callTool(runtime, toolCall, toolBudget, context = {}) {
     if (!runtime) {
       throw new Error("Local runtime is not enabled");
     }
@@ -241,22 +251,22 @@ function createLocalToolRuntime(options) {
       args = JSON.parse(rawArgs);
     }
 
-    const result = await Promise.race([
-      Promise.resolve().then(() => invoke(args)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`Local tool timeout after ${toolTimeoutMs}ms: ${functionName}`)), toolTimeoutMs)),
-    ]);
+    const timeout = AbortSignal.timeout(toolTimeoutMs);
+    const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
+    const result = await executeTool(runtime.definitions.get(functionName), args, { ...context, signal }, (safeArgs, signal) => invoke(safeArgs, signal));
 
     return truncateText(stringifyToolResult(result), toolResultMaxChars);
   }
 
-  async function callToolsRound(runtime, toolCalls, toolBudget) {
+  async function callToolsRound(runtime, toolCalls, toolBudget, context = {}) {
     const outputs = [];
     for (let index = 0; index < toolCalls.length; index += maxParallelTools) {
       const batch = toolCalls.slice(index, index + maxParallelTools);
-      const settled = await Promise.allSettled(batch.map((toolCall) => callTool(runtime, toolCall, toolBudget)));
+      const settled = await Promise.allSettled(batch.map((toolCall) => callTool(runtime, toolCall, toolBudget, context)));
       for (let i = 0; i < settled.length; i += 1) {
         const item = settled[i];
         const toolCall = batch[i];
+        if (item.status === "rejected" && (item.reason.code === "APPROVAL_PENDING" || context.signal?.aborted)) throw item.reason;
         outputs.push(item.status === "fulfilled"
           ? { tool_call_id: toolCall.id, content: item.value }
           : { tool_call_id: toolCall.id, content: `Tool execution failed: ${serializeError(item.reason).message || "unknown error"}` });
@@ -289,7 +299,7 @@ function createLocalToolRuntime(options) {
   };
 }
 
-function codeSearchRg(args, options) {
+async function codeSearchRg(args, options) {
   const pattern = getRequiredString(args, "pattern");
   const rawPath = getOptionalString(args, "path", ".");
   const searchPath = resolveAndAuthorizePath(rawPath, options.roots, options.allowHidden);
@@ -302,13 +312,11 @@ function codeSearchRg(args, options) {
   if (typeof args?.glob === "string" && args.glob.trim()) {
     commandArgs.push("--glob", args.glob.trim());
   }
-  commandArgs.push(pattern, searchPath);
+  commandArgs.push("--", pattern, searchPath);
 
-  const result = spawnSync("rg", commandArgs, { encoding: "utf8", maxBuffer: options.maxBytes, cwd: process.cwd() });
-  if (result.error) {
-    throw new Error(`Failed to run rg: ${result.error.message}`);
-  }
-  const exitCode = typeof result.status === "number" ? result.status : -1;
+  const result = await runProcess("rg", commandArgs, { signal: options.signal, maxBytes: options.maxBytes });
+  const exitCode = result.exit_code;
+
   if (exitCode > 1) {
     throw new Error(`rg failed with exit code ${exitCode}: ${(result.stderr || "").trim()}`);
   }
@@ -323,7 +331,7 @@ function codeSearchRg(args, options) {
   };
 }
 
-function runBash(args, options) {
+async function runBash(args, options) {
   if (!options.enabled) {
     throw new Error("local__bash_exec is disabled by OPENAI_COMPAT_BASH_ENABLED");
   }
@@ -332,24 +340,9 @@ function runBash(args, options) {
   const cwd = resolveAndAuthorizePath(rawCwd, options.allowedRoots, options.allowHidden);
   const timeout = readPositiveInt(args && args.timeout_ms, options.defaultTimeoutMs);
 
-  const result = spawnSync("bash", ["-lc", command], {
-    cwd,
-    encoding: "utf8",
-    timeout,
-    maxBuffer: 1024 * 1024,
-  });
-  if (result.error) {
-    throw new Error(`bash execution failed: ${result.error.message}`);
-  }
+  const result = await isolatedShell(command, cwd, { image: options.image, signal: options.signal, timeoutMs: timeout, maxBytes: options.maxOutputChars });
+  return { cwd, ...result };
 
-  return {
-    cwd,
-    command,
-    exit_code: typeof result.status === "number" ? result.status : -1,
-    signal: result.signal || null,
-    stdout: truncateString(String(result.stdout || ""), options.maxOutputChars),
-    stderr: truncateString(String(result.stderr || ""), options.maxOutputChars),
-  };
 }
 
 function fsReadText(args, options) {
@@ -357,7 +350,7 @@ function fsReadText(args, options) {
   const filePath = resolveAndAuthorizePath(rawPath, options.roots, options.allowHidden);
   const stat = fs.statSync(filePath);
   ensureFile(stat, filePath);
-  const maxBytes = readPositiveInt(args.max_bytes, options.maxBytes);
+  const maxBytes = Math.min(readPositiveInt(args.max_bytes, options.maxBytes), options.maxBytes);
   if (stat.size > maxBytes) {
     throw new Error(`File too large (${stat.size} bytes), limit is ${maxBytes}`);
   }
@@ -370,7 +363,7 @@ function fsReadBase64(args, options) {
   const filePath = resolveAndAuthorizePath(rawPath, options.roots, options.allowHidden);
   const stat = fs.statSync(filePath);
   ensureFile(stat, filePath);
-  const maxBytes = readPositiveInt(args.max_bytes, options.maxBytes);
+  const maxBytes = Math.min(readPositiveInt(args.max_bytes, options.maxBytes), options.maxBytes);
   if (stat.size > maxBytes) {
     throw new Error(`File too large (${stat.size} bytes), limit is ${maxBytes}`);
   }
@@ -389,9 +382,9 @@ function fsWriteText(args, options) {
   }
   ensureParentDirectory(filePath);
   if (mode === "append") {
-    fs.appendFileSync(filePath, content, { encoding });
+    fs.appendFileSync(filePath, content, { encoding, flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW });
   } else {
-    fs.writeFileSync(filePath, content, { encoding });
+    fs.writeFileSync(filePath, content, { encoding, flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW });
   }
   return { path: filePath, bytes_written: byteLength, mode, encoding };
 }
@@ -406,9 +399,9 @@ function fsWriteBase64(args, options) {
   }
   ensureParentDirectory(filePath);
   if (Boolean(args && args.append)) {
-    fs.appendFileSync(filePath, data);
+    fs.appendFileSync(filePath, data, { flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW });
   } else {
-    fs.writeFileSync(filePath, data);
+    fs.writeFileSync(filePath, data, { flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW });
   }
   return { path: filePath, bytes_written: data.byteLength, mode: Boolean(args && args.append) ? "append" : "write" };
 }
@@ -462,7 +455,7 @@ function fsReplaceText(args, options) {
   if (byteLength > options.maxWriteBytes) {
     throw new Error(`Edited file too large (${byteLength} bytes), limit is ${options.maxWriteBytes}`);
   }
-  fs.writeFileSync(filePath, updated, "utf8");
+  fs.writeFileSync(filePath, updated, { encoding: "utf8", flag: fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW });
   return { path: filePath, replacements: replacedCount, previous_occurrences: occurrences, bytes_written: byteLength };
 }
 
@@ -510,7 +503,8 @@ function collectDirEntries(basePath, currentPath, recursive, maxEntries, output,
       continue;
     }
     const fullPath = path.join(currentPath, name);
-    const stat = fs.statSync(fullPath);
+    const stat = fs.lstatSync(fullPath);
+    if (stat.isSymbolicLink()) continue;
     output.push({
       path: fullPath,
       relative_path: path.relative(basePath, fullPath) || ".",
@@ -531,18 +525,7 @@ function collectDirEntries(basePath, currentPath, recursive, maxEntries, output,
 }
 
 function resolveAndAuthorizePath(rawPath, roots, allowHidden) {
-  const resolved = path.resolve(process.cwd(), String(rawPath));
-  if (!allowHidden && containsHiddenSegment(resolved)) {
-    throw new Error(`Path is blocked by hidden file policy: ${rawPath}`);
-  }
-  if (!Array.isArray(roots) || roots.length === 0) {
-    return resolved;
-  }
-  const allowed = roots.some((root) => isWithinRoot(resolved, root));
-  if (!allowed) {
-    throw new Error(`Path is outside allowed roots: ${rawPath}`);
-  }
-  return resolved;
+  return authorizePath(rawPath, roots, allowHidden);
 }
 
 function containsHiddenSegment(targetPath) {
