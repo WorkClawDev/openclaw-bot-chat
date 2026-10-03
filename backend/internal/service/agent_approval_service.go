@@ -31,7 +31,11 @@ func (s *AgentApprovalService) Request(ctx context.Context, bot *model.Bot, req 
 		return nil, errors.New("invalid approval scope")
 	}
 	now := time.Now().UTC()
-	return s.repo.Request(ctx, &model.AgentApproval{ID: uuid.New(), OwnerID: bot.OwnerID, BotID: bot.ID, RunID: req.RunID, Tool: req.Tool, ParameterHash: req.ParameterHash, Arguments: req.Arguments, Status: "pending", ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now})
+	row, err := s.repo.Request(ctx, &model.AgentApproval{ID: uuid.New(), OwnerID: bot.OwnerID, BotID: bot.ID, RunID: req.RunID, Tool: req.Tool, ParameterHash: req.ParameterHash, Arguments: req.Arguments, Status: "pending", ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now})
+	if err == nil && !row.ExpiresAt.After(now) {
+		row.Status = "denied"
+	}
+	return row, err
 }
 func (s *AgentApprovalService) List(ctx context.Context, owner uuid.UUID) ([]model.AgentApproval, error) {
 	return s.repo.List(ctx, owner)

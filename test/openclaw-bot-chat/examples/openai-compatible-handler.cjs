@@ -274,7 +274,7 @@ async function respondInternal(request) {
     timeoutMs: readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000),
     logBase,
     startedAt,
-    context: { signal: request.signal, runId: metadata.run_id, authorize: request.authorize, audit: request.audit, beforeTool:request.beforeTool, afterTool:request.afterTool, loadExecution:request.loadExecution, saveExecution:request.saveExecution },
+    context: { signal: request.signal, runId: metadata.run_id, authorize: request.authorize, audit: request.audit, beforeTool:request.beforeTool, afterTool:request.afterTool, loadExecution:request.loadExecution, saveExecution:request.saveExecution, supplement:metadata.supplement },
   });
 
   sessionState.appendConversationTurn(sessionId, "user", content, metadata.message_id);
@@ -312,6 +312,7 @@ async function runModelLoop(options) {
       }
     }
 
+    await context?.audit?.({type:"model_request",round,model});
     const payload = modelClient.buildPayload(model, requestState.messages, combinedRuntime);
     const { response, parsed, rawText } = await modelClient.requestModelWithRetry({
       endpoint,
@@ -401,7 +402,7 @@ async function runModelLoop(options) {
     return text;
   }
 
-  throw new Error(`MCP tool loop exceeded ${MAX_TOOL_ROUNDS} rounds`);
+  const exhausted=new Error(`Tool loop exhausted ${MAX_TOOL_ROUNDS} rounds; persisted steps are available for explicit resume`);exhausted.code="BUDGET_STOP";throw exhausted;
 }
 
 function isContextOverflowError(status, parsed, rawText) {

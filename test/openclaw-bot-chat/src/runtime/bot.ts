@@ -1,5 +1,5 @@
 import path from "node:path";
-import {createHash} from "node:crypto";
+import {RunExecutor} from "./run-executor";
 import {ExecutionGate, recoverHistory} from "./execution";
 
 import {
@@ -23,6 +23,7 @@ import {
   toBotChatOutgoingMessage,
   toRealtimePublishPayload,
   toOpenClawRequest,
+  stableReplyId,
 } from "../router/message";
 import type {
   BootstrapResponse,
@@ -95,6 +96,8 @@ export class ManagedBotRuntime {
   private readonly httpClient: BotChatHttpClient;
   private readonly logger: ReturnType<typeof createRuntimeLogger>;
   private readonly sessionManager: SessionManager;
+  private readonly executor:RunExecutor;
+  private tasksPolling=false;
 
   private readonly processedMessages = new Map<string, number>();
   private readonly dialogQueues = new Map<string, Promise<void>>();
@@ -125,6 +128,7 @@ export class ManagedBotRuntime {
       botConfig.accessKey,
       config.httpTimeoutMs,
     );
+    this.executor = new RunExecutor(this.httpClient,agent,process.env.OPENAI_COMPAT_WORKSPACE_ID ?? "default");
     this.checkpointStore = new CheckpointStore(
       path.join(botStateDir, "checkpoints.json"),
     );
@@ -199,7 +203,7 @@ export class ManagedBotRuntime {
 
     await this.recoverPendingMessages();
     await this.resumeInbox();
-    this.resumeTimer = setInterval(() => void this.resumeInbox().catch(error => this.logger.error("inbox.resume.failed",undefined,error)), 5000);
+    this.resumeTimer = setInterval(() => void this.pollWork().catch(error => this.logger.error("work.poll.failed",undefined,error)), 5000);
     this.logger.info("runtime.started", {
       resolvedBotId: this.botId,
       subscriptions: subscriptions.length,
@@ -213,6 +217,7 @@ export class ManagedBotRuntime {
     }
     this.stopped = true;
     if(this.resumeTimer) clearInterval(this.resumeTimer);
+    this.executor.stop();
     for (const controller of this.activeRequests.values()) controller.abort(new Error("Worker stopping"));
 
     await Promise.allSettled([...this.dialogQueues.values()]);
@@ -431,7 +436,7 @@ export class ManagedBotRuntime {
           this.channelState.getSession(routed.channel, message.dialog_id) ??
           (await this.sessionManager.getOrCreate(
             message.dialog_id,
-            checkpoint?.session_id,
+            checkpoint?.session_id ?? stableReplyId(botId,message.dialog_id,"session"),
           ));
         this.channelState.setSession(
           routed.channel,
@@ -446,38 +451,20 @@ export class ManagedBotRuntime {
           requestMetadata: summarizeValue(request.metadata),
         });
 
+        const run = await this.executor.create(`chat:${message.message_id}`,message.dialog_id,{message_id:message.message_id});
         const controller = new AbortController();
         this.activeRequests.set(message.dialog_id, controller);
-        request.signal = controller.signal;
-        const scope = createHash("sha256").update(JSON.stringify([this.config.stateDir,sessionId])).digest("hex");
-        request.loadState = () => this.httpClient.agentJournal("GET",`/context/${scope}`);
-        request.saveState = state => this.httpClient.agentJournal("PUT",`/context/${scope}`,state);
-        const executionScope = createHash("sha256").update(`run:${message.message_id}`).digest("hex");
-        request.loadExecution = () => this.httpClient.agentJournal("GET",`/context/${executionScope}`);
-        request.saveExecution = state => this.httpClient.agentJournal("PUT",`/context/${executionScope}`,state);
-        request.beforeTool = intent => this.httpClient.agentJournal("POST","/tool-calls/prepare",intent);
-        request.afterTool = intent => this.httpClient.agentJournal("POST","/tool-calls/complete",intent);
-        request.metadata.run_id = `chat:${message.message_id}`;
-        request.authorize = async intent => {
-          const approval = await this.httpClient.approval({ ...intent, run_id: `chat:${message.message_id}` });
-          if (approval.status === "pending") {
-            const error = new Error(`操作等待授权：${intent.tool}。请在个人助手页面批准后继续。`) as Error & {code:string};
-            error.code = "APPROVAL_PENDING";
-            throw error;
-          }
-          return { approved: approval.status === "approved", run_id: approval.run_id, parameter_hash: approval.parameter_hash, expires_at: approval.expires_at };
-        };
+        request.signal=controller.signal;
+        let outgoing:ReturnType<typeof toBotChatOutgoingMessage> = null;
         let response;
-        try { response = await this.agent.respond(request); }
-        catch (error) {
-          if(controller.signal.aborted) {
-            response = {content:"执行已停止，已完成的操作保留，尚未执行的步骤已取消。",metadata:{run_state:"cancelled"}};
-          } else if (!["APPROVAL_PENDING","TOOL_UNCERTAIN"].includes((error as {code?:string}).code ?? "")) throw error;
-          else response = { content: (error as Error).message, metadata: {run_id:request.metadata.run_id, run_state:(error as {code?:string}).code === "TOOL_UNCERTAIN" ? "waiting_input" : "waiting_approval"} };
-        }
-        finally { this.activeRequests.delete(message.dialog_id); }
-        const outgoing = toBotChatOutgoingMessage(response, message, botId);
-
+        try {
+          response = await this.executor.execute(run,request,async (result,lease) => {
+            outgoing = toBotChatOutgoingMessage(result,message,botId);
+            const state=String(result.metadata?.run_state ?? "succeeded");
+            return {message_id:message.message_id,status:state === "succeeded" ? "completed" : state === "queued" ? "accepted" : state === "failed" || state === "paused" ? "waiting_input" : state,response:outgoing};
+          });
+        } finally { this.activeRequests.delete(message.dialog_id); }
+        if(!response)return;
         this.logger.debug("agent.response.received", {
           messageId: message.message_id,
           dialogId: message.dialog_id,
@@ -487,8 +474,7 @@ export class ManagedBotRuntime {
           hasOutgoingMessage: Boolean(outgoing),
         });
 
-        const inboxStatus=String(response.metadata?.run_state ?? "completed");
-        await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/finish`,{status:inboxStatus,response:outgoing});
+        const inboxStatus=String(response.metadata?.run_state ?? "succeeded");
         if (outgoing) {
           await this.dispatchReply(outgoing, message, botId);
           await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
@@ -502,7 +488,7 @@ export class ManagedBotRuntime {
 
         await this.httpClient.agentJournal("POST",`/inbox/${encodeURIComponent(message.message_id)}/delivered`,{});
         await this.saveCheckpoint(message, sessionId, routed.channel);
-        if(!inboxStatus.startsWith("waiting_")) this.markMessageProcessed(message.message_id);
+        if(inboxStatus === "succeeded" || inboxStatus === "cancelled") this.markMessageProcessed(message.message_id);
         this.logger.info("message.processed", {
           ...this.summarizeIncomingMessage(message),
           sessionId,
@@ -576,13 +562,35 @@ export class ManagedBotRuntime {
     await recoverHistory(async (afterSeq,limit) => (await this.httpClient.getConversationMessages(dialogId,{afterSeq,limit})).map(item=>normalizeBotChatMessage(item)).filter((item):item is BotChatMessage=>item!==null && item.dialog_id===dialogId),message=>this.handleIncomingMessage(message),checkpoint?.last_seq??0,limit);
   }
 
+  private async pollWork():Promise<void>{
+    await this.resumeInbox();
+    if(this.tasksPolling || this.stopped)return;
+    this.tasksPolling=true;
+    try{
+      const tasks=await this.httpClient.tasks();
+      for(const task of tasks){
+        if(this.stopped)break;
+        if(!["available","claimed","in_progress"].includes(task.status))continue;
+        try{
+          const claimed = task.status === "available" ? await this.httpClient.claimTask(task.id) : task;
+          if(claimed.assignee_bot_id && claimed.assignee_bot_id !== this.botId)continue;
+          const run=await this.executor.create(`task:${task.id}`,"",{title:task.title,description:task.description??""},task.id);
+          await this.executionGate.run(()=>this.executor.execute(run,{session_id:`task:${task.id}`,content:`任务：${task.title}\n${String(task.description??"")}\n执行实际工作，保存步骤和可验证成果；需要信息时调用 local__request_input。`,metadata:{task_id:task.id,bot_id:this.botId}}));
+        }catch(error){if(error instanceof BotChatHttpError&&error.status===409)continue;this.logger.error("task.execution.failed",{taskId:task.id},error);}
+      }
+    }finally{this.tasksPolling=false;}
+  }
+
   private async resumeInbox():Promise<void>{
     if(this.stopped || this.resuming)return;
     this.resuming=true;
     try {
       const rows=await this.httpClient.agentJournal<Array<{message:BotChatMessage;status:string}>>("GET","/inbox/pending");
       for(const row of rows) {
-        if(row.status==="waiting_input")continue;
+        if(row.status==="waiting_input") {
+          const runs=await this.httpClient.agentJournal<Array<{trigger_key:string;status:string}>>("GET","/runs");
+          if(!runs.some(run=>run.trigger_key===`chat:${row.message.message_id}` && run.status==="queued"))continue;
+        }
         await this.handleIncomingMessage(row.message);
       }
     } finally {this.resuming=false;}

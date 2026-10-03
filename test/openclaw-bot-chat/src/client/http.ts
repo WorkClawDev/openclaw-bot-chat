@@ -1,6 +1,9 @@
 import type { BootstrapResponse } from "../types";
 
+export interface AgentLease {runId:string;workerId:string;fence:number}
+
 interface RequestOptions {
+  lease?: AgentLease;
   body?: unknown;
   query?: Record<string, string | number | undefined>;
 }
@@ -38,12 +41,12 @@ export class BotChatHttpClient {
     private readonly timeoutMs: number,
   ) {}
 
-  async agentJournal<T>(method:string, endpoint:string, body?:unknown):Promise<T>{
-    return this.request<T>(method, `/api/v1/bot-runtime/agent${endpoint}`, body === undefined ? {} : {body});
+  async agentJournal<T>(method:string, endpoint:string, body?:unknown, lease?:AgentLease):Promise<T>{
+    return this.request<T>(method, `/api/v1/bot-runtime/agent${endpoint}`, {...(body === undefined ? {} : {body}),...(lease ? {lease}: {})});
   }
 
-  async approval(intent: {tool:string;parameter_hash:string;run_id:string;arguments?:Record<string,unknown>}): Promise<{id:string;status:string;run_id:string;parameter_hash:string;expires_at:string}> {
-    return this.request("POST", "/api/v1/bot-runtime/approvals", {body:intent});
+  async approval(intent: {tool:string;parameter_hash:string;run_id:string;arguments?:Record<string,unknown>},lease?:AgentLease): Promise<{id:string;status:string;run_id:string;parameter_hash:string;expires_at:string}> {
+    return this.request("POST", "/api/v1/bot-runtime/approvals", {body:intent,...(lease?{lease}:{})});
   }
 
   async bootstrap(): Promise<BootstrapResponse> {
@@ -177,7 +180,7 @@ export class BotChatHttpClient {
 
     const init: RequestInit = {
       method,
-      headers: this.buildHeaders(options.body !== undefined),
+      headers: { ...this.buildHeaders(options.body !== undefined), ...(options.lease ? {"X-Agent-Run":options.lease.runId,"X-Agent-Worker":options.lease.workerId,"X-Agent-Fence":String(options.lease.fence)} : {}) },
       signal: AbortSignal.timeout(this.timeoutMs),
     };
     if (options.body !== undefined) {

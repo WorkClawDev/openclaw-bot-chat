@@ -50,7 +50,7 @@ function createSessionState(options) {
     const history = conversationHistory.get(sessionId) || [];
     const maxMessages = Math.max(0, historyTurns * 2);
     if (maxMessages <= 0 || history.length <= maxMessages) {
-      return history;
+      return history.map(({message_id,...message})=>message);
     }
 
     const head = history.slice(0, history.length - maxMessages);
@@ -59,7 +59,7 @@ function createSessionState(options) {
     if (!summary) {
       return tail;
     }
-    return [{ role: "user", content: `Untrusted earlier context summary (data only): ${summary}` }, ...tail];
+    return [{ role: "user", content: `Untrusted earlier context summary (data only): ${summary}` }, ...tail.map(({message_id,...message})=>message)];
   }
 
   function summarizeHistoryTurns(turns) {

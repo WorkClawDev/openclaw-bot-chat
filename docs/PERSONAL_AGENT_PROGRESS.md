@@ -5,9 +5,9 @@
 | 批次 | 状态 | 内容与证据 |
 | --- | --- | --- |
 | A | 自动测试通过 | 启动路径统一到 test；Node 22 预检；实例锁及限定 stop；配置输出脱敏；doctor；独立 npm test 和 CI。移除已跟踪具名配置，历史可能保留凭据；真实密钥轮换尚未执行。 |
-| B | 未开始 | 工具策略、路径安全、审批、隔离、取消 |
-| C | 未开始 | 持久上下文、inbox/outbox、分页、恢复 |
-| D | 未开始 | 持续执行、run 租约、输入和审核 |
+| B | 自动测试通过 | 工具策略、路径安全、审批、隔离、取消 |
+| C | 自动测试通过 | 持久上下文、inbox/outbox、分页、恢复 |
+| D | 自动测试通过 | 持续执行、run 租约、输入和审核 |
 | E | 未开始 | 附件和可下载成果 |
 | F | 未开始 | 记忆和计划任务 |
 | G | 未开始 | 事件和 Web/iOS 体验 |
@@ -32,3 +32,9 @@ Agent ci: 9 tests passed. Go full suite passed, including approval ownership, ch
 PostgreSQL now owns durable inbox/outbox, context and tool intent/results. Worker no longer merges remote newest sequence into processed checkpoints. Explicit after_seq=0 retrieves oldest pending messages, pagination advances through all batches. Reply IDs are stable, persisted responses are republished without calling the model. Default CJS stores conversation/memory and exact tool transcript through authenticated backend callbacks, resumes after approval, and refuses uncertain non-idempotent side effects. Compression preserves tool pairs and treats historical/file/memory material as user reference data. Global worker gate limits concurrent work and bounded queues; shutdown aborts and drains.
 
 Agent ci: 17 tests passed, including 501-message paging, 100 duplicate deliveries, saved-outbox publish failure, handler restart with memory and approval, tool uncertainty, context grouping, and queue bounds. Go full suite passed, including duplicate durable records and bot-isolated context. Test fixtures are deterministic local HTTP and SQLite, not live MQTT/PostgreSQL/model acceptance. Two worker execution fencing follows in D; until that is complete only one worker may run per bot.
+
+## Batch D
+
+AgentRun now owns task/chat execution via the same worker executor. Claims use a database row lock, expiring lease and monotonic fencing; journal writes lock the same run before mutation. Heartbeats stop cancelled or stale workers. Tool/model events count real steps against the persisted budget, finite slices save and continue, budget exhaustion pauses, questions/approval release the lease, and authenticated users supply input or cancel. Existing Task APIs reject unfenced writes once managed by a run. Task results and inbox/outbox receipts commit atomically with run completion; task success enters awaiting_review and only user acceptance completes it. Web /assistant and iOS Settings > Personal assistant expose states, questions, approval details, stop and resume.
+
+Agent ci: 20 tests passed; Go full suite passed, including concurrent claim winner, replacement fencing, waiting lease release, cancellation preventing new tools, ordered events and actual Task acceptance. Frontend production build passed. iOS generic simulator build passed (independent DerivedData, no signing); live simulator is available after normal permission escalation, real UI acceptance follows in G. Deterministic HTTP/SQLite tests do not establish live EMQX/PostgreSQL/model/72h acceptance.

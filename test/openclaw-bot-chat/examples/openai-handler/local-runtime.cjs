@@ -34,7 +34,7 @@ function createLocalToolRuntime(options) {
     if (runtimePromise) {
       return runtimePromise;
     }
-    runtimePromise = Promise.resolve(enabled ? buildRuntime() : null)
+    runtimePromise = Promise.resolve(buildRuntime())
       .catch((error) => {
         runtimePromise = undefined;
         throw error;
@@ -49,6 +49,7 @@ function createLocalToolRuntime(options) {
     };
 
     const defs = [
+      { name:"local__request_input", description:"Persist a question and pause the run until the user supplies required information.", parameters:{type:"object",properties:{question:{type:"string"}},required:["question"]}, invoke:(args,signal,context)=>{if(context.supplement)return {user_input:context.supplement};const error=new Error(args.question);error.code="INPUT_REQUIRED";throw error;} },
       {
         name: "local__fs_read_text",
         description: "Read a UTF-8/other encoded text file from allowed filesystem roots.",
@@ -201,10 +202,11 @@ function createLocalToolRuntime(options) {
     const capabilities = {
       local__fs_read_text: ["read"], local__fs_read_base64: ["read"], local__fs_list_dir: ["read"],
       local__code_search_rg: ["read"], local__fs_write_text: ["write"], local__fs_write_base64: ["write"],
-      local__fs_replace_text: ["write"], local__bash_exec: ["exec"], local__text_encode: [], local__text_decode: [],
+      local__fs_replace_text: ["write"], local__bash_exec: ["exec"], local__text_encode: [], local__text_decode: [], local__request_input: [],
     };
     runtime.definitions = new Map();
     for (const tool of defs) {
+      if(!enabled && tool.name !== "local__request_input")continue;
       tool.policy = { idempotent: args => !args.append && tool.name !== "local__bash_exec" && tool.name !== "local__fs_replace_text", capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
       runtime.definitions.set(tool.name, tool);
       runtime.tools.push({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } });
@@ -253,7 +255,7 @@ function createLocalToolRuntime(options) {
 
     const timeout = AbortSignal.timeout(toolTimeoutMs);
     const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
-    const result = await executeTool(runtime.definitions.get(functionName), args, { ...context, signal }, (safeArgs, signal) => invoke(safeArgs, signal));
+    const result = await executeTool(runtime.definitions.get(functionName), args, { ...context, signal }, (safeArgs, signal) => invoke(safeArgs, signal, context));
 
     return truncateText(stringifyToolResult(result), toolResultMaxChars);
   }
@@ -266,7 +268,7 @@ function createLocalToolRuntime(options) {
       for (let i = 0; i < settled.length; i += 1) {
         const item = settled[i];
         const toolCall = batch[i];
-        if (item.status === "rejected" && (["APPROVAL_PENDING","TOOL_UNCERTAIN"].includes(item.reason.code) || context.signal?.aborted)) throw item.reason;
+        if (item.status === "rejected" && (["APPROVAL_PENDING","TOOL_UNCERTAIN","INPUT_REQUIRED"].includes(item.reason.code) || context.signal?.aborted)) throw item.reason;
         outputs.push(item.status === "fulfilled"
           ? { tool_call_id: toolCall.id, content: item.value }
           : { tool_call_id: toolCall.id, content: `Tool execution failed: ${serializeError(item.reason).message || "unknown error"}` });

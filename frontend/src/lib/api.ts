@@ -437,3 +437,11 @@ export const agentApi = {
   approvals: () => request<AgentApproval[]>("/api/v1/agent/approvals"),
   decide: (id:string, approved:boolean) => request<unknown>(`/api/v1/agent/approvals/${encodeURIComponent(id)}/decision`, {method:"POST",body:JSON.stringify({approved})}),
 }
+
+export interface AgentRun {id:string;task_id?:string;conversation:string;status:string;cancel_requested:boolean;steps:number;max_steps:number;error?:string;result?:{content?:string};event_seq:number}
+export interface AgentRunEvent {id:string;seq:number;type:string;data:Record<string,unknown>;created_at:string}
+export const runsApi = {
+ list:()=>request<AgentRun[]>("/api/v1/agent/runs"),
+ events:(id:string,after=0)=>request<AgentRunEvent[]>(`/api/v1/agent/runs/${encodeURIComponent(id)}/events?after_seq=${after}`),
+ action:(id:string,action:"cancel"|"resume",input="")=>request<unknown>(`/api/v1/agent/runs/${encodeURIComponent(id)}/${action}`,{method:"POST",body:JSON.stringify({input})}),
+}

@@ -68,6 +68,7 @@ async function executeTool(def,args,context,invoke) {
   const previous=await context?.beforeTool?.(intent);
   if(previous?.status === "completed")return previous.result.value;
   if(previous?.status === "uncertain") {const error=new Error("Previous external operation has an uncertain result; reconcile it before retry");error.code="TOOL_UNCERTAIN";throw error;}
+  signal?.throwIfAborted();
   const result=await invoke(args,signal);
   await context?.afterTool?.({...intent,result:{value:result}});
   signal?.throwIfAborted();

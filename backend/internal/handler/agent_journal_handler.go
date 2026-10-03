@@ -16,15 +16,15 @@ type AgentJournalHandler struct {
 func NewAgentJournalHandler(repo *repository.AgentJournalRepository) *AgentJournalHandler {
 	return &AgentJournalHandler{repo: repo}
 }
-func (h *AgentJournalHandler) Register(r *gin.RouterGroup) {
+func (h *AgentJournalHandler) Register(r *gin.RouterGroup, runs *AgentRunHandler) {
 	r.POST("/inbox", h.Accept)
 	r.GET("/inbox/pending", h.Pending)
-	r.POST("/inbox/:message/finish", h.Finish)
+	r.POST("/inbox/:message/finish", runs.Fence(h.Finish))
 	r.POST("/inbox/:message/delivered", h.Delivered)
 	r.GET("/context/:scope", h.Context)
-	r.PUT("/context/:scope", h.SaveContext)
-	r.POST("/tool-calls/prepare", h.PrepareTool)
-	r.POST("/tool-calls/complete", h.CompleteTool)
+	r.PUT("/context/:scope", runs.Fence(h.SaveContext))
+	r.POST("/tool-calls/prepare", runs.Fence(h.PrepareTool))
+	r.POST("/tool-calls/complete", runs.Fence(h.CompleteTool))
 }
 func validJournalData(data model.JSONMap) bool {
 	raw, err := json.Marshal(data)

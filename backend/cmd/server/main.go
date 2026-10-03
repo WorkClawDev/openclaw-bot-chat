@@ -80,6 +80,7 @@ func main() {
 	approvalService := service.NewAgentApprovalService(repository.NewAgentApprovalRepository(db))
 	approvalHandler := handler.NewAgentApprovalHandler(approvalService)
 	journalHandler := handler.NewAgentJournalHandler(repository.NewAgentJournalRepository(db))
+	runHandler := handler.NewAgentRunHandler(repository.NewAgentRunRepository(db))
 	taskRepo := repository.NewTaskRepository(db)
 	documentRepo := repository.NewDocumentRepository(db)
 
@@ -147,6 +148,7 @@ func main() {
 	groupHandler := handler.NewGroupHandler(groupService)
 	taskHandler := handler.NewTaskHandler(taskService)
 	taskRuntimeHandler := handler.NewTaskRuntimeHandler(taskService)
+	taskRuntimeHandler.SetRunRepository(runHandler.Repo)
 	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
@@ -154,7 +156,11 @@ func main() {
 
 	journalRoutes := router.Group("/api/v1/bot-runtime/agent")
 	journalRoutes.Use(middleware.BotKeyAuth(botService))
-	journalHandler.Register(journalRoutes)
+	journalHandler.Register(journalRoutes, runHandler)
+	runHandler.RegisterRuntime(journalRoutes)
+	runUserRoutes := router.Group("/api/v1/agent")
+	runUserRoutes.Use(middleware.JWTAuth(jwtManager))
+	runHandler.RegisterUser(runUserRoutes)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -224,6 +230,8 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.AgentInbox{},
 		&model.AgentContext{},
 		&model.AgentToolCall{},
+		&model.AgentRun{},
+		&model.AgentRunEvent{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}

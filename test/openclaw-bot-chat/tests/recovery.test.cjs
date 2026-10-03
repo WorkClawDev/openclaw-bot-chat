@@ -11,6 +11,10 @@ function runtimeFixture(agent,records,publish){
  const config={botChatBaseUrl:'http://fixture.invalid',stateDir:dir,httpTimeoutMs:1000,reconnectBaseDelayMs:100,reconnectMaxDelayMs:1000,defaultChannelPolicy:'open'};
  const runtime=new ManagedBotRuntime(config,{key:'fixture',id:'bot',accessKey:'fixture-only',enabled:true,groupPolicy:'open'},agent);
  runtime.botId='bot';runtime.mqttClient={publish};runtime.httpClient.agentJournal=async(method,url,body)=>{
+  if(url==='/runs')return {id:'run',status:'queued',fence:1,input:{}};
+  if(url==='/runs/run/claim')return {id:'run',status:'running',fence:1,input:{}};
+  if(url==='/runs/run/transition'){if(body.outbox)Object.assign(records.get(body.outbox.message_id),{status:body.outbox.status,response:body.outbox.response});return{};}
+  if(url.startsWith('/runs/run/'))return {};
   if(url==='/inbox'){if(!records.has(body.message_id))records.set(body.message_id,{message:body.message,status:'accepted',delivered:false});return structuredClone(records.get(body.message_id));}
   if(url==='/inbox/pending')return [...records.values()].filter(row=>row.status!=='completed'||!row.delivered);
   const match=url.match(/^\/inbox\/(.+)\/(finish|delivered)$/);if(match){const row=records.get(decodeURIComponent(match[1]));if(match[2]==='finish')Object.assign(row,body);else row.delivered=true;return{};}

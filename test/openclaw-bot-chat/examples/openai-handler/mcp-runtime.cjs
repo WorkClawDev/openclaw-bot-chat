@@ -243,7 +243,7 @@ function createMcpRuntimeManager(options) {
     try {
       result = await executeTool(target.definition, args, { ...context, signal }, () => target.client.callTool({ name: target.originalName, arguments: args }, undefined, { signal, timeout: toolTimeoutMs }));
     } catch (error) {
-      if (signal.aborted) throw new Error("MCP call interrupted; external result is uncertain and must be reconciled before retry");
+      if (signal.aborted) {const uncertain=new Error("MCP call interrupted; external result is uncertain and must be reconciled before retry");uncertain.code="TOOL_UNCERTAIN";throw uncertain;}
       throw error;
     }
     if (result.isError) throw new Error(stringifyToolResult(result));
