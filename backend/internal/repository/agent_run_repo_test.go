@@ -138,3 +138,49 @@ func TestEventOutboxRecoversAndMarksDelivery(t *testing.T) {
 		t.Fatal("notice not acknowledged")
 	}
 }
+
+func TestCancelledCrashedWorkerIsReapedAndFenced(t *testing.T) {
+	db, r, bot := runRepoFixture(t)
+	ctx := context.Background()
+	run, err := r.Create(ctx, bot, "crashed", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := r.Claim(ctx, bot, run.ID, "lost", time.Now().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Model(&model.AgentRun{}).Where("id = ?", run.ID).Updates(map[string]interface{}{"cancel_requested": true, "lease_until": 0})
+	if err = r.ReapCancelled(ctx, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := r.Get(ctx, bot.OwnerID, &bot.ID, run.ID)
+	if row.Status != "cancelled" || row.Fence <= active.Fence || row.LeaseUntil != 0 {
+		t.Fatal("crashed cancellation not finalized", row)
+	}
+	if _, err = r.Claim(ctx, bot, run.ID, "replacement", time.Now().UnixMilli()); err == nil {
+		t.Fatal("cancelled run restarted")
+	}
+	if err = r.ReapCancelled(ctx, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentHealthIsOwnerScopedAndCountsActualSteps(t *testing.T) {
+	db, r, bot := runRepoFixture(t)
+	if err := db.AutoMigrate(&model.AgentToolCall{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first, _ := r.Create(ctx, bot, "own", "", nil, nil)
+	other := &model.Bot{ID: uuid.New(), OwnerID: uuid.New()}
+	r.Create(ctx, other, "other", "", nil, nil)
+	db.Model(&model.AgentRun{}).Where("id = ?", first.ID).Update("steps", 7)
+	data, err := r.Health(ctx, bot.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data["executed_steps"].(int64) != 7 || data["run_counts"].(map[string]int64)["queued"] != 1 {
+		t.Fatal("diagnostics included another owner or fake usage", data)
+	}
+}

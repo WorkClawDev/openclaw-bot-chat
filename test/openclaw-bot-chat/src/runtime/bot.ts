@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import path from "node:path";
 import {RunExecutor} from "./run-executor";
 import {ExecutionGate, recoverHistory} from "./execution";
@@ -70,6 +71,8 @@ export class OpenClawBotRuntime {
     );
   }
 
+  healthy():boolean {return this.runtimes.every(runtime=>runtime.healthy());}
+
   async start(): Promise<void> {
     const started: ManagedBotRuntime[] = [];
     try {
@@ -104,6 +107,8 @@ export class ManagedBotRuntime {
 
   private bootstrap?: BootstrapResponse;
   private botId?: string;
+  private ownerId?: string;
+  private refreshingBroker = false;
   private mqttClient?: BotChatMqttClient;
   private stopped = false;
   private resumeTimer?: ReturnType<typeof setInterval>;
@@ -128,7 +133,7 @@ export class ManagedBotRuntime {
       botConfig.accessKey,
       config.httpTimeoutMs,
     );
-    this.executor = new RunExecutor(this.httpClient,agent,process.env.OPENAI_COMPAT_WORKSPACE_ID ?? "default");
+    this.executor = new RunExecutor(this.httpClient,agent,process.env.OPENAI_COMPAT_WORKSPACE_ID ?? createHash("sha256").update(JSON.stringify([botStateDir,process.env.OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS??"",process.env.OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS??""])).digest("hex"));
     this.checkpointStore = new CheckpointStore(
       path.join(botStateDir, "checkpoints.json"),
     );
@@ -136,6 +141,8 @@ export class ManagedBotRuntime {
       path.join(botStateDir, "sessions.json"),
     );
   }
+
+  healthy():boolean {return !this.stopped && this.mqttClient?.getState()==="open";}
 
   async start(): Promise<void> {
     this.stopped = false;
@@ -150,6 +157,8 @@ export class ManagedBotRuntime {
 
     this.bootstrap = await this.httpClient.bootstrap();
     this.botId = this.botConfig.id ?? this.bootstrap.bot.id;
+    if (!this.bootstrap.bot.owner_id) throw new Error("Personal agent bootstrap requires an owner identity");
+    this.ownerId = this.bootstrap.bot.owner_id;
     if (!this.botId) {
       throw new Error(`${this.logPrefix()} bot id is required`);
     }
@@ -177,6 +186,8 @@ export class ManagedBotRuntime {
         await this.recoverPendingMessages();
       },
       onMessage: async (topic: string, payload: unknown) => {
+        // The transport topic, rather than attacker-controlled payload routing, binds the owner.
+        if (topic !== `chat/dm/user/${this.ownerId}/bot/${this.botId}`) return;
         const message = normalizeBotChatMessage(payload, topic);
         if (message) {
           await this.handleIncomingMessage(message);
@@ -342,6 +353,7 @@ export class ManagedBotRuntime {
       });
       return;
     }
+    if (message.from_type !== "user" || message.from_id !== this.ownerId || message.to_type !== "bot" || message.to_id !== this.botId) return;
     if (!shouldProcessMessage(message, this.botId)) {
       if (isRuntimeDebugEnabled()) {
         this.logger.debug(
@@ -563,6 +575,17 @@ export class ManagedBotRuntime {
   }
 
   private async pollWork():Promise<void>{
+    const expires = this.bootstrap?.broker.expires_at;
+    if (expires && expires * 1000 - Date.now() < 60000 && !this.refreshingBroker && !this.stopped) {
+      this.refreshingBroker = true;
+      try {
+        const fresh = await this.httpClient.bootstrap();
+        if (fresh.bot.id !== this.botId || fresh.bot.owner_id !== this.ownerId) throw new Error("Broker renewal changed identity");
+        if (!fresh.broker.username || !fresh.broker.password) throw new Error("Scoped broker credentials unavailable");
+        await this.mqttClient?.rotateCredentials({clientId:fresh.client_id, username:fresh.broker.username, password:fresh.broker.password});
+        this.bootstrap = fresh;
+      } finally { this.refreshingBroker = false; }
+    }
     await this.resumeInbox();
     if(this.tasksPolling || this.stopped)return;
     this.tasksPolling=true;

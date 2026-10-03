@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
 	"github.com/openclaw-bot-chat/backend/internal/model"
 	"github.com/openclaw-bot-chat/backend/internal/repository"
@@ -137,4 +138,39 @@ func (h *AgentJournalHandler) CompleteTool(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"status": "saved"})
+}
+
+func (h *AgentJournalHandler) RegisterUser(r *gin.RouterGroup) {
+	r.GET("/tool-calls/uncertain", h.Uncertain)
+	r.POST("/tool-calls/:id/reconcile", h.Reconcile)
+}
+func (h *AgentJournalHandler) Uncertain(c *gin.Context) {
+	owner, _ := middleware.GetUserID(c)
+	rows, err := h.repo.UncertainTools(c.Request.Context(), owner)
+	if err != nil {
+		response.InternalError(c, "tool reconciliation unavailable")
+		return
+	}
+	response.Success(c, rows)
+}
+func (h *AgentJournalHandler) Reconcile(c *gin.Context) {
+	owner, _ := middleware.GetUserID(c)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.BadRequest(c, "invalid tool call")
+		return
+	}
+	var req struct {
+		Outcome  string `json:"outcome"`
+		Evidence string `json:"evidence"`
+	}
+	if c.ShouldBindJSON(&req) != nil {
+		response.BadRequest(c, "invalid reconciliation")
+		return
+	}
+	if err = h.repo.Reconcile(c.Request.Context(), owner, id, req.Outcome, req.Evidence); err != nil {
+		response.BadRequest(c, "reconciliation requires an inactive owned run and actual evidence")
+		return
+	}
+	response.Success(c, gin.H{"status": "recorded"})
 }

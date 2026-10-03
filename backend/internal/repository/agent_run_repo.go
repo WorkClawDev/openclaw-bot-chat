@@ -81,15 +81,15 @@ func (r *AgentRunRepository) List(ctx context.Context, owner uuid.UUID, bot *uui
 	return rows, err
 }
 func (r *AgentRunRepository) Claim(ctx context.Context, bot *model.Bot, id uuid.UUID, worker string, now int64) (*model.AgentRun, error) {
+	if err := r.ReapCancelled(ctx, now); err != nil {
+		return nil, err
+	}
 	var row model.AgentRun
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ? AND bot_id = ?", id, bot.OwnerID, bot.ID).First(&row).Error; err != nil {
 			return err
 		}
 		if row.CancelRequested {
-			if row.LeaseUntil <= now {
-				tx.Model(&model.AgentRun{}).Where("id = ?", row.ID).Updates(map[string]interface{}{"status": "cancelled", "lease_until": 0})
-			}
 			return ErrAgentLease
 		}
 		if row.Status == "waiting_approval" {
@@ -172,7 +172,7 @@ func (r *AgentRunRepository) Heartbeat(ctx context.Context, bot *model.Bot, id u
 			}
 			if task.Status == model.TaskStatusCancelled {
 				row.CancelRequested = true
-				return nil
+				return tx.Model(&model.AgentRun{}).Where("id = ?", row.ID).Update("cancel_requested", true).Error
 			}
 		}
 		row.LeaseUntil = time.Now().UnixMilli() + 15000
@@ -288,6 +288,9 @@ func (r *AgentRunRepository) UserAction(ctx context.Context, owner, id uuid.UUID
 		}
 		changes := map[string]interface{}{"updated_at": time.Now().UTC()}
 		if action == "cancel" {
+			if row.Status == "succeeded" || row.Status == "failed" || row.Status == "cancelled" {
+				return ErrAgentState
+			}
 			changes["cancel_requested"] = true
 			if row.TaskID != nil {
 				if err := tx.Model(&model.Task{}).Where("id = ? AND owner_id = ?", *row.TaskID, owner).Update("status", model.TaskStatusCancelled).Error; err != nil {
@@ -343,6 +346,16 @@ func (r *AgentRunRepository) Fenced(ctx context.Context, bot *model.Bot, id uuid
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ? AND bot_id = ?", id, bot.OwnerID, bot.ID).First(&row).Error; err != nil {
 			return err
 		}
+		if !allowCancelled && row.TaskID != nil {
+			var task model.Task
+			if err := tx.Where("id = ?", *row.TaskID).First(&task).Error; err != nil {
+				return err
+			}
+			if task.Status == model.TaskStatusCancelled {
+				return ErrAgentLease
+			}
+		}
+
 		if allowCancelled {
 			row.CancelRequested = false
 		}
@@ -356,4 +369,34 @@ func (r *AgentRunRepository) HasTaskRun(ctx context.Context, owner, task uuid.UU
 	var count int64
 	err := r.db.WithContext(ctx).Model(&model.AgentRun{}).Where("owner_id = ? AND task_id = ?", owner, task).Count(&count).Error
 	return count > 0, err
+}
+
+// Finalize a crashed worker's acknowledged cancellation without requiring another claim.
+func (r *AgentRunRepository) ReapCancelled(ctx context.Context, now int64) error {
+	hasTasks := r.db.Migrator().HasTable(&model.Task{})
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if hasTasks {
+			if err := tx.Model(&model.AgentRun{}).Where("status IN ? AND task_id IN (?)", []string{"queued", "running", "waiting_input", "waiting_approval", "paused"}, tx.Model(&model.Task{}).Select("id").Where("status = ?", model.TaskStatusCancelled)).Update("cancel_requested", true).Error; err != nil {
+				return err
+			}
+		}
+
+		var rows []model.AgentRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("cancel_requested = ? AND status IN ? AND lease_until <= ?", true, []string{"queued", "running", "waiting_input", "waiting_approval", "paused"}, now).Limit(100).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			row.Status = "cancelled"
+			row.Fence++
+			row.LeaseUntil = 0
+			row.UpdatedAt = time.Now().UTC()
+			if err := tx.Save(&row).Error; err != nil {
+				return err
+			}
+			if err := appendAgentEvent(tx, &row, "cancelled", model.JSONMap{"reason": "cancelled worker lease expired"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

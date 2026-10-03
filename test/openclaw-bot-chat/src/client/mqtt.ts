@@ -118,6 +118,12 @@ export class BotChatMqttClient {
     });
   }
 
+  async rotateCredentials(credentials: Pick<BotChatMqttClientOptions,"clientId"|"username"|"password">): Promise<void> {
+    await this.close();
+    Object.assign(this.options, credentials);
+    await this.connect();
+  }
+
   async close(): Promise<void> {
     this.closedByUser = true;
     const client = this.client;

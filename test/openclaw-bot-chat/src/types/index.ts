@@ -19,6 +19,7 @@ export interface BotChatMessage {
 }
 
 export interface BotInfo {
+  owner_id?: string;
   id: string;
   name?: string;
   description?: string;
@@ -55,6 +56,7 @@ export interface Checkpoint {
 }
 
 export interface BrokerInfo {
+  expires_at?: number;
   tcp_url: string;
   ws_url?: string;
   username?: string;
@@ -116,6 +118,7 @@ export interface OpenClawResponse {
 }
 
 export interface OpenClawAgent {
+  close?:()=>Promise<void>;
   respond(request: OpenClawRequest): Promise<OpenClawResponse>;
 }
 

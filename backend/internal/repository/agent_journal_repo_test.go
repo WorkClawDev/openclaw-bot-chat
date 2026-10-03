@@ -67,3 +67,49 @@ func TestAgentJournalPersistenceAndUncertainTool(t *testing.T) {
 		t.Fatal("cross bot context leak", err)
 	}
 }
+
+func TestUncertainToolRequiresOwnerEvidenceBeforeResume(t *testing.T) {
+	db, runs, bot := runRepoFixture(t)
+	if err := db.AutoMigrate(&model.AgentToolCall{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	run, err := runs.Create(ctx, bot, "reconcile", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Model(&model.AgentRun{}).Where("id = ?", run.ID).Update("status", "waiting_input")
+	r := NewAgentJournalRepository(db)
+	call, err := r.PrepareTool(ctx, bot, run.ID.String(), "effect", "external", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.UncertainTools(ctx, bot.OwnerID)
+	if err != nil || len(rows) != 1 {
+		t.Fatal("missing uncertain call", err)
+	}
+	if r.Reconcile(ctx, uuid.New(), call.ID, "completed", "actual provider receipt") == nil {
+		t.Fatal("other owner reconciled")
+	}
+	if r.Reconcile(ctx, bot.OwnerID, call.ID, "completed", "") == nil {
+		t.Fatal("no evidence accepted")
+	}
+	if err = r.Reconcile(ctx, bot.OwnerID, call.ID, "completed", "provider receipt #fixture confirms success"); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := r.PrepareTool(ctx, bot, run.ID.String(), "effect", "external", false)
+	if err != nil || prior.Status != "completed" {
+		t.Fatal("verified result lost", err)
+	}
+	next, err := r.PrepareTool(ctx, bot, run.ID.String(), "not-applied", "external", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.Reconcile(ctx, bot.OwnerID, next.ID, "not_applied", "provider records confirm no operation"); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := r.PrepareTool(ctx, bot, run.ID.String(), "not-applied", "external", false)
+	if err != nil || retry.ID == next.ID {
+		t.Fatal("verified no-effect could not retry", err)
+	}
+}

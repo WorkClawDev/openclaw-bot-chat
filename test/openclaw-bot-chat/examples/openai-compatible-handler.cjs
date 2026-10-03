@@ -255,10 +255,8 @@ async function respondInternal(request) {
     return { content: "记忆便签已保存。", metadata: { content_type: "text" } };
   }
 
-  const endpoint = resolveChatCompletionsUrl(requiredEnv("OPENAI_COMPAT_BASE_URL"));
-  const apiKey = requiredEnv("OPENAI_COMPAT_API_KEY");
   const model = process.env.OPENAI_COMPAT_MODEL || "gpt-4o-mini";
-  const mcpRuntime = await mcpManager.getRuntime();
+  const mcpRuntime = await mcpManager.getRuntime(request.signal);
   const localRuntime = await localToolRuntime.getRuntime();
   const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
 
@@ -266,9 +264,11 @@ async function respondInternal(request) {
     const toolNames = combinedRuntime.tools.length > 0
       ? combinedRuntime.tools.map((item) => `- ${item.function.name}`).join("\n")
       : "- (none)";
-    return { content: `当前可用工具：\n${toolNames}`, metadata: { content_type: "text" } };
+    return { content: `当前可用工具：\n${toolNames}\nMCP 服务健康：${JSON.stringify(mcpRuntime?.health??{})}`, metadata: { content_type: "text" } };
   }
 
+  const endpoint = resolveChatCompletionsUrl(requiredEnv("OPENAI_COMPAT_BASE_URL"));
+  const apiKey = requiredEnv("OPENAI_COMPAT_API_KEY");
   const requestState = buildRequestState({
     systemPrompt: process.env.OPENAI_COMPAT_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
     sessionId,
@@ -328,9 +328,10 @@ async function runModelLoop(options) {
 
     await context?.audit?.({type:"model_request",round,model});
     const payload = modelClient.buildPayload(model, requestState.messages, combinedRuntime);
+    const modelStarted=Date.now();let firstDeltaAt;
     const streamId=require("node:crypto").randomUUID();
     const { response, parsed, rawText } = await modelClient.requestModelWithRetry({
-      onDelta: text => context?.audit?.({type:"assistant_delta",stream_id:streamId,round,text}),
+      onDelta: text => {if(text && !firstDeltaAt)firstDeltaAt=Date.now();return context?.audit?.({type:"assistant_delta",stream_id:streamId,round,text})},
       endpoint,
       apiKey,
       payload,
@@ -341,6 +342,7 @@ async function runModelLoop(options) {
       signal: context?.signal,
     });
 
+    await context?.audit?.({type:"model_response",round,model,duration_ms:Date.now()-modelStarted,...(firstDeltaAt?{first_delta_ms:firstDeltaAt-modelStarted}:{}),...(parsed?.usage?{usage:parsed.usage}:{})});
     if (!response.ok) {
       if (
         CONTEXT_COMPRESSION_ENABLED &&

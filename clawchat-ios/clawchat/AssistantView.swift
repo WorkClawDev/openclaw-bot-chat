@@ -22,6 +22,7 @@ private struct AssistantApproval: Codable, Identifiable {
  let parameter_hash: String
  let expires_at: String
 }
+private struct UncertainAssistantTool:Codable,Identifiable {let id:String;let run_id:String;let tool:String}
 private struct AssistantActionResult: Codable { let status: String }
 struct AssistantView: View {
  @Environment(\.openURL) private var openURL
@@ -31,11 +32,14 @@ struct AssistantView: View {
  @State private var approvals: [AssistantApproval] = []
  @State private var inputs: [String:String] = [:]
  @State private var error: String?
+ @State private var uncertain:[UncertainAssistantTool]=[]
+ @State private var evidence:[String:String]=[:]
  @State private var isReloading=false
  var body: some View {
   List {
    if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("assistant.error") }
    NavigationLink("记忆与计划") { AssistantManagementView() }
+   if !uncertain.isEmpty { Section("不确定操作核对") { ForEach(uncertain) { call in VStack(alignment:.leading) { Text("需要核对：\(call.tool)");Text("先查询外部服务的实际结果，再记录证据；核对后恢复工作。").font(.caption);TextField("核对证据",text:Binding(get:{evidence[call.id] ?? ""},set:{evidence[call.id]=$0}));Button("确认已执行并记录结果"){Task{await reconcile(call.id,"completed")}}.disabled((evidence[call.id] ?? "").count<3);Button("确认未执行，允许重试"){Task{await reconcile(call.id,"not_applied")}}.disabled((evidence[call.id] ?? "").count<3) } } } }
    Section("执行中的工作") {
     if runs.isEmpty { Text("暂无工作") }
     ForEach(runs) { run in
@@ -43,6 +47,7 @@ struct AssistantView: View {
       Text(run.task_id == nil ? "会话工作" : "派发任务").font(.headline)
       Text("\(run.cancel_requested ? "正在停止" : statusLabel(run.status)) · \(run.steps)/\(run.max_steps) 步")
       if run.status == "running",let delta=events[run.id]?.last(where:{$0.type=="assistant_delta"})?.data["text"]?.value as? String { Text(delta).textSelection(.enabled).accessibilityIdentifier("assistant.stream") }
+      Text(usageLabel(run.id)).font(.caption)
       DisclosureGroup("执行步骤") { ForEach((events[run.id] ?? []).filter{$0.type != "assistant_delta"}) { event in Text("#\(event.seq) · \(event.type)" + ((event.data["tool"]?.value as? String).map{" · "+$0} ?? "")).font(.caption) } }
       ForEach(artifacts[run.id] ?? []) { file in
        Button("下载 \(file.file_name) · 版本 \(file.version)") { Task { await download(file.id) } }
@@ -74,6 +79,7 @@ struct AssistantView: View {
    }
   }.buttonStyle(.borderless).navigationTitle("个人助手").onReceive(NotificationCenter.default.publisher(for:Notification.Name("agentUpdate"))){_ in Task{await reload()}}.refreshable { await reload() }.task { while !Task.isCancelled { await reload();try? await Task.sleep(for:.seconds(5)) } }
  }
+ private func usageLabel(_ id:String)->String{let responses=(events[id] ?? []).filter{$0.type=="model_response"};let values=responses.compactMap{($0.data["usage"]?.value as? [String:Any])?["total_tokens"] as? Int};return values.isEmpty ? "模型用量未知" : "模型已报告 \(values.reduce(0,+)) token" + (values.count<responses.count ? "，部分用量未知" : "")}
  private func statusLabel(_ status:String)->String { ["queued":"排队中","running":"正在工作","waiting_input":"需要补充信息","waiting_approval":"等待授权","paused":"已暂停","succeeded":"成果已交付","failed":"执行失败","cancelled":"已停止"][status] ?? status }
  @MainActor private func loadEvents(_ id:String)async throws {
   var cursor=events[id]?.last?.seq ?? 0
@@ -84,6 +90,7 @@ struct AssistantView: View {
  }
  @MainActor private func reload() async {
   guard !isReloading else{return};isReloading=true;defer{isReloading=false}
+  if let values:[UncertainAssistantTool]=try? await APIClient.shared.requestValue("/api/v1/agent/tool-calls/uncertain"){uncertain=values}
   do { async let executions: [AssistantRun] = APIClient.shared.requestValue("/api/v1/agent/runs");async let decisions: [AssistantApproval] = APIClient.shared.requestValue("/api/v1/agent/approvals");runs=try await executions;approvals=try await decisions;for run in runs { artifacts[run.id]=try await APIClient.shared.requestValue("/api/v1/agent/runs/\(run.id)/artifacts");try await loadEvents(run.id) };error=nil }
   catch { self.error=error.localizedDescription }
  }
@@ -93,4 +100,6 @@ struct AssistantView: View {
  @MainActor private func decide(_ id:String,_ approved:Bool) async {
   do { let body=try JSONSerialization.data(withJSONObject:["approved":approved]);let _:AssistantActionResult=try await APIClient.shared.requestValue("/api/v1/agent/approvals/\(id)/decision",method:"POST",body:body);await reload() } catch { self.error=error.localizedDescription }
  }
+ @MainActor private func reconcile(_ id:String,_ outcome:String)async{do{let body=try JSONSerialization.data(withJSONObject:["outcome":outcome,"evidence":evidence[id] ?? ""]);let _:AssistantActionResult=try await APIClient.shared.requestValue("/api/v1/agent/tool-calls/\(id)/reconcile",method:"POST",body:body);await reload()}catch{self.error=error.localizedDescription}}
+
 }

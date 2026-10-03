@@ -161,15 +161,50 @@ func main() {
 	runUserRoutes := router.Group("/api/v1/agent")
 	runUserRoutes.Use(middleware.JWTAuth(jwtManager))
 	runHandler.RegisterUser(runUserRoutes)
+	journalHandler.RegisterUser(runUserRoutes)
+	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
+	if !security.Configured() {
+		if cfg.App.Mode == "release" {
+			log.Fatal().Msg("broker security requires callback token and server password of at least 32 characters")
+		}
+		log.Warn().Msg("broker security unconfigured; realtime bootstrap will refuse credentials")
+	}
+	realtimeHandler.SetBrokerSecurity(security)
+	botRuntimeHandler.SetBrokerSecurity(security)
+	(&handler.BrokerSecurityHandler{Service: security}).Register(router)
+	router.GET("/health/ready", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		raw, err := db.DB()
+		if err != nil || raw.PingContext(ctx) != nil || rdb.Ping(ctx).Err() != nil || !mqttClient.IsConnected() {
+			c.JSON(503, gin.H{"status": "unavailable"})
+			return
+		}
+		c.JSON(200, gin.H{"status": "ready"})
+	})
 	fileHandler := handler.NewAgentFileHandler(assetService, documentService, repository.NewAgentArtifactRepository(db), runHandler)
 	fileHandler.RegisterRuntime(journalRoutes)
 	fileHandler.RegisterUser(runUserRoutes)
 	memoryScheduleHandler := &handler.AgentMemoryScheduleHandler{Memory: repository.NewAgentMemoryRepository(db), Schedules: repository.NewAgentScheduleRepository(db)}
 	memoryScheduleHandler.RegisterUser(runUserRoutes)
-	memoryScheduleHandler.RegisterRuntime(journalRoutes)
+	memoryScheduleHandler.RegisterRuntime(journalRoutes, runHandler)
 	schedulerContext, schedulerCancel := context.WithCancel(context.Background())
 	defer schedulerCancel()
 	service.StartAgentEventPublisher(schedulerContext, runHandler.Repo, mqttClient.PublishAgentNotice)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-schedulerContext.Done():
+				return
+			case <-ticker.C:
+				if err := runHandler.Repo.ReapCancelled(schedulerContext, time.Now().UnixMilli()); err != nil {
+					log.Error().Err(err).Msg("cancelled run cleanup failed")
+				}
+			}
+		}
+	}()
 	memoryScheduleHandler.Start(schedulerContext, func(err error) { log.Error().Err(err).Msg("agent scheduler failed") })
 
 	// --- HTTP Server ---

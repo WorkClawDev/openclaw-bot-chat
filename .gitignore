@@ -72,3 +72,7 @@ coverage.out
 /test/openclaw-bot-chat/data/
 /test/openclaw-bot-chat/.test-agent*.config.json
 /scripts/.managed-agents/
+
+/deploy/personal-agent/.env
+/deploy/personal-agent/.runtime/
+/test/personal-agent-evals/results/

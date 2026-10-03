@@ -19,4 +19,15 @@ final class PersonalAssistantUITests:XCTestCase {
   app.buttons["删除"].tap()
   let management=XCTAttachment(screenshot:app.screenshot());management.name="personal-assistant-management";management.lifetime = .keepAlways;add(management)
  }
+ @MainActor func testUncertainOperationEvidenceAndResume()async throws {
+  var req=URLRequest(url:URL(string:"http://127.0.0.1:18082/fixture/reset")!);req.httpMethod="POST";_ = try await URLSession.shared.data(for:req)
+  req.url=URL(string:"http://127.0.0.1:18082/fixture/uncertain")!;_ = try await URLSession.shared.data(for:req)
+  let app=XCUIApplication();app.launchArguments=["-uiTestMode","assistantConsole","-uiTestAuthenticated","-openclawApiBaseURL","http://127.0.0.1:18082"];app.launch()
+  XCTAssertTrue(app.staticTexts["需要核对：fixture_external_write"].waitForExistence(timeout:10))
+  let input=app.textFields["核对证据"];input.tap();input.typeText("Provider audit confirms no effect")
+  let confirm=app.buttons["确认未执行，允许重试"];if !confirm.isHittable{app.swipeUp()};confirm.tap()
+  let vanished=expectation(for:NSPredicate(format:"exists == false"),evaluatedWith:app.staticTexts["需要核对：fixture_external_write"]);await fulfillment(of:[vanished],timeout:10)
+  let supplement=app.textFields["补充信息"];supplement.tap();supplement.typeText("Continue verified request");app.buttons["assistant.resume"].tap();XCTAssertTrue(app.staticTexts["已收到补充信息"].waitForExistence(timeout:10))
+ }
+
 }

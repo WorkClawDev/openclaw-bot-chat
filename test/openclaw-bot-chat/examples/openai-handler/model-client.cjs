@@ -41,6 +41,7 @@ function createModelClient(options) {
       model,
       messages,
       stream: process.env.OPENAI_COMPAT_STREAM !== "false",
+      ...(process.env.OPENAI_COMPAT_STREAM !== "false" && process.env.OPENAI_COMPAT_STREAM_USAGE === "true" ? {stream_options:{include_usage:true}} : {}),
     };
 
     if (mcpRuntime && mcpRuntime.tools.length > 0) {

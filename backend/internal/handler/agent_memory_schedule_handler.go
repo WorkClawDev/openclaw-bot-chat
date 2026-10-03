@@ -26,10 +26,10 @@ func (h *AgentMemoryScheduleHandler) RegisterUser(r *gin.RouterGroup) {
 	r.POST("/schedules", h.SaveSchedule)
 	r.POST("/schedules/:id/:action", h.ScheduleAction)
 }
-func (h *AgentMemoryScheduleHandler) RegisterRuntime(r *gin.RouterGroup) {
+func (h *AgentMemoryScheduleHandler) RegisterRuntime(r *gin.RouterGroup, runs *AgentRunHandler) {
 	r.GET("/memories", h.RuntimeMemory)
-	r.POST("/memories", h.RuntimeSave)
-	r.DELETE("/memories/:id", h.RuntimeDelete)
+	r.POST("/memories", runs.Fence(h.RuntimeSave))
+	r.DELETE("/memories/:id", runs.Fence(h.RuntimeDelete))
 }
 func (h *AgentMemoryScheduleHandler) ListMemory(c *gin.Context) {
 	owner, _ := middleware.GetUserID(c)

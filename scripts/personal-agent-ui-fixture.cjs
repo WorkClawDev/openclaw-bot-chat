@@ -3,11 +3,14 @@
 // broker or PostgreSQL acceptance. No real credentials are read.
 const {createServer}=require('node:http'),{randomUUID}=require('node:crypto');
 const port=Number(process.env.PERSONAL_AGENT_UI_PORT||18081),bot='00000000-0000-4000-8000-000000000001',run='00000000-0000-4000-8000-000000000002';
-let memory=[],schedules=[],status='waiting_input',approved=false;
+let memory=[],schedules=[],status='waiting_input',approved=false,uncertain=false;
 const approval={id:'00000000-0000-4000-8000-000000000003',run_id:run,tool:'local__fs_replace_text',arguments:{path:'/authorized/work/report.md',old_text:'draft',new_text:'reviewed'},parameter_hash:'fixture-hash',status:'pending',expires_at:'2027-01-01T00:00:00Z'};
 const server=createServer(async(req,res)=>{res.setHeader('Access-Control-Allow-Origin','http://127.0.0.1:13001');res.setHeader('Access-Control-Allow-Headers','Authorization,Content-Type');res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS');if(req.method==='OPTIONS'){res.end();return};const url=new URL(req.url,'http://fixture');const path=url.pathname;let body={};try{const chunks=[];for await(const c of req)chunks.push(c);if(chunks.length)body=JSON.parse(Buffer.concat(chunks));}catch{res.writeHead(400);res.end();return};let data;
  if(path==='/health'){data={status:'fixture'}}
- else if(path==='/fixture/reset'){memory=[];schedules=[];status='waiting_input';approved=false;data={status:'reset'}}
+ else if(path==='/fixture/reset'){memory=[];schedules=[];status='waiting_input';approved=false;uncertain=false;data={status:'reset'}}
+ else if(path==='/fixture/uncertain'){uncertain=true;status='waiting_input';data={status:'configured'}}
+ else if(path==='/api/v1/agent/tool-calls/uncertain'){data=uncertain?[{id:'tool-uncertain',run_id:run,tool:'fixture_external_write'}]:[]}
+ else if(path.endsWith('/reconcile')){if(!body.evidence||body.evidence.length<3){res.writeHead(400);res.end();return};uncertain=false;data={status:'recorded'}}
  else if(path==='/api/v1/auth/me'){data={id:'00000000-0000-4000-8000-000000000004',username:'Disposable UI User',nickname:'UI User',status:1,created_at:'2026-10-03T00:00:00Z'}}
  else if(path==='/api/v1/bots'){data=[{id:bot,name:'Fixture Assistant',status:'online'}]}
  else if(path==='/api/v1/agent/runs'){data=[{id:run,status,cancel_requested:false,steps:2,max_steps:80,event_seq:2,conversation:'fixture',result:{content:status==='waiting_input'?'请补充报告的目标读者':status==='cancelled'?'执行已停止':'已收到补充信息'}}]}

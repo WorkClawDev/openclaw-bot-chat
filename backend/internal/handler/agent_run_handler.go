@@ -31,6 +31,7 @@ func (h *AgentRunHandler) RegisterRuntime(r *gin.RouterGroup) {
 	r.POST("/runs/:id/events", h.Event)
 }
 func (h *AgentRunHandler) RegisterUser(r *gin.RouterGroup) {
+	r.GET("/health", h.Health)
 	r.GET("/runs", h.List)
 	r.GET("/runs/:id/events", h.Events)
 	r.POST("/runs/:id/:action", h.UserAction)
@@ -252,4 +253,14 @@ func (h *AgentRunHandler) Fence(next gin.HandlerFunc) gin.HandlerFunc {
 			writeRunError(c, err)
 		}
 	}
+}
+
+func (h *AgentRunHandler) Health(c *gin.Context) {
+	owner, _ := middleware.GetUserID(c)
+	data, err := h.Repo.Health(c.Request.Context(), owner)
+	if err != nil {
+		response.InternalError(c, "agent diagnostics unavailable")
+		return
+	}
+	response.Success(c, data)
 }

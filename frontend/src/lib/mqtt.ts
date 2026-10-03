@@ -148,9 +148,8 @@ export function createMqttRealtimeClient(): MqttRealtimeClient {
       return
     }
 
-    if (client && !client.connected) {
-      client.end(true)
-      client = null
+    if (client) {
+      await disconnect()
     }
 
     return connectClient(options)

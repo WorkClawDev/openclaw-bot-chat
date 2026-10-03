@@ -43,7 +43,12 @@ func (h *AgentFileHandler) RuntimeFile(c *gin.Context) {
 		response.NotFound(c, "file unavailable or not owned")
 		return
 	}
-	response.Success(c, asset)
+	payload, err := h.assets.FileBytesForOwner(c.Request.Context(), bot.OwnerID, &bot.ID, c.Param("id"))
+	if err != nil {
+		response.InternalError(c, "authorized file download failed")
+		return
+	}
+	response.Success(c, gin.H{"id": asset.ID, "mime_type": asset.MIMEType, "size": asset.Size, "sha256": asset.SHA256, "file_name": asset.FileName, "content_base64": base64.StdEncoding.EncodeToString(payload)})
 }
 func (h *AgentFileHandler) List(c *gin.Context) {
 	owner, _ := middleware.GetUserID(c)

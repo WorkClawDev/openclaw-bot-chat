@@ -77,3 +77,37 @@ func (r *AgentJournalRepository) PrepareTool(ctx context.Context, bot *model.Bot
 func (r *AgentJournalRepository) CompleteTool(ctx context.Context, bot *model.Bot, runID, key string, result model.JSONMap) error {
 	return agentDB(ctx, r.db).Model(&model.AgentToolCall{}).Where("bot_id = ? AND owner_id = ? AND run_id = ? AND key = ?", bot.ID, bot.OwnerID, runID, key).Updates(map[string]interface{}{"status": "completed", "result": result, "updated_at": time.Now().UTC()}).Error
 }
+
+func (r *AgentJournalRepository) UncertainTools(ctx context.Context, owner uuid.UUID) ([]model.AgentToolCall, error) {
+	var rows []model.AgentToolCall
+	err := r.db.WithContext(ctx).Table("agent_tool_calls t").Select("t.*").Joins("JOIN agent_runs r ON CAST(r.id AS TEXT) = t.run_id").Where("t.owner_id = ? AND t.idempotent = ? AND t.status = 'started' AND r.lease_until = 0 AND r.status IN ?", owner, false, []string{"waiting_input", "paused", "failed"}).Limit(100).Scan(&rows).Error
+	return rows, err
+}
+func (r *AgentJournalRepository) Reconcile(ctx context.Context, owner, id uuid.UUID, outcome, evidence string) error {
+	if (outcome != "completed" && outcome != "not_applied") || len(evidence) < 3 || len(evidence) > 8000 {
+		return errors.New("reconciliation evidence required")
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var call model.AgentToolCall
+		if err := tx.Where("id = ? AND owner_id = ?", id, owner).First(&call).Error; err != nil {
+			return err
+		}
+		var run model.AgentRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", call.RunID, owner).First(&run).Error; err != nil {
+			return err
+		}
+		if run.LeaseUntil != 0 || call.Status != "started" || call.Idempotent || (run.Status != "waiting_input" && run.Status != "paused" && run.Status != "failed") {
+			return ErrAgentState
+		}
+		if outcome == "completed" {
+			if err := tx.Model(&call).Updates(map[string]interface{}{"status": "completed", "result": model.JSONMap{"value": evidence, "reconciled_by": owner.String()}, "updated_at": time.Now().UTC()}).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Delete(&call).Error; err != nil {
+				return err
+			}
+		}
+		return appendAgentEvent(tx, &run, "tool_reconciled", model.JSONMap{"tool": call.Tool, "outcome": outcome, "evidence": evidence, "actor_id": owner.String()})
+	})
+}

@@ -1,21 +1,34 @@
 name: Personal agent
 on:
   push:
-    paths: ['test/openclaw-bot-chat/**', 'scripts/test-agent*', '.github/workflows/personal-agent.yml']
+    paths: ['test/openclaw-bot-chat/**', 'test/personal-agent-evals/**', 'backend/**', 'frontend/**', 'extensions/openclaw-bot-chat/**', 'deploy/personal-agent/**', 'scripts/personal-agent*', 'scripts/test-agent*', '.github/workflows/personal-agent.yml']
   pull_request:
-    paths: ['test/openclaw-bot-chat/**', 'scripts/test-agent*', '.github/workflows/personal-agent.yml']
+    paths: ['test/openclaw-bot-chat/**', 'test/personal-agent-evals/**', 'backend/**', 'frontend/**', 'extensions/openclaw-bot-chat/**', 'deploy/personal-agent/**', 'scripts/personal-agent*', 'scripts/test-agent*', '.github/workflows/personal-agent.yml']
 jobs:
-  agent:
+  regression:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: test/openclaw-bot-chat
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: test/openclaw-bot-chat/package-lock.json
-      - run: npm ci
-      - run: npm run ci
+          cache-dependency-path: |
+            test/openclaw-bot-chat/package-lock.json
+            frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: npm --prefix test/openclaw-bot-chat ci
+      - run: npm --prefix test/openclaw-bot-chat run ci
+      - run: node test/personal-agent-evals/run.cjs
+      - run: npm --prefix extensions/openclaw-bot-chat ci && npm --prefix extensions/openclaw-bot-chat test
+      - run: npm --prefix frontend ci && npm --prefix frontend run build
+      - run: npm --prefix frontend audit --omit=dev && npm --prefix test/openclaw-bot-chat audit --omit=dev
+      - run: OPENAI_COMPAT_BASE_URL=https://fixture.invalid/v1 OPENAI_COMPAT_MODEL=fixture docker compose -f deploy/personal-agent/compose.yaml -p personal-agent config --quiet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deterministic-evaluation
+          path: test/personal-agent-evals/results/

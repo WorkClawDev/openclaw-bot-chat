@@ -76,7 +76,7 @@ func (s *AssetService) verifyStoredFile(ctx context.Context, asset *model.Asset)
 	if asset.Size <= 0 || asset.Size > MaxFileSizeBytes {
 		return ErrAssetTooLarge
 	}
-	download, _, err := s.storage.CreatePresignedDownload(ctx, asset.ObjectKey, time.Duration(s.storageCfg.DownloadURLTTL)*time.Second)
+	download, err := s.fileDownloadURL(ctx, asset.ObjectKey)
 	if err != nil {
 		return err
 	}
@@ -130,4 +130,56 @@ func validateFileBytes(payload []byte, mime string) error {
 		return ErrAssetUnsupportedType
 	}
 	return nil
+}
+
+func (s *AssetService) fileDownloadURL(ctx context.Context, key string) (string, error) {
+	if p, ok := s.storage.(interface {
+		CreateInternalDownload(context.Context, string, time.Duration) (string, error)
+	}); ok {
+		return p.CreateInternalDownload(ctx, key, time.Minute)
+	}
+	url, _, err := s.storage.CreatePresignedDownload(ctx, key, time.Minute)
+	return url, err
+}
+func (s *AssetService) FileBytesForOwner(ctx context.Context, owner uuid.UUID, bot *uuid.UUID, id string) ([]byte, error) {
+	if _, err := s.FileForOwner(ctx, owner, bot, id); err != nil {
+		return nil, err
+	}
+	assetID, _ := uuid.Parse(id)
+	asset, err := s.repo.GetByID(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	url, err := s.fileDownloadURL(ctx, asset.ObjectKey)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := *s.httpClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	reply, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer reply.Body.Close()
+	if reply.StatusCode != http.StatusOK {
+		return nil, ErrAssetInvalid
+	}
+	data, err := io.ReadAll(io.LimitReader(reply.Body, MaxFileSizeBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) != asset.Size || len(data) > MaxFileSizeBytes {
+		return nil, ErrAssetInvalid
+	}
+	sum := sha256.Sum256(data)
+	if asset.SHA256 == nil || hex.EncodeToString(sum[:]) != *asset.SHA256 {
+		return nil, ErrAssetInvalid
+	}
+	return data, nil
 }

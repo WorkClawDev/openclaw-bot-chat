@@ -1,11 +1,15 @@
 {
   "mcpServers": {
-    "MiniMax": {
-      "command": "uvx",
-      "args": ["minimax-coding-plan-mcp", "-y"],
-      "env": {
-        "MINIMAX_API_KEY": "MINIMAX_API_KEY",
-        "MINIMAX_API_HOST": "https://api.minimaxi.com"
+    "filesystem": {
+      "command": "replace-with-installed-filesystem-mcp-command",
+      "args": ["/workspace/input"],
+      "tools": {
+        "read_file": {
+          "capabilities": ["read"],
+          "idempotent": true,
+          "approvalRequired": false,
+          "paths": [{"argument": "path", "roots": ["/workspace/input"], "allowHidden": false}]
+        }
       }
     }
   }

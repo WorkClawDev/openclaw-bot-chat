@@ -10,7 +10,7 @@ import (
 
 func StartAgentEventPublisher(ctx context.Context, repo *repository.AgentRunRepository, publish func(string, []byte) error) {
 	go func() {
-		timer := time.NewTicker(2 * time.Second)
+		timer := time.NewTicker(250 * time.Millisecond)
 		defer timer.Stop()
 		for {
 			rows, err := repo.PendingNotices(ctx)

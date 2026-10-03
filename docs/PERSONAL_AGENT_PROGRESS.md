@@ -11,7 +11,7 @@
 | E | 自动测试通过 | 附件和可下载成果 |
 | F | 自动测试通过 | 记忆和计划任务 |
 | G | 自动测试和两端 UI 通过 | 事件和 Web/iOS 体验 |
-| H | 未开始 | 运行保障、评测及真实验收 |
+| H | 自动测试与两端 UI 通过，真实运行验收待执行 | 专用镜像/Compose/秘密引用、MQTT身份、诊断/用量、核对恢复、备份迁移/评测/72h工具 |
 
 真实模型、MCP、broker、设备与 72 小时验收尚未执行。不得把确定性测试替身报告为真实服务验收。
 
@@ -56,3 +56,18 @@ Agent full suite: 26 passed, including durable provider commands and deletion. G
 Model SSE consumption preserves split UTF-8 and complete tool arguments, persists actual assistant text, refuses truncated streams, bounds response size and obeys cancellation. Ordered run events drive step cards and current text. Backend event notices use a persisted outbox and QoS 1; only acknowledged notices are marked delivered, with replay-safe seq on Web/iOS and authenticated paged history fallback. Both clients show questions, approval arguments/expiry, budgets, errors, stop/resume, artifacts and Task review routes. Task resume now synchronizes the business Task to claimed; success notes no longer appear as errors. SwiftUI row buttons use explicit borderless style so one action cannot trigger another button in the same row.
 
 Agent: 29 cases passed. Go full suite passed, including event-notice restart/ack. Actual Chrome UI: 2/2 passed, covering approval, input, event dedup, downloaded real fixture bytes, memory management and schedule pause/resume/cancel. Actual iPhone 17 Pro simulator (iOS 26.4), dedicated PersonalAgent-Acceptance: 1/1 UI test passed after independent fixture-port separation and button-style repair. Screenshot attachments were exported from the successful xcresult and visually inspected. Screenshots and results live under /private/tmp/personal-agent-* and are ignored, not committed. Frontend production build passed. These are actual client interactions against deterministic HTTP fixtures, not live model/EMQX/PostgreSQL/device acceptance; real broker event delivery and latency remain unverified.
+
+
+## Batch H
+
+Implemented dedicated Node24 and non-root Go images, scoped Compose project/loopback ports, read-only worker/backend roots, minimum volumes/environment/capabilities, mounted secrets, real readiness and owner diagnostics. MQTT bootstrap now mints random owner/bot/client-bound credentials, Redis hash-only session records, fail-closed HTTP authentication/authorization, current identity/key/conversation checks, 60–300s expiry and client renewal. Personal execution additionally binds transport topic and owner DM, rejecting group/non-owner spoofing before custody. Revoked existing read subscriptions disconnect at expiry (maximum5min), not instant kick.
+
+Crashed cancelled leases finalize and fence correctly; business Task cancellation is durable and denies new fenced tools before heartbeat, terminal reviewed results cannot be cancelled through the run API, and bot memory writes use the run fence. Failed Task resume remains synchronized. Non-idempotent uncertainty has both-client evidence reconciliation before a verified result or explicitly verified retry, with owner/run-state checks and audit events. MCP uses real bounded stdio lifecycle, partial-service degradation, per-tool paths/capabilities, reconnect, cancellation closure and shutdown cleanup; exec MCP is disabled. Workspace identity is persisted in runs, derived contexts include workspace, and different-workspace workers refuse custody instead of silently migrating execution. Private file bytes traverse authenticated backend using internal S3 signing, with hash verification. Model SSE usage/first-delta/duration are persisted only when observed; clients state unknown usage otherwise. Worker heartbeat reflects actual MQTT connection.
+
+Security audit required Next.js15.5.27 and PostCSS8.5.28; production frontend and agent npm audit show0 vulnerabilities. Six high development dependency advisories (Tailwind3/braces graph) remain in development scope (braces advisory unresolved by compatible Tailwind3; production image prunes dev dependencies). Chrome on upgraded Next.js:3/3 UI passed. Dedicated iPhone17Pro/iOS26.4 Simulator:2/2 UI passed; final generic simulator build passed. Agent ci:34/34 passed, including actual SDK stdio child/MCP recovery and private-byte/usage cases. Go full suite passed, including broker binding/expiry/revocation/fail-closed/wildcard, crashed cancellation, owner diagnostics, reconciliation and internal/public S3 signing. Extension:57/57 passed. Deterministic40-scenario runner:40 passed,0failed,0not_run; real-service40not_run. UI remains real client execution against HTTP fixtures, not real model/broker/PostgreSQL/objectstore.
+
+Compose config --quiet and shell/Node syntax validation passed; Docker daemon info returnedHTTP500, so actual image builds/startup, PostgreSQL migration replay and backup/restore remain unverified. Provided scoped backup/new-DB restore/migration scripts,40Chinese live scenarios with evidence recording, and72h collector/analyzer which currently reports0samples/not_run. No paid model/key use, user/production service changes, remote push/PR/release or credential rotation occurred. See PERSONAL_AGENT_OPERATIONS.md for commands and acceptance boundaries.
+
+## Local batch commits
+
+A39652be; B95eea6f; Ca431c77; D90d83d4; E8d6a255; F9cef00e; G56d2946. H commit is the commit containing this entry (identify with git log); no remote push. Original uncommitted edits remain outside this worktree.

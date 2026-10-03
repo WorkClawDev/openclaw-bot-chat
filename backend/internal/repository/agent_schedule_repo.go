@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
 	"gorm.io/gorm"
@@ -90,12 +91,13 @@ func (r *AgentScheduleRepository) Tick(ctx context.Context, now time.Time) error
 	if err := r.db.WithContext(ctx).Model(&model.AgentSchedule{}).Where("status = 'active' AND next_at <= ?", now).Limit(100).Pluck("id", &ids).Error; err != nil {
 		return err
 	}
+	var failures []error
 	for _, id := range ids {
 		if err := r.tickOne(ctx, id, now); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("schedule %s: %w", id, err))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 func (r *AgentScheduleRepository) tickOne(ctx context.Context, id uuid.UUID, now time.Time) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

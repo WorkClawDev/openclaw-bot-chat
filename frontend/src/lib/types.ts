@@ -347,6 +347,7 @@ export interface RealtimeSubscription {
 
 export interface RealtimeBootstrapResponse {
   broker: {
+    expires_at?: number
     tcp_url: string
     ws_url: string
     username?: string

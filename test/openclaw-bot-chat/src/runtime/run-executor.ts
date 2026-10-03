@@ -7,8 +7,9 @@ export class RunExecutor {
  private readonly active=new Map<string,AbortController>();
  constructor(private readonly client:BotChatHttpClient,private readonly agent:OpenClawAgent,private readonly workspace:string){}
  stop():void {for(const controller of this.active.values())controller.abort(new Error('Worker stopping'));}
- async create(trigger_key:string,conversation:string,input:Record<string,unknown>,task_id?:string):Promise<AgentRun>{return this.client.agentJournal('POST','/runs',{trigger_key,conversation,input,...(task_id?{task_id}:{})});}
+ async create(trigger_key:string,conversation:string,input:Record<string,unknown>,task_id?:string):Promise<AgentRun>{return this.client.agentJournal('POST','/runs',{trigger_key,conversation,input:{...input,workspace_id:this.workspace},...(task_id?{task_id}:{})});}
  async execute(run:AgentRun,request:OpenClawRequest,beforeRelease?:(response:OpenClawResponse,lease:AgentLease)=>Promise<Record<string,unknown>>):Promise<OpenClawResponse|null>{
+  if(run.input?.workspace_id && run.input.workspace_id!==this.workspace)throw new Error("Run belongs to a different workspace; start the worker with its original workspace ID");
   const memory=await this.client.agentJournal<{revision:number;records:Array<{id:string;content:string;source:string;scope:string}>}>("GET",`/memories?scope=${encodeURIComponent(request.session_id)}`);
   let claimed:AgentRun;
   try{claimed=await this.client.agentJournal('POST',`/runs/${run.id}/claim`,{worker_id:this.workerId});}
@@ -19,7 +20,7 @@ export class RunExecutor {
   const heartbeat=setInterval(()=>void this.client.agentJournal<AgentRun>('POST',`/runs/${run.id}/heartbeat`,{worker_id:this.workerId,fence:lease.fence}).then(latest=>{if(latest.cancel_requested)controller.abort(new Error("User cancelled"));}).catch(error=>controller.abort(error)),3000);
   const journal=<T>(method:string,url:string,body?:unknown):Promise<T>=>this.client.agentJournal(method,url,body,lease);
   const scope=createHash('sha256').update(JSON.stringify([this.workspace,request.session_id,memory.revision])).digest('hex');
-  const executionScope=createHash('sha256').update(`run:${run.id}:memory:${memory.revision}`).digest('hex');
+  const executionScope=createHash('sha256').update(`${this.workspace}:run:${run.id}:memory:${memory.revision}`).digest('hex');
   Object.assign(request,{signal,memories:memory.records,saveMemory:(content:string)=>journal("POST","/memories",{content,scope:request.session_id,source:`message:${request.metadata.message_id??run.id}`,confirmed:true}),deleteMemory:(id:string)=>journal("DELETE",`/memories/${encodeURIComponent(id)}`),getFile:(id:string)=>journal("GET",`/files/${encodeURIComponent(id)}`),deliverArtifact:(input:Record<string,unknown>)=>journal("POST","/artifacts",input),loadState:()=>journal('GET',`/context/${scope}`),saveState:(state:Record<string,unknown>)=>journal('PUT',`/context/${scope}`,state),loadExecution:()=>journal('GET',`/context/${executionScope}`),saveExecution:(state:Record<string,unknown>)=>journal('PUT',`/context/${executionScope}`,state),beforeTool:(intent:Record<string,unknown>)=>journal('POST','/tool-calls/prepare',intent),afterTool:(intent:Record<string,unknown>)=>journal('POST','/tool-calls/complete',intent),audit:(event:Record<string,unknown>)=>journal('POST',`/runs/${run.id}/events`,{worker_id:this.workerId,fence:lease.fence,type:event.type,data:event})});
   request.metadata.run_id=run.id;request.metadata.supplement=claimed.input.supplement;
   request.authorize=async intent=>{const approval=await this.client.approval({...intent,run_id:run.id},lease);if(approval.status==='pending'){const error=new Error(`操作等待授权：${intent.tool}。请在个人助手页面批准本次参数。`)as Error&{code:string};error.code='APPROVAL_PENDING';throw error;}return{approved:approval.status==='approved',run_id:approval.run_id,parameter_hash:approval.parameter_hash,expires_at:approval.expires_at};};

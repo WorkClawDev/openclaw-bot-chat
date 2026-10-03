@@ -26,6 +26,9 @@ function createMcpRuntimeManager(options) {
   } = options;
 
   let runtimePromise;
+  let initializedAt=0;
+  let rebuildingPromise;
+  const reconnectDelayMs=options.reconnectDelayMs??30000;
 
   function isToolEnabled(toolName) {
     if (allowedToolsRegex && !allowedToolsRegex.test(toolName)) {
@@ -42,7 +45,7 @@ function createMcpRuntimeManager(options) {
   }
 
   function resolveMcpEnv(rawEnv) {
-    const baseEnv = { PATH: process.env.PATH, LANG: "C.UTF-8" };
+    const baseEnv = { PATH: process.env.PATH, LANG: "C.UTF-8",HOME:"/nonexistent",USER:"agent",LOGNAME:"agent",SHELL:"/bin/false" };
     if (!isRecord(rawEnv)) {
       return baseEnv;
     }
@@ -111,7 +114,7 @@ function createMcpRuntimeManager(options) {
     return normalizeMcpConfig(parsed);
   }
 
-  async function createRuntime() {
+  async function createRuntime(signal) {
     const config = loadMcpConfig();
     if (!config || !isRecord(config.mcpServers)) {
       return null;
@@ -124,6 +127,7 @@ function createMcpRuntimeManager(options) {
       tools: [],
       connections: [],
       health: {},
+      activeCalls:0,
     };
 
     for (const [serverName, serverConfig] of Object.entries(config.mcpServers)) {
@@ -143,7 +147,7 @@ function createMcpRuntimeManager(options) {
         ? path.resolve(readString(serverConfig.cwd))
         : process.cwd();
 
-      const transport = new stdio.StdioClientTransport({ command, args, env, cwd });
+      const transport = new stdio.StdioClientTransport({ command, args, env, cwd, stderr:"pipe" });
       const client = new sdk.Client(
         { name: "openclaw-bot-chat-openai-handler", version: "1.0.0" },
         { capabilities: {} },
@@ -151,13 +155,15 @@ function createMcpRuntimeManager(options) {
 
       let listed;
       try {
-        await client.connect(transport);
-        listed = await client.listTools();
+        await client.connect(transport,{signal,timeout:Math.min(toolTimeoutMs,10000)});
+        listed = await client.listTools(undefined,{signal,timeout:Math.min(toolTimeoutMs,10000)});
         runtime.connections.push(client);
         runtime.health[serverName] = { state: "ready" };
+        client.onclose=()=>{runtime.health[serverName]={state:"disconnected"}};
       } catch (error) {
-        runtime.health[serverName] = { state: "unavailable", error: String(error.message || error) };
+        runtime.health[serverName] = { state: "unavailable", error: "connection or discovery failed" };
         await client.close().catch(() => {});
+        if(signal?.aborted){await Promise.allSettled(runtime.connections.map(connection=>connection.close()));throw signal.reason;}
         continue;
       }
       for (const tool of listed.tools || []) {
@@ -165,11 +171,12 @@ function createMcpRuntimeManager(options) {
           ? `${sanitizeToolPrefix(serverName)}__${tool.name}`
           : String(tool.name);
         const policy = serverConfig.tools && serverConfig.tools[tool.name];
-        if (!policy || !Array.isArray(policy.capabilities) || !isToolEnabled(exposedName)) {
+        if (!policy || !Array.isArray(policy.capabilities) || policy.capabilities.includes("exec") || (policy.capabilities.some(cap=>cap==="read"||cap==="write") && (!Array.isArray(policy.paths)||!policy.paths.length)) || !isToolEnabled(exposedName)) {
           continue;
         }
         runtime.servers.set(exposedName, {
           client,
+          serverName,
           originalName: tool.name,
           definition: { name: exposedName, parameters: tool.inputSchema || { type: "object", additionalProperties: true }, policy: {
             capabilities: policy.capabilities,
@@ -198,14 +205,17 @@ function createMcpRuntimeManager(options) {
     return runtime;
   }
 
-  async function getRuntime() {
+  async function getRuntime(signal) {
+    signal?.throwIfAborted();
+    if(rebuildingPromise)return rebuildingPromise;
     if (runtimePromise) {
-      return runtimePromise;
+      const previous=await runtimePromise;
+      if (!previous || previous.activeCalls || Date.now()-initializedAt<reconnectDelayMs || Object.values(previous.health).every(entry=>entry.state==="ready")) return previous;
+      rebuildingPromise=(async()=>{await Promise.allSettled(previous.connections.map(client=>client.close()));initializedAt=Date.now();runtimePromise=createRuntime(signal).catch(error=>{runtimePromise=undefined;throw error});return runtimePromise})().finally(()=>{rebuildingPromise=undefined});
+      return rebuildingPromise;
     }
-    runtimePromise = createRuntime().catch((error) => {
-      runtimePromise = undefined;
-      throw error;
-    });
+    initializedAt=Date.now();
+    runtimePromise=createRuntime(signal).catch(error=>{runtimePromise=undefined;throw error});
     return runtimePromise;
   }
 
@@ -240,12 +250,13 @@ function createMcpRuntimeManager(options) {
     const timeout = AbortSignal.timeout(toolTimeoutMs);
     const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
     let result;
+    runtime.activeCalls++;
     try {
       result = await executeTool(target.definition, args, { ...context, signal }, () => target.client.callTool({ name: target.originalName, arguments: args }, undefined, { signal, timeout: toolTimeoutMs }));
     } catch (error) {
-      if (signal.aborted) {const uncertain=new Error("MCP call interrupted; external result is uncertain and must be reconciled before retry");uncertain.code="TOOL_UNCERTAIN";throw uncertain;}
+      if (signal.aborted) {await target.client.close().catch(()=>{});const uncertain=new Error("MCP call interrupted; external result is uncertain and must be reconciled before retry");uncertain.code="TOOL_UNCERTAIN";throw uncertain;}
       throw error;
-    }
+    } finally {runtime.activeCalls--;}
     if (result.isError) throw new Error(stringifyToolResult(result));
 
     return truncateText(stringifyToolResult(result), toolResultMaxChars);
@@ -276,10 +287,11 @@ function createMcpRuntimeManager(options) {
   function summarizeCapabilities(runtime) {
     const hasMcp = Boolean(runtime && Array.isArray(runtime.tools) && runtime.tools.length > 0);
     if (!hasMcp) {
-      return JSON.stringify({ mcp_tools_enabled: false });
+      return JSON.stringify({ mcp_tools_enabled: false,health:runtime?.health??{} });
     }
     return JSON.stringify({
       mcp_tools_enabled: true,
+      health:runtime.health,
       tool_count: runtime.tools.length,
       tool_names: runtime.tools.map((item) => item.function.name),
     });
