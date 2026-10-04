@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { access, appendFile, mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
+import { access, appendFile, copyFile, mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { envFile, state, root, settings, reportFailure } from './lib.mjs';
 
@@ -83,6 +83,10 @@ try {
     credentials: [{ accessKey: config.STORAGE_S3_ACCESS_KEY, secretKey: config.STORAGE_S3_SECRET_KEY }],
     actions: ['Admin', 'Read', 'Write', 'List', 'Tagging'],
   }] }) + '\n', { mode: 0o600 });
+  // The frontend development server still needs the managed proxy CA.
+  const cert = process.env.CODEX_PROXY_CERT || '/etc/ssl/certs/ca-certificates.crt';
+  await copyFile(cert, join(state, 'proxy-ca.pem'));
+  await chmod(join(state, 'proxy-ca.pem'), 0o644);
   // The database entrypoint runs as a separate container user.
   await chmod(join(root, 'backend/migrations/init.sql'), 0o644);
   await chmod(join(root, 'broker/mqtts/mqtts.yaml'), 0o644);
