@@ -27,7 +27,8 @@ auth:
         batch_max_bytes: 4194304
         batch_wait_ms: 1
         rpc_workers: 4
-        rpc_queue_capacity: 64
+        # Admit a reconnect burst; byte and deadline limits still bound waiting work.
+        rpc_queue_capacity: 1024
         rpc_queue_bytes: 16777216
         failure_cooldown_ms: 1000
         cache_ttl_ms: 10000
