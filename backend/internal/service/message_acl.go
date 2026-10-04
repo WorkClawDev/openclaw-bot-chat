@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
+	"github.com/openclaw-bot-chat/backend/internal/model"
 )
 
 var (
@@ -80,6 +81,24 @@ func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid
 		return nil, err
 	}
 	topics = append(topics, conversations...)
+
+	// A new bot has no message history yet, but its owner must be able to
+	// subscribe and publish the first DM using scoped broker credentials.
+	const pageSize = 500
+	for page := 1; ; page++ {
+		bots, total, err := s.botRepo.ListByOwner(ctx, userID, page, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, bot := range bots {
+			if bot.Status == model.BotStatusEnabled {
+				topics = append(topics, fmt.Sprintf("%s/dm/user/%s/bot/%s", messageTopicPrefix, userID, bot.ID))
+			}
+		}
+		if len(bots) == 0 || int64(page*pageSize) >= total {
+			break
+		}
+	}
 
 	groups, _, err := s.groupRepo.ListByUser(ctx, userID, 1, 500)
 	if err != nil {

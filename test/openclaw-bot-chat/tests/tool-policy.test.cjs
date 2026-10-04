@@ -24,3 +24,10 @@ test('cancellation kills process group before delayed writes',async()=>{const f=
  const output=path.join(f.root,'late');const controller=new AbortController();const pending=runProcess(process.execPath,['-e','setTimeout(()=>require("fs").writeFileSync(process.argv[1],"bad"),1000)',output],{signal:controller.signal,timeoutMs:3000});setTimeout(()=>controller.abort(new Error('stop')),50);await assert.rejects(pending,/stop/);await new Promise(r=>setTimeout(r,1100));assert(!fs.existsSync(output));
 }finally{f.close();}});
 test('shell cannot fall back to host when isolated runner is absent',async()=>{await assert.rejects(isolatedShell('touch /tmp/should-not-exist','/tmp',{}),/Shell disabled/);});
+test('disabled shell is absent from model tools and execution registry', async () => {
+ const runtime = createLocalToolRuntime({enabled:true,readRoots:[],writeRoots:[],bashEnabled:false,debugLog:()=>{}});
+ const tools = await runtime.getRuntime();
+ assert(!tools.tools.some(tool => tool.function.name === 'local__bash_exec'));
+ assert(!tools.invokers.has('local__bash_exec'));
+ assert(!tools.definitions.has('local__bash_exec'));
+});

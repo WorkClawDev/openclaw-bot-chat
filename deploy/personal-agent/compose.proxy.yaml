@@ -1,0 +1,26 @@
+# Optional trust configuration for an HTTPS-intercepting development proxy.
+# Supply a readable combined CA bundle; keep the existing Docker proxy settings.
+services:
+  backend:
+    build:
+      secrets: [proxy_ca]
+    volumes:
+      - ${PERSONAL_AGENT_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}:/run/proxy-ca.pem:ro
+    environment:
+      SSL_CERT_FILE: /run/proxy-ca.pem
+  frontend:
+    build:
+      secrets: [proxy_ca]
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+  worker:
+    build:
+      secrets: [proxy_ca]
+    volumes:
+      - ${PERSONAL_AGENT_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}:/run/proxy-ca.pem:ro
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/proxy-ca.pem
+      NODE_USE_ENV_PROXY: "1"
+secrets:
+  proxy_ca:
+    file: ${PERSONAL_AGENT_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}

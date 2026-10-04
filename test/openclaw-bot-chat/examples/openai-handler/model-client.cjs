@@ -129,6 +129,9 @@ function createModelClient(options) {
 
     if (Array.isArray(payload.choices) && payload.choices.length > 0) {
       const firstChoice = payload.choices[0];
+      if (firstChoice?.finish_reason && !["stop", "tool_calls", "function_call"].includes(firstChoice.finish_reason)) {
+        throw new Error("Model response stopped before completion: " + firstChoice.finish_reason);
+      }
       if (isRecord(firstChoice) && isRecord(firstChoice.message)) {
         const message = firstChoice.message;
         return {

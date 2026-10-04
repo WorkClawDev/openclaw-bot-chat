@@ -2,12 +2,31 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"testing"
 )
+
+func TestUncertainToolsEmptyListSerializesAsArray(t *testing.T) {
+	db, _, bot := runRepoFixture(t)
+	if err := db.AutoMigrate(&model.AgentToolCall{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := NewAgentJournalRepository(db).UncertainTools(context.Background(), bot.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "[]" {
+		t.Fatalf("empty reconciliation list must be a JSON array, got %s", encoded)
+	}
+}
 
 func TestAgentJournalPersistenceAndUncertainTool(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})

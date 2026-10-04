@@ -208,6 +208,7 @@ function createLocalToolRuntime(options) {
     runtime.definitions = new Map();
     for (const tool of defs) {
       if(!enabled && tool.name !== "local__request_input")continue;
+      if (tool.name === "local__bash_exec" && !bashEnabled) continue;
       tool.policy = tool.policy || { idempotent: args => !args.append && tool.name !== "local__bash_exec" && tool.name !== "local__fs_replace_text", capabilities: capabilities[tool.name], approvalRequired: args => tool.name === "local__bash_exec" || (capabilities[tool.name].includes("write") && typeof args.path === "string" && fs.existsSync(args.path)) };
       runtime.definitions.set(tool.name, tool);
       runtime.tools.push({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } });

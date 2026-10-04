@@ -193,10 +193,10 @@ export default function GroupsPage() {
             
             <CreateGroupForm
               onCancel={() => { setView('chat'); setShowMobileList(true); }}
-              onSuccess={(group) => {
+              onSuccess={async (group) => {
+                await refreshGroups()
                 openGroupConversation(group)
                 setSelectedGroup(group)
-                void refreshGroups()
                 setView('chat')
                 setShowMobileList(false)
               }}
@@ -241,7 +241,7 @@ function CreateGroupForm({
   onSuccess
 }: {
   onCancel: () => void
-  onSuccess: (group: Group) => void
+  onSuccess: (group: Group) => void | Promise<void>
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -256,7 +256,7 @@ function CreateGroupForm({
     setError('')
     try {
       const created = await groupsApi.create({ name, description })
-      onSuccess(created)
+      await onSuccess(created)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create group')
     } finally {

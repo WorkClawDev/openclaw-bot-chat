@@ -244,11 +244,11 @@ export class ManagedBotRuntime {
     if (this.config.mqttWsUrl) {
       return this.config.mqttWsUrl;
     }
-    if (bootstrap.broker.ws_url) {
-      return bootstrap.broker.ws_url;
-    }
     if (this.config.mqttTcpUrl) {
       return this.config.mqttTcpUrl;
+    }
+    if (bootstrap.broker.ws_url) {
+      return bootstrap.broker.ws_url;
     }
     if (bootstrap.broker.tcp_url) {
       return bootstrap.broker.tcp_url;

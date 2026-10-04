@@ -25,7 +25,7 @@ services:
   emqx:
     image: emqx/emqx:5.8.5
     command: ["/bin/sh", "/opt/emqx/etc/personal-agent-start.sh"]
-    secrets: [broker-token, dashboard-key, node-cookie]
+    secrets: [broker-token, dashboard-key, node-cookie, backend-password]
     volumes:
       - ./emqx.conf.template:/opt/emqx/etc/personal-agent.conf.template:ro
       - ./emqx-start.sh:/opt/emqx/etc/personal-agent-start.sh:ro
@@ -94,7 +94,7 @@ services:
       STORAGE_S3_SSL: "false"
       LOG_LEVEL: info
     healthcheck:
-      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/health"]
+      test: [CMD-SHELL, "wget -Y off -q -O /dev/null http://127.0.0.1:8080/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -117,13 +117,14 @@ services:
     cap_add: [CHOWN]
     security_opt: [no-new-privileges:true]
     volumes: ["state:/state", "output:/output"]
-    command: ["sh", "-c", "chown 1000:1000 /state /output && chmod 700 /state /output"]
+    command: ["sh", "-c", "chown 0:0 /state /output && chmod 700 /state /output && chown 1000:1000 /state /output"]
   worker:
     build:
       context: ../..
       dockerfile: deploy/personal-agent/worker.Dockerfile
     user: "1000:1000"
     init: true
+    extra_hosts: ["host.docker.internal:host-gateway"]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -145,7 +146,11 @@ services:
       OPENCLAW_AGENT_HANDLER: /app/examples/openai-compatible-handler.cjs
       OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:?Set provider URL in deploy/personal-agent/.env}
       OPENAI_COMPAT_MODEL: ${OPENAI_COMPAT_MODEL:?Set model in deploy/personal-agent/.env}
-      OPENAI_COMPAT_MAX_TOKENS: 2048
+      OPENAI_COMPAT_MAX_TOKENS: ${OPENAI_COMPAT_MAX_TOKENS:-2048}
+      OPENAI_COMPAT_TIMEOUT_MS: ${OPENAI_COMPAT_TIMEOUT_MS:-60000}
+      OPENAI_COMPAT_MCP_TOTAL_BUDGET_MS: ${OPENAI_COMPAT_MCP_TOTAL_BUDGET_MS:-45000}
+      OPENAI_COMPAT_STREAM_USAGE: ${OPENAI_COMPAT_STREAM_USAGE:-false}
+      OPENAI_COMPAT_SYSTEM_PROMPT: ${OPENAI_COMPAT_SYSTEM_PROMPT:-}
       OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS: /workspace/input,/workspace/output
       OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS: /workspace/output
       OPENAI_COMPAT_BASH_ENABLED: "false"
