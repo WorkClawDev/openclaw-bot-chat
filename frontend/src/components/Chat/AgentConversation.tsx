@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Avatar } from '@/components/Avatar'
 import type { Bot, ComposerMessageInput, Conversation, Message, RealtimeConnectionState } from '@/lib/types'
 import { AgentIcon } from './AgentIcon'
 import { AgentActivity } from './AgentActivity'
@@ -48,32 +47,35 @@ export function AgentConversation({ bot, conversation, messages, userId, mention
     if (!working || !activity.run) return messages
     const stream: Message = {
       id: `agent-stream:${activity.run.id}`, conversation_id: conversation.id, topic: conversation.send_topic,
-      sender_id: bot.id, sender_type: 'bot', from: { type: 'bot', id: bot.id, name: bot.name, avatar: bot.avatar || bot.avatar_url },
+      sender_id: bot.id, sender_type: 'bot', from: { type: 'bot', id: bot.id, name: bot.name },
       to: { type: 'user', id: userId || '' }, content: { type: 'text', body: typeof delta === 'string' ? delta : '' },
       metadata: { agent_stream: true },
     }
     return [...messages, stream]
-  }, [messages, working, activity.run?.id, delta, conversation.id, conversation.send_topic, bot.id, bot.name, bot.avatar, bot.avatar_url, userId])
+  }, [messages, working, activity.run?.id, delta, conversation.id, conversation.send_topic, bot.id, bot.name, userId])
   const send = async (input: ComposerMessageInput) => { await onSend(input); timeline.current?.scrollToLatest() }
 
   return <div className="agent-conversation">
     <header className="agent-chat-header">
       <div className="flex min-w-0 items-center gap-3">
-        <button onClick={onBack} className="agent-icon-action md:hidden" aria-label="Back to bots"><AgentIcon name="back" /></button>
-        <Avatar name={bot.name} src={bot.avatar || bot.avatar_url} size="sm" />
-        <div className="min-w-0"><h1 className="truncate text-[15px] font-semibold">{bot.name}</h1><div data-testid="chat-connection-status" className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"><span className={`agent-status-dot ${connectionState === 'connected' ? '' : 'is-offline'}`} />{connectionState === 'connected' ? 'Connected' : connectionState === 'idle' ? 'Connecting…' : connectionState}</div></div>
+        <button onClick={onBack} className="agent-icon-action md:hidden" aria-label="Back to agents"><AgentIcon name="back" /></button>
+        <div className="min-w-0">
+          <p className="agent-eyebrow">AGENT WORKSPACE</p>
+          <h1 className="mt-1 truncate text-[15px] font-semibold">{bot.name}</h1>
+          <p className="agent-header-description">{bot.description || 'Ready to work through your next task.'}</p>
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <button className={`agent-activity-toggle ${activityOpen ? 'is-selected' : ''}`} aria-expanded={activityOpen} aria-controls="agent-activity" onClick={toggleActivity}>
           <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M15 4v16" /></svg>
           Activity{activity.approvals.length > 0 && <span className="agent-attention-count">{activity.approvals.length}</span>}
         </button>
-        <button onClick={onConfigure} className="agent-icon-action" aria-label="Configure bot" title="Agent settings"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="var(--agent-surface)" /><circle cx="16" cy="17" r="3" fill="var(--agent-surface)" /></svg></button>
+        <button onClick={onConfigure} className="agent-icon-action" aria-label="Configure agent" title="Agent settings"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="var(--agent-surface)" /><circle cx="16" cy="17" r="3" fill="var(--agent-surface)" /></svg></button>
       </div>
     </header>
     <div className={`agent-work-area ${desktopActivity ? 'has-sidebar' : ''} ${mobileActivity ? 'show-activity' : ''}`}>
       <div className="agent-chat-main">
-        <div className="agent-context-bar"><span className="flex items-center gap-2"><AgentIcon name="spark" size={16} /> Conversation</span>{activity.run && <button onClick={() => { setDesktopActivity(true); setMobileActivity(true) }} className="truncate text-xs">{runLabels[activity.run.status] || activity.run.status} <AgentIcon name="arrow" size={12} style={{ display: 'inline', marginLeft: 6 }} /></button>}</div>
+        <div className="agent-context-bar"><span data-testid="chat-connection-status" className="flex items-center gap-2"><span className={`agent-status-dot ${connectionState === 'connected' ? '' : 'is-offline'}`} />{connectionState === 'connected' ? 'Connected' : connectionState === 'idle' ? 'Connecting…' : connectionState}</span>{activity.run && <button onClick={() => { setDesktopActivity(true); setMobileActivity(true) }} className="truncate text-xs">{runLabels[activity.run.status] || activity.run.status} <AgentIcon name="arrow" size={12} style={{ display: 'inline', marginLeft: 6 }} /></button>}</div>
         {displayedMessages.length ? <MessageTimeline key={conversation.id} ref={timeline} messages={displayedMessages} userId={userId} mentions={mentions} agent testId="bot-message-scroll" /> : <div className="agent-welcome scrollbar-thin">
           <div className="agent-welcome-mark"><AgentIcon name="spark" size={30} /></div><p className="agent-eyebrow mt-6">YOUR AGENT, READY TO COLLABORATE</p>
           <h2>{loading ? 'Opening your conversation…' : 'What are we working on?'}</h2>

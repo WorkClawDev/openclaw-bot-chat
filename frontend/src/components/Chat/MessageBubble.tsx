@@ -3,9 +3,7 @@
 import React from 'react'
 import Link from 'next/link'
 import {assetsApi} from '@/lib/api'
-import { Avatar } from '@/components/Avatar'
 import { Markdown } from '@/components/Markdown'
-import { StatusPill } from '@/components/StatusPill'
 import type { Message, User } from '@/lib/types'
 
 interface MessageBubbleProps {
@@ -80,19 +78,10 @@ export const MessageBubble = React.memo(function MessageBubble({ message, isOwn,
   return (
     <div data-message-id={message.id} className={`chat-message-row flex w-full pb-7 ${agent ? 'agent-message' : ''} ${isOwn ? 'is-own justify-end' : 'justify-start'}`}>
       <div className={`chat-message-inner flex min-w-0 max-w-[90%] md:max-w-[80%] ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-start gap-2 md:gap-3`}>
-        {!isOwn && (
-          <Avatar
-            name={message.from.name || 'Bot'}
-            src={message.from.avatar}
-            size="sm"
-            className="flex-shrink-0 mb-1"
-          />
-        )}
-        
         <div className={`chat-message-body min-w-0 flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
-          {(showSenderName || agent) && !isOwn && (
-            <span className="mb-1 ml-1 flex max-w-full items-center gap-2 text-xs font-medium text-slate-500">
-              <span className="truncate">{message.from.name}</span>
+          {(showSenderName || agent) && (
+            <span className="chat-message-author mb-1 flex max-w-full items-center gap-2 text-xs font-medium text-slate-500">
+              <span className="truncate">{isOwn ? 'You' : message.from.name || (isBot ? 'Agent' : 'Participant')}</span>
               {isBot && <span className="agent-message-badge">{isStreaming ? 'Working' : 'Agent'}</span>}
             </span>
           )}

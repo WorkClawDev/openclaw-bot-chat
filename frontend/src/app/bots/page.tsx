@@ -1,13 +1,12 @@
 'use client'
 
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChat } from '@/contexts/ChatContext'
 import { botsApi } from '@/lib/api'
 import { AppLayout } from '@/components/AppLayout'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
-import { Avatar } from '@/components/Avatar'
 import { IconButton } from '@/components/IconButton'
 import { Modal } from '@/components/Modal'
 import { WorkspaceCollectionPane } from '@/components/WorkspaceCollectionPane'
@@ -15,15 +14,7 @@ import { LoadingPage } from '@/components/Loading'
 import { ConversationItem } from '@/components/Chat/ConversationItem'
 import { AgentIcon } from '@/components/Chat/AgentIcon'
 import { AgentConversation } from '@/components/Chat/AgentConversation'
-import { cropAndUploadAvatar } from '@/lib/imageUpload'
 import type { Bot, BotKey } from '@/lib/types'
-
-const BOT_AVATAR_PRESETS = [
-  { id: 'coral-circuit', name: 'Coral', src: '/bot-avatars/coral-circuit.svg' },
-  { id: 'green-signal', name: 'Signal', src: '/bot-avatars/green-signal.svg' },
-  { id: 'indigo-core', name: 'Core', src: '/bot-avatars/indigo-core.svg' },
-  { id: 'violet-orbit', name: 'Orbit', src: '/bot-avatars/violet-orbit.svg' },
-]
 
 export default function BotsPage() {
   const { isAuthenticated, isLoading: authLoading, user } = useAuth()
@@ -111,7 +102,7 @@ export default function BotsPage() {
       <WorkspaceCollectionPane
         title="Agents"
         description="A place to think, make, and get things done."
-        createLabel="Create bot"
+        createLabel="Create agent"
         searchPlaceholder="Find an agent…"
         searchTerm={searchTerm}
         onSearchChange={setSearchTerm}
@@ -125,7 +116,7 @@ export default function BotsPage() {
           <ConversationItem
             key={bot.id}
             name={bot.name}
-            avatar={bot.avatar || bot.avatar_url}
+            agent
             isActive={selectedBot?.id === bot.id && view === 'chat'}
             onClick={() => handleBotClick(bot)}
             status="none"
@@ -143,15 +134,15 @@ export default function BotsPage() {
         ) : view === 'create' || view === 'edit' ? (
           <div className="flex-1 overflow-y-auto p-5 md:p-10 lg:p-12 max-w-2xl mx-auto w-full">
             <header className="mb-6 md:mb-8 flex items-start gap-3">
-              <IconButton onClick={() => { setView('chat'); setShowMobileList(true); }} label="Back to bots" variant="ghost" className="md:hidden -ml-2 mt-1">
+              <IconButton onClick={() => { setView('chat'); setShowMobileList(true); }} label="Back to agents" variant="ghost" className="md:hidden -ml-2 mt-1">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
               </IconButton>
               <div>
                 <h2 className="text-2xl md:text-3xl font-bold text-slate-800 tracking-tight">
-                {view === 'create' ? 'Create New Bot' : `Configure ${selectedBot?.name}`}
+                {view === 'create' ? 'Create an agent' : `Configure ${selectedBot?.name}`}
               </h2>
               <p className="text-slate-500 mt-1">
-                {view === 'create' ? 'Give your AI bot a name and personality.' : 'Update your bot details and manage API keys.'}
+                {view === 'create' ? 'Name your agent and describe the work it helps with.' : 'Update the agent’s name and responsibilities, or manage API keys.'}
               </p>
             </div>
             </header>
@@ -205,18 +196,14 @@ function CreateEditBotForm({
 }) {
   const [name, setName] = useState(bot?.name || '')
   const [description, setDescription] = useState(bot?.description || '')
-  const [avatarUrl, setAvatarUrl] = useState(bot?.avatar || bot?.avatar_url || '')
-  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
-  const avatarInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setName(bot?.name || '')
     setDescription(bot?.description || '')
-    setAvatarUrl(bot?.avatar || bot?.avatar_url || '')
     setError('')
-  }, [bot?.id, bot?.name, bot?.description, bot?.avatar, bot?.avatar_url])
+  }, [bot?.id, bot?.name, bot?.description])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -228,7 +215,6 @@ function CreateEditBotForm({
       const payload = {
         name,
         description,
-        avatar_url: avatarUrl,
       }
 
       if (bot) {
@@ -239,29 +225,9 @@ function CreateEditBotForm({
         await onSuccess(created)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save bot')
+      setError(err instanceof Error ? err.message : 'Failed to save agent')
     } finally {
       setIsLoading(false)
-    }
-  }
-
-  const handleAvatarFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file || isUploadingAvatar) {
-      event.target.value = ''
-      return
-    }
-
-    setIsUploadingAvatar(true)
-    setError('')
-    try {
-      const uploadedAvatarUrl = await cropAndUploadAvatar(file)
-      setAvatarUrl(uploadedAvatarUrl)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload avatar')
-    } finally {
-      setIsUploadingAvatar(false)
-      event.target.value = ''
     }
   }
 
@@ -274,85 +240,20 @@ function CreateEditBotForm({
       )}
       
       <div className="space-y-4">
-        <section className="space-y-3">
-          <div className="flex items-center gap-4">
-            <Avatar
-              name={name || 'Bot'}
-              src={avatarUrl || undefined}
-              size="xl"
-              className="h-20 w-20 flex-none shadow-lg shadow-slate-100 ring-4 ring-slate-50"
-            />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-bold text-slate-700">Bot Avatar</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <input
-                  ref={avatarInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  onChange={(event) => {
-                    void handleAvatarFileSelect(event)
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  isLoading={isUploadingAvatar}
-                  onClick={() => avatarInputRef.current?.click()}
-                  className="rounded-xl"
-                >
-                  Upload image
-                </Button>
-                {avatarUrl && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setAvatarUrl('')}
-                    className="rounded-xl"
-                  >
-                    Remove
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-4 gap-3">
-            {BOT_AVATAR_PRESETS.map((preset) => {
-              const selected = avatarUrl === preset.src
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  onClick={() => setAvatarUrl(preset.src)}
-                  className={`aspect-square rounded-2xl border p-1.5 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
-                    selected ? 'border-sky-400 bg-sky-50 shadow-sm' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-                  }`}
-                  aria-label={`Use ${preset.name} avatar`}
-                  title={preset.name}
-                >
-                  <img src={preset.src} alt="" className="h-full w-full rounded-xl object-cover" />
-                </button>
-              )
-            })}
-          </div>
-        </section>
-
         <Input
-          label="Display Name"
-          placeholder="e.g. JARVIS"
+          label="Agent name"
+          placeholder="e.g. Research assistant"
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="rounded-2xl border-slate-200"
         />
         
         <div className="space-y-1.5">
-          <label className="text-sm font-bold text-slate-700 ml-1">Bot Personality / Description</label>
+          <label htmlFor="agent-description" className="text-sm font-bold text-slate-700 ml-1">Role and responsibilities</label>
           <textarea
+            id="agent-description"
             className="w-full px-4 py-3 bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-sky-500/20 min-h-[120px] transition-all"
-            placeholder="Tell us about this bot's role..."
+            placeholder="What work does this agent help with?"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -361,8 +262,8 @@ function CreateEditBotForm({
 
       <div className="flex items-center justify-between pt-4 border-t border-slate-100">
         <div className="flex gap-3">
-          <Button type="submit" isLoading={isLoading} disabled={isUploadingAvatar} className="rounded-2xl px-8 shadow-lg shadow-sky-100">
-            {bot ? 'Save Changes' : 'Create Bot'}
+          <Button type="submit" isLoading={isLoading} className="rounded-2xl px-8 shadow-lg shadow-sky-100">
+            {bot ? 'Save Changes' : 'Create Agent'}
           </Button>
           <Button type="button" variant="ghost" onClick={onCancel} className="rounded-2xl">
             Cancel

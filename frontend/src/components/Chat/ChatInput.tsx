@@ -3,7 +3,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { Theme } from 'emoji-picker-react'
-import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
 import { groupsApi, tasksApi } from '@/lib/api'
 import { uploadAudioAsset, uploadFileAsset, uploadImageAsset } from '@/lib/imageUpload'
@@ -23,8 +22,6 @@ interface ChatInputProps {
 interface MentionBot {
   id: string
   name: string
-  avatar?: string | null
-  avatar_url?: string | null
   aliases: string[]
 }
 
@@ -577,7 +574,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
           onPointerDown={(e) => e.preventDefault()} // Prevent blur when clicking container or scrollbar
         >
           <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            Mention Bot
+            Mention agent
           </div>
           <div className="max-h-48 overflow-y-auto scrollbar-thin">
             {filteredBots.length > 0 ? (
@@ -593,17 +590,17 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                     index === selectedIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
                   }`}
                 >
-                  <Avatar name={bot.name} src={bot.avatar || bot.avatar_url || undefined} size="sm" />
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-bold truncate ${index === selectedIndex ? 'text-sky-600' : 'text-slate-700'}`}>
                       {bot.name}
                     </p>
                   </div>
+                  <span className="agent-message-badge">Agent</span>
                 </button>
               ))
             ) : (
               <div className="px-3 py-4 text-center text-sm text-slate-400 font-medium italic">
-                No bots found
+                No agents found
               </div>
             )}
           </div>
@@ -781,7 +778,6 @@ function toMentionBot(member: GroupMember): MentionBot | null {
   return {
     id,
     name,
-    avatar: member.bot?.avatar || member.bot?.avatar_url || null,
     aliases,
   }
 }

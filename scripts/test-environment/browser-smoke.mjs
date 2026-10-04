@@ -27,7 +27,7 @@ try {
   // Create both conversations while a previous MQTT identity is connected.
   // No reload is allowed between creation and publishing the first message.
   const cases = [
-    { route: 'bots', create: 'Create bot', submit: 'Create Bot', placeholder: 'e.g. JARVIS' },
+    { route: 'bots', create: 'Create agent', submit: 'Create Agent', placeholder: 'e.g. Research assistant' },
     { route: 'groups', create: 'Create group', submit: 'Create Group', placeholder: 'e.g. AI Council' },
   ];
   for (const item of cases) {

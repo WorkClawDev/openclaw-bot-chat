@@ -7,7 +7,6 @@ import { groupsApi } from '@/lib/api'
 import { AppLayout } from '@/components/AppLayout'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
-import { Avatar } from '@/components/Avatar'
 import { IconButton } from '@/components/IconButton'
 import { PaneHeader } from '@/components/PaneHeader'
 import { StatusPill } from '@/components/StatusPill'
@@ -99,7 +98,6 @@ export default function GroupsPage() {
           <ConversationItem
             key={group.id}
             name={group.name}
-            avatar={group.avatar}
             isActive={selectedGroup?.id === group.id && view === 'chat'}
             onClick={() => handleGroupClick(group)}
             lastMessage={group.description || ''}
@@ -122,7 +120,6 @@ export default function GroupsPage() {
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
                 </IconButton>
-                <Avatar name={currentConversation.name} src={currentConversation.avatar} size="md" />
                 </>
               }
               title={currentConversation.name}
@@ -344,7 +341,7 @@ function GroupDrawer({
       <div className="flex-1 overflow-y-auto p-6 space-y-8">
         <div className="space-y-4">
           <div className="flex flex-col items-center gap-3">
-             <Avatar name={group.name} src={group.avatar} size="lg" className="w-20 h-20 shadow-xl shadow-slate-200" />
+             <span className="agent-eyebrow">GROUP WORKSPACE</span>
              <div className="text-center">
                 <h4 className="text-lg font-bold text-slate-800">{group.name}</h4>
                 <p className="text-xs text-slate-400 font-medium">{group.description || 'No description'}</p>
@@ -408,10 +405,9 @@ function GroupDrawer({
             ) : members.map(m => (
               <div key={m.id} className="flex items-center justify-between group">
                 <div className="flex items-center gap-3">
-                  <Avatar name={m.user?.username || m.bot?.name || 'User'} size="sm" />
                   <div>
                     <p className="text-sm font-bold text-slate-700">{m.user?.username || m.bot?.name || 'Unknown'}</p>
-                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-tighter">{m.role}{m.type === 'bot' && ' • BOT'}</p>
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-tighter">{m.role}{m.type === 'bot' && ' • AGENT'}</p>
                   </div>
                 </div>
               </div>

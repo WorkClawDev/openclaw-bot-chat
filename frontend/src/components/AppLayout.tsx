@@ -4,7 +4,6 @@ import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { Avatar } from './Avatar'
 import { BrandLogo } from './BrandLogo'
 
 const navItems = [
@@ -91,14 +90,10 @@ export function PrimaryNav() {
 
       {/* User / Bottom */}
       <div className="hidden md:flex flex-col gap-4 items-center">
-        <div className="hidden md:block">
-          <Avatar
-            name={user?.username || 'User'}
-            src={user?.avatar || user?.avatar_url || undefined}
-            size="sm"
-            className="ring-2 ring-white/50"
-          />
-        </div>
+        <Link href="/settings" className="primary-nav-account" title={user?.username || 'Account'} aria-label={`Account settings for ${user?.username || 'your account'}`}>
+          <span>Account</span>
+          <strong>{user?.username || 'Settings'}</strong>
+        </Link>
         <button
           onClick={logout}
           className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2"
