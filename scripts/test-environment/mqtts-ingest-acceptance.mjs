@@ -52,6 +52,32 @@ async function stopConsumer(signal = 'SIGTERM') {
     const exited = once(consumer, 'exit'); consumer.kill(signal); await exited;
   }
 }
+async function restartIsolatedBroker() {
+  if (env.MQTTS_TEST_BROKER_CONTAINER) {
+    const name = env.MQTTS_TEST_BROKER_CONTAINER;
+    const info = JSON.parse(execFileSync('docker', ['inspect', name], { encoding: 'utf8' }))[0];
+    assert(info.Config.Labels?.['mqtts.isolated-acceptance'] === 'true', 'Refusing to restart an unlabelled broker');
+    execFileSync('docker', ['kill', '--signal=KILL', name]);
+    execFileSync('docker', ['start', name]);
+  } else if (env.MQTTS_TEST_BROKER_PID) {
+    const pid = Number(env.MQTTS_TEST_BROKER_PID);
+    const binary = env.MQTTS_TEST_BROKER_EXECUTABLE;
+    const config = env.MQTTS_TEST_BROKER_CONFIG;
+    assert(Number.isInteger(pid) && pid > 1 && binary?.startsWith('/') && config?.startsWith(state + '/'), 'Supply isolated broker identity');
+    const settings = JSON.parse(await readFile(config));
+    assert(settings.server.bind_address === '127.0.0.1' && settings.persistence?.path?.startsWith(state + '/'), 'Refusing broker without isolated local storage');
+    assert(execFileSync('ps', ['-o', 'uid=,args=', '-p', String(pid)], { encoding: 'utf8' }).trim() === `${process.getuid()} ${binary} -c ${config}`, 'Refusing unrelated broker process');
+    process.kill(pid, 'SIGKILL');
+    await eventually(() => {
+      try { return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z'); }
+      catch { return true; }
+    }, 'Owned broker did not exit');
+    const restarted = spawn(binary, ['-c', config], { cwd: state, env, detached: true, stdio: ['ignore', log.fd, log.fd] });
+    restarted.on('error', () => {}); restarted.unref();
+    await writeFile(join(state, 'broker.pid'), String(restarted.pid), { mode: 0o600 });
+  } else return false;
+  return true;
+}
 function resume() { if (paused) { process.kill(backendPID, 'SIGCONT'); paused = false; } }
 function releaseLock() {
   if (!lock) return;
@@ -69,9 +95,12 @@ try {
   assert((await once(acceptance, 'exit'))[0] === 0, 'Permission regression failed');
   const account = JSON.parse(await readFile(join(state, 'acceptance-account.json')));
   const bootstrap = await api(base, 'GET', '/api/v1/realtime/bootstrap', { token: account.owner.tokens.access_token });
-  client = await mqtt.connectAsync(bootstrap.broker.tcp_url, { clientId: bootstrap.client_id, username: bootstrap.broker.username,
-    password: bootstrap.broker.password, protocolVersion: 5, reconnectPeriod: 0, connectTimeout: 5000 });
-  client.on('error', () => {});
+  const connectPublisher = async () => {
+    const connection = await mqtt.connectAsync(bootstrap.broker.tcp_url, { clientId: bootstrap.client_id, username: bootstrap.broker.username,
+      password: bootstrap.broker.password, protocolVersion: 5, reconnectPeriod: 0, connectTimeout: 5000 });
+    connection.on('error', () => {}); return connection;
+  };
+  client = await connectPublisher();
   const message = body => ({ id: randomUUID(), topic: account.topic, conversation_id: account.topic, timestamp: Math.floor(Date.now()/1000),
     from: { type: 'user', id: account.owner.user.id }, to: { type: 'bot', id: account.bot.id }, content: { type: 'text', body } });
   const send = m => client.publishAsync(account.topic, JSON.stringify(m), { qos: 1 });
@@ -80,6 +109,20 @@ try {
   const count = batch => Number(sql(`SELECT count(*) FROM messages WHERE message_id IN (${ids(batch)})`));
   await eventually(async () => (await health()).queue?.pending === 0, 'Pre-existing backlog did not drain');
   const baselineDead = (await health()).queue.dead;
+
+  await stopConsumer('SIGKILL');
+  await sleep(200);
+  const offline = Array.from({ length: 200 }, (_, i) => message(`consumer offline ${i}`));
+  for (const m of offline) await send(m);
+  assert(count(offline) === 0, 'Offline check unexpectedly had another consumer');
+  await client.endAsync(true); client = undefined;
+  const brokerRestarted = await restartIsolatedBroker();
+  await eventually(async () => { try { client = await connectPublisher(); return true; } catch { return false; } }, 'Publisher did not reconnect after broker restart');
+  await startConsumer();
+  await eventually(() => count(offline) === 200, 'Broker lost positively acknowledged offline publications');
+  assert(sql(`SELECT string_agg(message_id::text, ',' ORDER BY seq) FROM messages WHERE message_id IN (${ids(offline)})`) === offline.map(m => m.id).join(','), 'Offline recovery changed conversation order');
+  await eventually(async () => (await health()).queue?.pending === 0, 'Recovered offline backlog did not drain');
+  pass(`200 publications persisted in order after consumer SIGKILL${brokerRestarted ? ' and broker SIGKILL/restart' : ''}`);
 
   process.kill(backendPID, 'SIGSTOP'); paused = true;
   // A separate watchdog resumes the API even if this test process crashes.
@@ -137,5 +180,15 @@ try {
   resume(); watchdog?.kill(); releaseLock();
   await client?.endAsync(true);
   await stopConsumer();
+  // Release this fixture's persistent broker session so later local tests do
+  // not accumulate a second offline chat/# backlog under the fixture identity.
+  try {
+    const reset = await mqtt.connectAsync(env.MQTT_BROKER.replace(/^tcp:/, 'mqtt:'), {
+      clientId: consumerEnv.MQTT_CLIENT_ID, username: consumerEnv.MQTT_USERNAME,
+      password: consumerEnv.MQTT_PASSWORD, protocolVersion: 4, clean: true,
+      reconnectPeriod: 0, connectTimeout: 5000,
+    });
+    reset.on('error', () => {}); await reset.endAsync();
+  } catch { console.warn('Fixture session cleanup could not connect; broker expiry remains in effect'); }
   await log.close();
 }

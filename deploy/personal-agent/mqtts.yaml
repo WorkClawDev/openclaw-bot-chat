@@ -40,3 +40,17 @@ auth:
         # Raw bytes; the generic authorization module evaluates projected bindings.
         publish_payload: bytes
         max_payload_bytes: 1048576
+
+# Independent broker spool: preserve this volume across restarts and upgrades.
+persistence:
+  enabled: true
+  path: /data/sessions.db
+  max_session_expiry_seconds: 86400
+  max_sessions: 10000
+  max_subscriptions_per_session: 128
+  max_messages: 100000
+  max_messages_per_session: 100000
+  max_bytes: 268435456
+  max_requests: 1024
+  max_request_bytes: 16777216
+  max_inflight: 32

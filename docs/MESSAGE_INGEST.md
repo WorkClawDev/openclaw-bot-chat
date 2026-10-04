@@ -7,7 +7,8 @@ MQTTS 与 `mqtts/modules/authz` 仍是独立项目，不包含消息业务模型
 flowchart LR
   C[Web / Agent] <-->|实时消息| B[MQTTS]
   C -->|登录、历史、资源管理| A[聊天 API]
-  B -->|订阅 chat/#| I[message-ingest]
+  B -->|提交后向发布者确认| BQ[(独立 Broker 磁盘队列)]
+  BQ -->|持久订阅 chat/#| I[message-ingest]
   I -->|同步写盘后确认接收| Q[(本地 bbolt 队列)]
   Q --> W[固定数量工作协程]
   W -->|幂等写入与 seq 分配| D[(PostgreSQL)]
@@ -28,10 +29,17 @@ flowchart LR
 - 发布者应携带稳定 UUID 消息 ID；缺失/非法 ID 的兼容消息在首次入队时获得固定回退 ID。回退 ID 保证同一队列项重放，不能识别没有稳定 ID 的两次独立 MQTT 投递。
 - 结构错误、无效数据或拒绝访问的附件进入持久死信，避免阻塞后续消息；暂时未就绪的附件、数据库/网络错误继续重试。原有附件解析、群成员信息和远程资源导入保持在业务服务层，消费者仍需相应存储配置。
 
-这提供“**已写入本地队列的消息**”的至少一次处理与幂等入库。当前锁定的 MQTTS
-没有持久离线会话、未确认消息重发和共享订阅，不能保证所有消费者离线期间的消息
-被保留；发布端 PUBACK 也不代表 PostgreSQL 已提交。磁盘丢失同样不在单机队列保障内。
-需要全程可靠投递时，下一步是补齐 Broker 持久投递或使用复制的持久消息层。
+消息链路现在有两级持久接收：发布端收到 PUBACK 前，MQTTS 已将匹配的 QoS 1
+消息同步到 Broker 自己的磁盘队列；消费者收到后，先提交本地 bbolt，再向 Broker
+发送 PUBACK，最后异步幂等写入 PostgreSQL。消费者离线、进程 SIGKILL 或 Broker
+重启后，保持相同身份与持久卷即可补发。发布端 PUBACK 仍不表示 PostgreSQL 已提交。
+
+这一保障从消费者首次成功建立持久订阅开始，适用于 TCP 持久消费者和 QoS 1；
+TCP / WebSocket 发布者均支持。Broker 默认保留会话最多 24 小时，队列最多 10 万条 /
+256 MiB 逻辑投递数据；容量耗尽或磁盘提交失败时断开发送连接，不返回成功 PUBACK。
+发布者需正确处理重试，消息应带稳定 UUID。补发重新检查当前权限，撤权不会被旧订阅绕过。
+MQTTS 仍不支持共享订阅、持久 WebSocket 消费者或跨 Broker 的磁盘复制；卷丢失、
+超过会话/消息期限、主动 Clean Start 或删除卷不在单机持久保障内。
 
 当前默认一个消费者实例。多个普通 `chat/#` 订阅会收到重复消息，不是负载均衡；
 不能直接增加副本数量并宣称吞吐按比例增加。先通过有界工作池并行不同会话；
@@ -63,6 +71,12 @@ Client ID，只有 `chat/#` 订阅权限。消费者自行每 10 秒续期最多
 | `MQTT_*` | 该进程自身连接身份和 TLS 配置 |
 | `BROKER_SECURITY_*` | 独立授权管理 RPC 地址、凭据与 TLS 配置 |
 | `DATABASE_*` / `STORAGE_*` | 共享业务数据库；附件解析需要的存储配置 |
+
+部署中的 `mqtts_data` 与 `message_ingest_data`（测试栈和个人助手为 `message_ingest`）是独立卷。
+Broker `/data/sessions.db` 使用 SQLite WAL 和独立磁盘线程，不访问应用数据库。
+消费者使用固定 Client ID、CleanSession=false；重启或升级必须保留两个卷。
+外部 MQTTS 需独立启用 `persistence` 并使用本次兼容锁定的镜像版本；应用配置不会
+替远端 Broker 开启持久化。完整参数参见 MQTTS 仓库 `docs/persistence.md`。
 
 字节预算是逻辑数据大小，bbolt 页、空闲页和事务存在额外空间，应为持久卷设置
 容量余量/磁盘告警。队列存储敏感消息，目录 0700、文件 0600；不要用 tmpfs。
@@ -102,6 +116,8 @@ docker compose --profile broker up --build -d
 
 Go 测试覆盖 ACK 时点、容量拒绝、持久重开、死信保留、重试顺序、固定并行度、
 独立订阅权限与 CAS 冲突。`scripts/test-environment/mqtts-ingest-acceptance.mjs`
-在真实 PostgreSQL/MQTTS 上测试 API 暂停后持续落库、数据库超时、SIGKILL 后
+在真实 PostgreSQL/MQTTS 上测试消费者完全离线期间 200 条发布、Broker SIGKILL/重启后
+按序补发入库、API 暂停后持续落库、数据库超时、消费者 SIGKILL 后
 恢复 200 条已入队消息、重复投递/软删除、死信以及进程独立 readiness。
-该测试只操作明确指定的隔离 API 和测试数据库，结果保存在 `ingest-results.json`。
+Broker 重启仅接受带隔离标签的测试容器，或路径、PID、启动参数均校验通过的本地测试进程。
+该测试只操作明确指定的隔离服务和测试数据库，结果保存在 `ingest-results.json`。

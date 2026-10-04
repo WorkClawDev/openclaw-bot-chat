@@ -40,6 +40,7 @@ services:
     secrets: [broker-token]
     volumes:
       - ./mqtts.yaml:/app/config/mqtts.yaml:ro
+      - mqtts_data:/data
     ports: ["127.0.0.1:1885:1883", "127.0.0.1:8085:1883"]
     read_only: true
     cap_drop: [ALL]
@@ -233,6 +234,7 @@ secrets:
   bot-key: {file: ./.runtime/bot-key}
   model-key: {file: ./.runtime/model-key}
 volumes:
+  mqtts_data:
   message_ingest: {}
   mqtts_authz: {}
   postgres: {}

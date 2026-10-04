@@ -169,6 +169,18 @@ Topic 和 payload 摘要。新鲜命中不调用 RPC；过新鲜期后本地返�
 不支持跳过证书验证。浏览器 WSS 使用浏览器信任库，不能靠后端 CA 配置绕过。
 远端 Broker 需满足这里的通用认证/授权契约；无需安装聊天项目源码。
 
+## Broker 持久消息卷
+
+内置 profile 的 MQTTS 开启 TCP 持久会话和 QoS 1 离线投递，使用独立 `mqtts_data`
+卷存储 `/data/sessions.db`。Broker 不依赖业务数据库，SQLite 操作由独立线程批量提交，
+发布确认发生在磁盘提交之后。`message-ingest` 保持相同身份恢复订阅，再通过自己的
+本地队列写入 PostgreSQL；见 [完整落库链路](MESSAGE_INGEST.md)。
+
+更新已有部署时同时更新兼容镜像、Broker 配置和 Compose 卷。单独更新应用无法让
+旧 Broker 获得此能力；外部 Broker 由其独立部署配置持久化。保留数据卷，默认会话
+上限 24 小时、10 万条 / 256 MiB 逻辑积压，磁盘空间需额外余量。持久投递不包含
+共享订阅、跨节点复制、QoS 2 或持久 WebSocket 消费者，浏览器发布路径正常支持。
+
 ## 迁移与验证
 
 先备份 PostgreSQL 并在独立副本应用角色迁移。启动独立 MQTTS/授权模块/后端验证 ready，

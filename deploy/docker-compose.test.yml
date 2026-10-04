@@ -55,6 +55,7 @@ services:
       - "127.0.0.1:${TEST_MQTT_WS_PORT:-8083}:1883"
     volumes:
       - ./broker/mqtts/mqtts.yaml:/app/config/mqtts.yaml:ro
+      - mqtts_data:/data
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -232,6 +233,7 @@ services:
       retries: 12
 
 volumes:
+  mqtts_data:
   message_ingest:
   mqtts_authz_data:
   postgres_data:

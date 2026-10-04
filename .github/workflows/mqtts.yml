@@ -93,6 +93,7 @@ jobs:
           lock = json.loads(pathlib.Path('broker/mqtts/compatibility.json').read_text())
           metadata = json.loads(pathlib.Path('run/broker-runtime/metadata.json').read_text())
           assert metadata['schema_version'] == 1 and metadata['grpc_auth_contract'] == 1
+          assert metadata['durable_sessions_contract'] == lock['durable_sessions_contract'] == 1
           assert metadata['source_revision'] == lock['source_revision']
           assert metadata['authz_proto_sha256'] == lock['authz_proto_sha256'] == hashlib.sha256(pathlib.Path('backend/internal/brokerrpc/authorization.proto').read_bytes()).hexdigest()
           assert metadata['authz_image'] == 'mqtts-authz:sha-' + lock['source_revision']
@@ -144,10 +145,10 @@ jobs:
             --network host --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /data:uid=10001,gid=10001 -e AUTHZ_INSECURE=true -e AUTHZ_LISTEN=127.0.0.1:50052 \
             -e AUTHZ_QUERY_TOKEN="$MQTTS_AUTHZ_QUERY_TOKEN" -e AUTHZ_ADMIN_TOKEN="$BROKER_SECURITY_ADMIN_TOKEN" "$MQTTS_AUTHZ_TEST_IMAGE"
-          docker run -d --name mqtts-access --network host --read-only --cap-drop ALL \
+          docker run -d --name mqtts-access --label mqtts.isolated-acceptance=true --network host --read-only --cap-drop ALL \
             --security-opt no-new-privileges \
             -e MQTTS_AUTHZ_QUERY_TOKEN -e NO_PROXY=localhost,127.0.0.1 \
-            -v "$PWD/run/mqtts-ci.yaml:/app/config/mqtts.yaml:ro" "$MQTTS_TEST_IMAGE"
+            -v "$PWD/run/mqtts-ci.yaml:/app/config/mqtts.yaml:ro" -v mqtts-access-data:/data "$MQTTS_TEST_IMAGE"
           backend_executable="$PWD/run/backend"
           (cd backend && exec "$backend_executable") > run/backend.log 2>&1 &
           backend_pid=$!
@@ -155,7 +156,7 @@ jobs:
           export MQTTS_TEST_STATE_DIR="$PWD/run/mqtts-permissions"
           export MQTTS_TEST_BACKEND_PID="$backend_pid" MQTTS_TEST_BACKEND_EXECUTABLE="$backend_executable"
           export MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" MQTTS_TEST_INGEST_EXECUTABLE="$PWD/run/message-ingest"
-          MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access node scripts/test-environment/mqtts-ingest-acceptance.mjs
+          MQTTS_TEST_BROKER_CONTAINER=mqtts-access MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access node scripts/test-environment/mqtts-ingest-acceptance.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: mqtts-cache-outage

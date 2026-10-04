@@ -50,6 +50,7 @@ services:
       no_proxy: localhost,127.0.0.1,mqtts-authz
     volumes:
       - ./broker/mqtts/mqtts.yaml:/app/config/mqtts.yaml:ro
+      - mqtts_data:/data
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -229,6 +230,7 @@ services:
       - NODE_ENV=production
 
 volumes:
+  mqtts_data:
   message_ingest_data:
   mqtts_authz_data:
   postgres_data:
