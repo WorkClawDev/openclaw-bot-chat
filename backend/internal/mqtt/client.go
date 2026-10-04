@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -11,13 +12,14 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Client wraps the MQTT consumer used by the backend persistence service.
+// Client wraps a publish-only API connection or the independent durable consumer.
 type Client struct {
 	client     mqtt.Client
 	log        zerolog.Logger
 	cfg        MQTTConfig
 	ingress    MessageIngress
 	subscribed atomic.Bool
+	failed     atomic.Bool
 	mu         sync.RWMutex
 }
 
@@ -67,11 +69,12 @@ func (c *Client) Connect() error {
 	opts := mqtt.NewClientOptions().
 		AddBroker(broker).
 		SetClientID(c.cfg.ClientID).
-		SetAutoReconnect(c.cfg.AutoReconnect).
+		SetAutoReconnect(false).
+		SetAutoAckDisabled(true).
 		SetConnectRetry(false).
 		SetConnectRetryInterval(time.Duration(c.cfg.ReconnectDelay) * time.Second).
 		SetKeepAlive(30 * time.Second).
-		SetCleanSession(false).
+		SetCleanSession(c.ingress == nil).
 		SetDefaultPublishHandler(c.defaultHandler).
 		SetOnConnectHandler(c.onConnect).
 		SetConnectionLostHandler(c.onConnectionLost).
@@ -86,6 +89,7 @@ func (c *Client) Connect() error {
 	}
 
 	client := mqtt.NewClient(opts)
+	c.failed.Store(false)
 	c.mu.Lock()
 	c.client = client
 	c.mu.Unlock()
@@ -103,11 +107,14 @@ func (c *Client) Connect() error {
 }
 
 func (c *Client) defaultHandler(client mqtt.Client, msg mqtt.Message) {
-	c.log.Debug().Str("topic", msg.Topic()).Int("qos", int(msg.Qos())).Msg("MQTT message received")
+	c.handleMessage(client, msg)
 }
 
 func (c *Client) onConnect(client mqtt.Client) {
 	c.subscribed.Store(false)
+	if c.ingress == nil {
+		return
+	} // API connection is publish-only.
 	topic := fmt.Sprintf("%s/#", c.cfg.TopicPrefix)
 	c.log.Info().Str("topic", topic).Msg("MQTT connected, subscribing to persistence topics")
 
@@ -144,8 +151,15 @@ func (c *Client) handleMessage(client mqtt.Client, msg mqtt.Message) {
 		return
 	}
 	if err := c.ingress.HandleIncomingMessage(msg.Topic(), msg.Payload()); err != nil {
-		c.log.Error().Err(err).Str("topic", msg.Topic()).Msg("failed to persist incoming MQTT message")
+		c.log.Error().Err(err).Str("topic", msg.Topic()).Msg("MQTT intake failed; disconnecting without acknowledgement")
+		// Never acknowledge a failed durable append. A single disconnect per
+		// connection bounds failure handling even when the broker keeps sending.
+		if c.failed.CompareAndSwap(false, true) {
+			go client.Disconnect(250)
+		}
+		return
 	}
+	msg.Ack()
 }
 
 // Disconnect gracefully disconnects from the MQTT broker.
@@ -159,7 +173,30 @@ func (c *Client) Disconnect() {
 // IsConnected returns whether the client is connected.
 func (c *Client) IsConnected() bool {
 	client := c.getClient()
-	return client != nil && client.IsConnected() && c.subscribed.Load()
+	return client != nil && client.IsConnectionOpen() && !c.failed.Load() && (c.ingress == nil || c.subscribed.Load())
+}
+
+// Run owns connection retries, including a rejected subscription. It must be
+// called only once per client. No per-message goroutines are used for ingestion.
+func (c *Client) Run(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if !c.IsConnected() {
+			c.Disconnect()
+			if err := c.Connect(); err != nil {
+				c.log.Warn().Err(err).Msg("MQTT connection failed; retrying")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // BuildTopic is a helper to build a full MQTT topic path.

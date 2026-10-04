@@ -4,24 +4,20 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
+	"github.com/openclaw-bot-chat/backend/internal/brokerrpc"
 	pb "github.com/openclaw-bot-chat/backend/internal/brokerrpc/authzv1"
 	"github.com/openclaw-bot-chat/backend/internal/config"
 	"github.com/openclaw-bot-chat/backend/internal/model"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -94,35 +90,7 @@ func NewBrokerSecurityService(settings config.BrokerSecurityConfig, server confi
 	if settings.Address == "" {
 		return s, nil
 	}
-	var transport credentials.TransportCredentials
-	if settings.Insecure {
-		if settings.CAFile != "" || settings.CertFile != "" || settings.KeyFile != "" {
-			return nil, errors.New("insecure authz RPC cannot use TLS options")
-		}
-		transport = insecure.NewCredentials()
-	} else {
-		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-		if settings.CAFile != "" {
-			raw, err := os.ReadFile(settings.CAFile)
-			if err != nil {
-				return nil, err
-			}
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(raw) {
-				return nil, errors.New("invalid authz CA")
-			}
-			tlsConfig.RootCAs = pool
-		}
-		if settings.CertFile != "" || settings.KeyFile != "" {
-			cert, err := tls.LoadX509KeyPair(settings.CertFile, settings.KeyFile)
-			if err != nil {
-				return nil, err
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
-		transport = credentials.NewTLS(tlsConfig)
-	}
-	conn, err := grpc.NewClient(settings.Address, grpc.WithTransportCredentials(transport), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4*1024*1024), grpc.MaxCallSendMsgSize(4*1024*1024)))
+	conn, err := brokerrpc.Dial(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +207,7 @@ func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (
 func (s *BrokerSecurityService) serverPolicy() *pb.Session {
 	hash := sha256.Sum256([]byte(s.server.Password))
 	return &pb.Session{Username: s.server.Username, ClientId: s.server.ClientID, PasswordSha256: hash[:], Namespace: s.settings.Namespace, Enabled: true, PolicyValidUntilMs: uint64(time.Now().Add(5 * time.Minute).UnixMilli()), Permissions: []*pb.Permission{
-		{Action: pb.Action_SUBSCRIBE, TopicFilter: "chat/#"}, {Action: pb.Action_PUBLISH, TopicFilter: "chat/#"}, {Action: pb.Action_PUBLISH, TopicFilter: "agent/user/+/events"},
+		{Action: pb.Action_PUBLISH, TopicFilter: "agent/user/+/events"},
 	}}
 }
 

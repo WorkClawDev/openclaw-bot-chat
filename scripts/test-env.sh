@@ -49,6 +49,10 @@ prepare() {
     GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" \
     GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" \
     "$go_bin" build -p 4 -o bin/test-server ./cmd/server)
+  (cd "$REPO_ROOT/backend" && CGO_ENABLED=0 GOMAXPROCS=4 \
+    GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" \
+    GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" \
+    "$go_bin" build -p 4 -o bin/test-message-ingest ./cmd/message-ingest)
 }
 
 up() {
@@ -56,7 +60,7 @@ up() {
   compose up -d --wait --wait-timeout 120 postgres redis
   compose up -d --force-recreate --wait --wait-timeout 120 mqtts-authz mqtts
   compose up -d --force-recreate --wait --wait-timeout 120 storage
-  compose up -d --force-recreate --wait --wait-timeout 240 backend frontend proxy
+  compose up -d --force-recreate --wait --wait-timeout 240 backend message-ingest frontend proxy
   node "$TOOLS_DIR/seed.mjs"
   compose up -d --force-recreate --wait --wait-timeout 90 echo-bot
   node "$TOOLS_DIR/smoke.mjs"

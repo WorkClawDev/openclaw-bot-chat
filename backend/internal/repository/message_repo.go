@@ -61,7 +61,7 @@ func (r *MessageRepository) GetByConversationIDAfterSeq(ctx context.Context, con
 func (r *MessageRepository) ExistsByConversationAndMessageID(ctx context.Context, conversationID string, messageID uuid.UUID) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&model.Message{}).
-		Where("conversation_id = ? AND message_id = ? AND is_deleted = false", conversationID, messageID).
+		Where("conversation_id = ? AND message_id = ?", conversationID, messageID).
 		Count(&count).Error
 	return count > 0, err
 }

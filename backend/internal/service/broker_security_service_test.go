@@ -145,7 +145,7 @@ func TestProjectionCASRetryAndCoalescedNotifications(t *testing.T) {
 		t.Fatal("notifications unbounded")
 	}
 	server := s.serverPolicy()
-	if server.ExpiresAtMs != 0 || server.PolicyValidUntilMs > uint64(time.Now().Add(5*time.Minute).UnixMilli()) || len(server.Permissions) != 3 {
+	if server.ExpiresAtMs != 0 || server.PolicyValidUntilMs > uint64(time.Now().Add(5*time.Minute).UnixMilli()) || len(server.Permissions) != 1 || server.Permissions[0].Action != pb.Action_PUBLISH || server.Permissions[0].TopicFilter != "agent/user/+/events" {
 		t.Fatal("server lease or scope unbounded")
 	}
 }

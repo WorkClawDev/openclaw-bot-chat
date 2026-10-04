@@ -145,8 +145,8 @@ const (
 
 type Message struct {
 	ID             int64      `gorm:"primaryKey;autoIncrement"`
-	ConversationID string     `gorm:"type:varchar(256);not null;index:idx_messages_conversation_id;uniqueIndex:udx_messages_conversation_seq"`
-	MessageID      uuid.UUID  `gorm:"type:uuid;not null;default:uuid_generate_v4()"`
+	ConversationID string     `gorm:"type:varchar(256);not null;index:idx_messages_conversation_id;index:idx_messages_conversation_message,priority:1;uniqueIndex:udx_messages_conversation_seq"`
+	MessageID      uuid.UUID  `gorm:"type:uuid;not null;default:uuid_generate_v4();index:idx_messages_conversation_message,priority:2"`
 	SenderType     SenderType `gorm:"type:varchar(16);not null"`
 	SenderID       *uuid.UUID `gorm:"type:uuid"`
 	SenderName     *string    `gorm:"type:varchar(128)"`

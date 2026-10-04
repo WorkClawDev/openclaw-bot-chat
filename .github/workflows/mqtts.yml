@@ -11,9 +11,9 @@ on:
         required: false
         type: string
   push:
-    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', '.github/workflows/mqtts.yml']
+    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', 'scripts/test-environment/mqtts-ingest-acceptance.mjs', '.github/workflows/mqtts.yml']
   pull_request:
-    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', '.github/workflows/mqtts.yml']
+    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', 'scripts/test-environment/mqtts-ingest-acceptance.mjs', '.github/workflows/mqtts.yml']
 permissions:
   contents: read
   actions: read
@@ -124,13 +124,13 @@ jobs:
           python3 - <<'PY'
           import os, secrets
           with open(os.environ['GITHUB_ENV'], 'a') as output:
-              for name in ['JWT_SECRET', 'MQTT_PASSWORD', 'MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']:
+              for name in ['JWT_SECRET', 'MQTT_PASSWORD', 'INGEST_MQTT_PASSWORD', 'MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']:
                   value = secrets.token_hex(32)
                   print('::add-mask::' + value)
                   output.write(name + '=' + value + '\n')
           PY
           PGPASSWORD="$DATABASE_PASSWORD" psql -h 127.0.0.1 -U postgres -d mqtts_acceptance -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
-      - run: go -C backend build -o ../run/backend ./cmd/server && go -C backend build -o ../run/admin-user ./cmd/admin-user
+      - run: go -C backend build -o ../run/backend ./cmd/server && go -C backend build -o ../run/admin-user ./cmd/admin-user && go -C backend build -o ../run/message-ingest ./cmd/message-ingest
       - run: npm --prefix scripts/test-environment ci
       - name: Run real PostgreSQL, Redis, MQTT and permission acceptance
         run: |
@@ -153,12 +153,13 @@ jobs:
           backend_pid=$!
           trap 'kill -CONT "$backend_pid" 2>/dev/null || true; kill "$backend_pid" 2>/dev/null || true; docker logs mqtts-access; docker rm -f mqtts-access mqtts-authz-access' EXIT
           export MQTTS_TEST_STATE_DIR="$PWD/run/mqtts-permissions"
-          MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" node scripts/test-environment/mqtts-permissions.mjs
-          MQTTS_TEST_BACKEND_PID="$backend_pid" MQTTS_TEST_BACKEND_EXECUTABLE="$backend_executable" \
-            node scripts/test-environment/mqtts-cache-outage.mjs
-          MQTTS_TEST_PAUSE_TARGET=authz MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access \
-            node scripts/test-environment/mqtts-cache-outage.mjs
+          export MQTTS_TEST_BACKEND_PID="$backend_pid" MQTTS_TEST_BACKEND_EXECUTABLE="$backend_executable"
+          export MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" MQTTS_TEST_INGEST_EXECUTABLE="$PWD/run/message-ingest"
+          MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access node scripts/test-environment/mqtts-ingest-acceptance.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: mqtts-cache-outage
-          path: run/mqtts-permissions/cache-outage-results.json
+          path: |
+            run/mqtts-permissions/cache-outage-results.json
+            run/mqtts-permissions/ingest-results.json
+            run/mqtts-permissions/ingest-acceptance.log

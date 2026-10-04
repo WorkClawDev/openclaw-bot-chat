@@ -131,6 +131,43 @@ services:
       timeout: 5s
       retries: 18
 
+  message-ingest:
+    image: ${TEST_NODE_IMAGE:-mirror.gcr.io/library/node:22-bookworm-slim}
+    restart: unless-stopped
+    working_dir: /app/backend
+    command:
+      - /bin/sh
+      - -c
+      - |
+        export NO_PROXY="$${NO_PROXY:+$$NO_PROXY,}localhost,127.0.0.1,postgres,redis,mqtts,storage,backend,frontend,proxy"
+        export no_proxy="$${no_proxy:+$$no_proxy,}localhost,127.0.0.1,postgres,redis,mqtts,storage,backend,frontend,proxy"
+        exec /app/bin/test-message-ingest
+    env_file: [./.env.test]
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      MQTT_BROKER: tcp://mqtts:1883
+      MQTT_CLIENT_ID: openclaw-test-message-ingest
+      MQTT_USERNAME: openclaw-test-message-ingest
+      MQTT_PASSWORD: ${INGEST_MQTT_PASSWORD:?Set a separate ingest password}
+      INGEST_LISTEN: 0.0.0.0:8081
+      INGEST_SPOOL_PATH: /data/messages.db
+      BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
+    volumes:
+      - message_ingest:/data
+      - ./backend/bin:/app/bin:ro
+      - ./backend/config.yaml:/app/backend/config.yaml:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      storage: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+
   frontend:
     image: ${TEST_NODE_IMAGE:-mirror.gcr.io/library/node:22-bookworm-slim}
     user: "${TEST_FRONTEND_UID:-1000}:${TEST_FRONTEND_GID:-1000}"
@@ -195,6 +232,7 @@ services:
       retries: 12
 
 volumes:
+  message_ingest:
   mqtts_authz_data:
   postgres_data:
   redis_data:

@@ -104,3 +104,17 @@ Set `MQTTS_TEST_API_URL` and `MQTTS_TEST_ADMIN_CLI` to that backend and its buil
 It creates disposable accounts and checks role escalation, concurrent admin
 changes, private resources, live group/account revocation, MQTT sender forgery,
 and real WebSocket/TCP message persistence. See [setup instructions](../../docs/MQTTS_ACCESS.md).
+
+## Independent message ingestion
+
+`./scripts/test-env.sh up` now builds and starts `message-ingest` alongside the API.
+`configure.mjs` adds a separate `INGEST_MQTT_PASSWORD` to the ignored environment file.
+The consumer owns a persistent volume and renews its subscribe-only identity independently.
+The API readiness endpoint no longer checks the MQTT consumer.
+
+Broker CI runs `mqtts-ingest-acceptance.mjs` with explicit isolated API PID/executable,
+consumer executable, and a disposable `*_test`/`*_acceptance` database. It pauses only
+that API, locks only its messages table, kills only its child consumer, and checks
+ordered replay, duplicate/deleted message handling, poison retention and recovery.
+The script requires `psql`; it never stops the shared PostgreSQL service.
+See [the persistence boundary](../../docs/MESSAGE_INGEST.md) before interpreting QoS 1.

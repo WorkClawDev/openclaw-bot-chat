@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX idx_messages_conversation_id ON messages(conversation_id);
+CREATE INDEX idx_messages_conversation_message ON messages(conversation_id, message_id);
 CREATE INDEX idx_messages_bot_id ON messages(bot_id);
 CREATE INDEX idx_messages_group_id ON messages(group_id);
 CREATE INDEX idx_messages_sender ON messages(sender_type, sender_id);

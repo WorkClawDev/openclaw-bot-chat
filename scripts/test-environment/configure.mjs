@@ -44,6 +44,7 @@ try {
       LOG_LEVEL: 'info',
       MQTT_USERNAME: `mqtt_${randomBytes(4).toString('hex')}`,
       MQTT_PASSWORD: secret(),
+      INGEST_MQTT_PASSWORD: secret(),
       MQTT_QOS: '1',
       MQTT_CLIENT_ID: 'openclaw-test-backend',
       MQTT_TCP_PUBLIC_URL: `mqtt://127.0.0.1:${process.env.TEST_MQTT_PORT || '1883'}`,
@@ -67,7 +68,7 @@ try {
     await writeFile(envFile, Object.entries(values).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n') + '\n', { mode: 0o600, flag: 'wx' });
   }
   let config = await settings();
-  for (const name of ['MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']) {
+  for (const name of ['MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN', 'INGEST_MQTT_PASSWORD']) {
     if (!config[name]) await appendFile(envFile, `\n${name}=${JSON.stringify(randomBytes(24).toString('hex'))}\n`);
   }
   config = await settings();
@@ -75,7 +76,7 @@ try {
     await appendFile(envFile, `\nTEST_FRONTEND_UID=${JSON.stringify(String(process.getuid?.() ?? 1000))}\nTEST_FRONTEND_GID=${JSON.stringify(String(process.getgid?.() ?? 1000))}\n`);
     config = await settings();
   }
-  for (const name of ['MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']) {
+  for (const name of ['MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN', 'INGEST_MQTT_PASSWORD']) {
     if (!/^[a-zA-Z0-9_-]{32,}$/.test(config[name])) throw new Error(`${name} must contain at least 32 letters, digits, underscores or hyphens`);
   }
   if (config.MQTTS_AUTHZ_QUERY_TOKEN === config.BROKER_SECURITY_ADMIN_TOKEN) throw new Error('Query and management tokens must differ');

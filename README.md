@@ -152,3 +152,7 @@ Useful test-agent commands:
 The standalone agent source is `test/openclaw-bot-chat`. Web `/assistant` and iOS Settings → Personal assistant manage execution, scoped tool approvals, verified-result reconciliation, files, confirmed memory and schedules. Use the dedicated isolated Compose project for the new scoped MQTT identity protocol.
 
 See [operations and acceptance](docs/PERSONAL_AGENT_OPERATIONS.md), [batch evidence](docs/PERSONAL_AGENT_PROGRESS.md), and [40-scenario evaluations](test/personal-agent-evals/scenarios.json). Real model/broker/PostgreSQL/storage/device/72-hour acceptance remains distinct from the passing deterministic and client UI tests.
+
+Message persistence runs in the independent `message-ingest` service, with its own
+MQTT credentials and durable spool volume. Set `INGEST_MQTT_PASSWORD` separately
+from the API's `MQTT_PASSWORD`. See [architecture and recovery](docs/MESSAGE_INGEST.md).

@@ -11,7 +11,11 @@ Broker 和授权服务都由 [ChangerR/mqtts](https://github.com/ChangerR/mqtts)
 flowchart LR
   UI[Web / Agent] <-->|MQTT TCP / WS| B[MQTTS Broker]
   B -->|查询凭据 · Protobuf 批量 RPC| Z[MQTTS 授权模块]
-  APP[聊天后端] -->|管理凭据 · Apply / ListSessions| Z
+  APP[聊天 API] -->|管理凭据 · Apply / ListSessions| Z
+  B -->|订阅 chat/#| I[独立 message-ingest]
+  I --> Q[(本地持久队列)]
+  Q -->|有界工作池| DB
+  I -->|独立订阅身份续期| Z
   APP --> DB[(聊天数据库)]
   Z --> P[(独立授权库)]
   B --- C[本地分片授权缓存]
@@ -39,10 +43,11 @@ Broker CI 的 `mqtts-image-<source-sha>-linux-amd64` 工件包含两个镜像；
 | 凭据 / 配置 | 使用方 |
 | --- | --- |
 | `MQTTS_AUTHZ_QUERY_TOKEN` | Broker → 授权服务查询；≥32字符 |
-| `BROKER_SECURITY_ADMIN_TOKEN` | 聊天后端 → 授权服务管理；≥32字符且与查询凭据不同 |
+| `BROKER_SECURITY_ADMIN_TOKEN` | API / 消费者 → 授权服务管理；≥32字符且与查询凭据不同 |
 | `BROKER_SECURITY_ADDRESS` | 授权服务 gRPC 地址，Compose 默认 `mqtts-authz:50051` |
 | `BROKER_SECURITY_NAMESPACE` | 可选独立策略命名空间，默认 `openclaw` |
-| `MQTT_USERNAME` / `MQTT_PASSWORD` / `MQTT_CLIENT_ID` | 后端持久消费者身份；密码≥32字符 |
+| `MQTT_USERNAME` / `MQTT_PASSWORD` / `MQTT_CLIENT_ID` | API 发布身份；密码≥32字符 |
+| `INGEST_MQTT_USERNAME` / `INGEST_MQTT_PASSWORD` / `INGEST_MQTT_CLIENT_ID` | Compose 中独立消费者身份；密码≥32字符，与 API 密码不同 |
 | `JWT_SECRET` | 应用登录凭据；独立随机值 |
 
 浏览器和 Agent 只收到自己的随机短期 MQTT 密码。根 Compose 从忽略的 `.env`
@@ -56,9 +61,10 @@ docker compose --profile broker up --build -d
 docker compose up --build -d
 ```
 
-所有服务没有对 Broker/授权容器的启动依赖。后端异步同步权限并重试 MQTT 连接，
-持久订阅、DB 和 Redis 均可用时才 ready。RPC 故障会使新 bootstrap 失败；已有
-缓存传输能继续不代表 API、历史查询和消息落库也不依赖后端。
+所有服务没有对 Broker/授权容器的启动依赖。API 异步同步业务权限并重试事件发布连接，
+其 ready 只检查 DB 与 Redis。独立 `message-ingest` 自行续期订阅身份和写入消息，
+API 停机不会中断已有消息消费。RPC 故障仍会使新 bootstrap 失败。
+消费者的独立健康检查、缓冲和恢复边界见 [消息落库服务](MESSAGE_INGEST.md)。
 
 示例私网 Compose 显式使用 `BROKER_SECURITY_INSECURE=true` 与
 `AUTHZ_INSECURE=true`。跨主机部署应配置服务端 `AUTHZ_TLS_CERT`/`AUTHZ_TLS_KEY`，

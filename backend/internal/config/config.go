@@ -10,6 +10,7 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
+	Ingest         IngestConfig
 	BrokerSecurity BrokerSecurityConfig `mapstructure:"broker_security"`
 	App            AppConfig
 	Database       DatabaseConfig
@@ -22,6 +23,16 @@ type Config struct {
 	Storage        StorageConfig
 	Asset          AssetConfig
 	Log            LogConfig
+}
+
+// IngestConfig bounds the independent consumer's work and durable backlog.
+type IngestConfig struct {
+	Listen          string `mapstructure:"listen"`
+	SpoolPath       string `mapstructure:"spool_path"`
+	Workers         int    `mapstructure:"workers"`
+	MaxBytes        int64  `mapstructure:"max_bytes"`
+	MaxMessages     int64  `mapstructure:"max_messages"`
+	MaxPayloadBytes int    `mapstructure:"max_payload_bytes"`
 }
 
 type BrokerSecurityConfig struct {
@@ -211,6 +222,12 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.SetDefault("broker_security.session_ttl_seconds", 300)
+	v.SetDefault("ingest.listen", "127.0.0.1:8081")
+	v.SetDefault("ingest.spool_path", "data/message-ingest.db")
+	v.SetDefault("ingest.workers", 4)
+	v.SetDefault("ingest.max_bytes", 256*1024*1024)
+	v.SetDefault("ingest.max_messages", 100000)
+	v.SetDefault("ingest.max_payload_bytes", 1024*1024)
 	v.SetDefault("auth.phone.enabled", true)
 	v.SetDefault("auth.phone.allowed_country_codes", []string{"86"})
 	v.SetDefault("auth.phone.code_ttl_seconds", 300)

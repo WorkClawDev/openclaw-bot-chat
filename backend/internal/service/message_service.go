@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/openclaw-bot-chat/backend/internal/model"
 	"github.com/openclaw-bot-chat/backend/internal/repository"
 )
@@ -47,30 +49,65 @@ func NewMessageService(
 
 // HandleIncomingMessage persists a raw MQTT payload received by the transport layer.
 func (s *MessageService) HandleIncomingMessage(topic string, payload []byte) error {
-	var msgPayload MessagePayload
-	if err := json.Unmarshal(payload, &msgPayload); err != nil {
-		return fmt.Errorf("unmarshal MQTT payload: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	return s.HandleQueuedMessage(ctx, topic, payload, uuid.New(), time.Now())
+}
+
+// PermanentMessageError marks malformed input for the durable dead-letter queue.
+// Database/network failures remain retryable.
+type PermanentMessageError struct{ Err error }
+
+func (e *PermanentMessageError) Error() string { return e.Err.Error() }
+func (e *PermanentMessageError) Unwrap() error { return e.Err }
+
+// HandleQueuedMessage preserves a delivery's fallback identity and receipt time
+// across process restarts. Publishers should supply UUID ids for redelivery deduplication.
+func (s *MessageService) HandleQueuedMessage(ctx context.Context, topic string, payload []byte, fallbackID uuid.UUID, receivedAt time.Time) error {
+	var msgPayload MessagePayload
+	if err := json.Unmarshal(payload, &msgPayload); err != nil {
+		return &PermanentMessageError{fmt.Errorf("unmarshal MQTT payload: %w", err)}
+	}
 
 	normalized := normalizeIncomingMessage(topic, msgPayload)
+	if _, err := uuid.Parse(firstNonEmpty(msgPayload.ID, msgPayload.MessageID)); err != nil {
+		normalized.messageID = fallbackID.String()
+	}
+	if normalized.timestamp <= 0 {
+		normalized.timestamp = receivedAt.Unix()
+	}
 	if declared := NormalizeConversationReference(firstNonEmpty(msgPayload.ConversationID, msgPayload.Topic)); declared != "" && declared != normalized.conversationID {
-		return fmt.Errorf("message conversation_id does not match MQTT topic")
+		return &PermanentMessageError{fmt.Errorf("message conversation_id does not match MQTT topic")}
 	}
 	if err := validateNormalizedMessage(normalized); err != nil {
-		return fmt.Errorf("validate MQTT message: %w", err)
+		return &PermanentMessageError{fmt.Errorf("validate MQTT message: %w", err)}
+	}
+	// Include soft-deleted rows: replay must never resurrect deleted history.
+	id, _ := uuid.Parse(normalized.messageID)
+	if exists, err := s.msgRepo.ExistsByConversationAndMessageID(ctx, normalized.conversationID, id); err != nil {
+		return err
+	} else if exists {
+		return nil
 	}
 	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
 		return fmt.Errorf("enrich MQTT message: %w", err)
 	}
 	if err := s.prepareNormalizedMessage(ctx, &normalized); err != nil {
+		if errors.Is(err, ErrAssetInvalid) || errors.Is(err, ErrAssetNotFound) || errors.Is(err, ErrAssetAccessDenied) || errors.Is(err, ErrAssetUnsupportedType) || errors.Is(err, ErrAssetTooLarge) {
+			return &PermanentMessageError{fmt.Errorf("prepare MQTT message: %w", err)}
+		}
 		return fmt.Errorf("prepare MQTT message: %w", err)
 	}
 
 	mqttMsg := buildMessageModel(normalized)
 	if err := s.SaveMessage(ctx, mqttMsg); err != nil {
+		var pgError *pgconn.PgError
+		if errors.As(err, &pgError) {
+			switch pgError.Code {
+			case "22001", "22P02", "22021", "23514": // invalid data/check constraint; retry cannot repair the payload
+				return &PermanentMessageError{fmt.Errorf("save MQTT message: %w", err)}
+			}
+		}
 		return fmt.Errorf("save MQTT message: %w", err)
 	}
 

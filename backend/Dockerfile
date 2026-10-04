@@ -12,21 +12,27 @@ RUN go mod download
 COPY . .
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o backend ./cmd/server && CGO_ENABLED=0 GOOS=linux go build -o admin-user ./cmd/admin-user
+RUN CGO_ENABLED=0 GOOS=linux go build -o backend ./cmd/server && CGO_ENABLED=0 GOOS=linux go build -o admin-user ./cmd/admin-user && CGO_ENABLED=0 GOOS=linux go build -o message-ingest ./cmd/message-ingest
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.19 AS runtime
 
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
 
-# Copy binary from builder
-COPY --from=builder /app/backend .
-COPY --from=builder /app/admin-user .
 COPY --from=builder /app/config.yaml .
 
-EXPOSE 8080
+FROM runtime AS message-ingest
+COPY --from=builder /app/message-ingest .
+RUN mkdir -p /data && chmod 700 /data
+ENV INGEST_LISTEN=0.0.0.0:8081 INGEST_SPOOL_PATH=/data/messages.db
+EXPOSE 8081
+CMD ["./message-ingest"]
 
+FROM runtime AS backend
+COPY --from=builder /app/backend .
+COPY --from=builder /app/admin-user .
+EXPOSE 8080
 CMD ["./backend"]

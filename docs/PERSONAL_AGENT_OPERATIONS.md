@@ -25,7 +25,7 @@ node scripts/personal-agent-prepare.cjs
 先启动基础服务和 Web，使用隔离账户创建自己的 bot，从界面生成 bot key。将其填入 `.runtime/bot-key`，模型密钥填入 `.runtime/model-key`，不要把密钥放进命令参数或 Git。没有配置这些值时 worker 会拒绝启动。
 
 ```sh
-docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent --profile broker up --build -d mqtts-authz mqtts frontend
+docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent --profile broker up --build -d mqtts-authz mqtts message-ingest frontend
 docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent up --build -d worker
 ```
 
@@ -61,14 +61,14 @@ docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/co
 
 ## 健康、事件、用量与诊断
 
-- `/health`：HTTP进程存活。`/health/ready`：实际数据库、Redis及backend MQTT连接；缺一返回503。
+- `/health`：HTTP进程存活。`/health/ready`：API 检查数据库和 Redis；`message-ingest:8081/health/ready` 独立检查订阅、数据库和持久队列，返回 pending/dead/retries。详见 [消息落库服务](MESSAGE_INGEST.md)。
 - `/api/v1/agent/health`：JWT owner限定run状态数、过期租约、未投递inbox、待发通知、待核对工具及真实步骤累计；不包含凭据和对话正文。
 - worker `/state/health.json`：启动成功、当前MQTT连接及心跳时间。镜像检查实际ready且90秒内有心跳。它不验证模型服务能成功完成工作。
 - run events保留真实queued/model_request/assistant_delta/model_response/tool意图与结果等。event seq单调；通知按QoS1确认持久outbox，客户端重新获取授权历史并按seq去重。
 - provider返回的token用量记录在model_response事件；未提供时界面明确「模型用量未知」，不推算成真实账单。设置 `OPENAI_COMPAT_STREAM_USAGE=true` 请求兼容服务的usage；不支持时保持false。
 - model_response的duration_ms/first_delta_ms来自实际时钟；queued事件表示持久接收。接收/排队时延与模型首字时延分开统计，当前未完成真实p95性能验收。预算按实际model/tool步骤记录，默认80步；触限持久暂停，用户恢复可追加80步。
 
-日志默认关闭body调试，MCP stderr不直接透传。排查命令限定project：`docker compose ... -p personal-agent ps`、`logs --tail=200 backend worker`。不要把完整环境、配置、模型key或JWT贴到报告。
+日志默认关闭body调试，MCP stderr不直接透传。排查命令限定project：`docker compose ... -p personal-agent ps`、`logs --tail=200 backend message-ingest worker`。不要把完整环境、配置、模型key或JWT贴到报告。
 
 ## 迁移、备份、恢复和回滚
 

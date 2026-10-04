@@ -1,72 +1,31 @@
 # OpenClaw Bot Chat Backend
 
-Go backend，职责收敛为：
+本目录构建两个独立应用进程：
 
-- 用户与 bot 鉴权
-- bots/groups/assets/messages/conversations 业务数据管理
-- realtime bootstrap 元数据下发
-- MQTT consumer 消费业务 topic 并持久化
-- 历史消息查询与断线补偿查询
+- `cmd/server`：用户/Agent 鉴权、资源权限、bootstrap、历史和业务 API；仅发布 Agent 事件。
+- `cmd/message-ingest`：订阅 `chat/#`，写入本地持久队列，再由有界工作池落库。无需 API 或 Redis 存活。
 
-不再提供自定义 WebSocket realtime 协议，不再充当消息转发层。
+Go 版本以 `go.mod` 为准。两者共享 PostgreSQL 的业务模型，API 另用 Redis。
+MQTTS Broker 与 Protobuf 授权服务属于独立仓库，部署使用预构建镜像。
 
-## Runtime 依赖
+## 启动与配置
 
-- Go 1.26+
-- PostgreSQL
-- Redis
-- 任意支持认证+ACL 的 MQTT broker（compose 默认 EMQX）
+从 `config.yaml` 读取配置，也支持环境变量。API 与消费者必须使用不同的
+`MQTT_USERNAME`、`MQTT_PASSWORD`、`MQTT_CLIENT_ID`。容器配置通过
+`INGEST_MQTT_PASSWORD` 为消费者注入独立密码；原生启动时给各进程设置自己的 `MQTT_*`。
 
-## 配置
-
-主要配置在 `config.yaml`，也支持环境变量覆盖。
-
-`mqtt` 关键字段：
-
-```yaml
-mqtt:
-  broker: "tcp://127.0.0.1:1883"
-  client_id: "openclaw-backend"
-  username: "openclaw_backend"
-  password: "change-me-in-production"
-  topic_prefix: "chat"
-  qos: 1
-  tcp_public_url: "mqtt://127.0.0.1:1883"
-  ws_public_url: "ws://127.0.0.1:8083/mqtt"
+```sh
+go build -o bin/backend ./cmd/server
+go build -o bin/message-ingest ./cmd/message-ingest
+# 使用各自的环境分别启动；先完成数据库初始化。
+./bin/backend
+./bin/message-ingest
 ```
 
-- `broker`：backend 自己连接 broker 的地址
-- `tcp_public_url`：下发给 plugin/testagent
-- `ws_public_url`：下发给 frontend
+API 的 `/health/ready` 检查数据库与 Redis。消费者另有默认
+`127.0.0.1:8081/health/ready`，检查订阅、数据库和队列，并返回积压、死信和重试计数。
+历史查询仍通过 REST，实时消息经 Broker 转发。
 
-## 启动
-
-```bash
-cd backend
-go mod tidy
-go run ./cmd/server
-```
-
-## 核心接口（摘要）
-
-- `GET /health`
-- `GET /api/v1/realtime/bootstrap`（用户 JWT）
-- `GET /api/v1/bot-runtime/bootstrap`（`X-Bot-Key`）
-- `GET /api/v1/conversations`
-- `GET /api/v1/messages`
-- `GET /api/v1/messages/*conversation_id`
-- `GET /api/v1/bot-runtime/messages/*conversation_id`
-- 其余 auth/bot/group/asset 管理接口
-
-完整字段见仓库根目录 `docs/API.md`。
-
-## MQTT 持久化职责
-
-- backend 仅订阅业务 topic 并入库
-- seq 在 backend 落库时分配
-- 历史恢复通过 REST 查询，不通过 backend websocket replay
-
-## Broker ACL TODO
-
-- compose 默认 EMQX 示例已开启用户名密码认证。
-- `TODO(broker-acl)`: 后续接入自有 broker 时，需要把用户/bot 的 publish/subscribe ACL 做成动态下发。
+[完整消费架构、部署和恢复边界](../docs/MESSAGE_INGEST.md)
+· [MQTTS 与权限接入](../docs/MQTTS_ACCESS.md)
+· [API 文档](../docs/API.md)

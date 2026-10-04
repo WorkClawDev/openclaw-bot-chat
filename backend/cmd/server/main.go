@@ -133,26 +133,12 @@ func main() {
 		TLSCertFile:    cfg.MQTT.TLSCertFile,
 		TLSKeyFile:     cfg.MQTT.TLSKeyFile,
 		TLSServerName:  cfg.MQTT.TLSServerName,
-	}, log, msgService)
+	}, log, nil)
 
-	// The independent authorization module may still be receiving its initial
-	// policy projection. Retry startup while MQTT readiness stays false.
+	// The API publishes Agent events; message ingestion runs in its own process.
 	mqttContext, mqttCancel := context.WithCancel(context.Background())
 	defer func() { mqttCancel(); mqttClient.Disconnect() }()
-	go func() {
-		for mqttContext.Err() == nil {
-			if err := mqttClient.Connect(); err == nil {
-				return
-			} else {
-				log.Warn().Err(err).Msg("MQTT startup connection failed; retrying")
-			}
-			select {
-			case <-mqttContext.Done():
-				return
-			case <-time.After(3 * time.Second):
-			}
-		}
-	}()
+	go mqttClient.Run(mqttContext)
 
 	// --- Handlers ---
 	authHandler := handler.NewAuthHandler(authService, phoneAuthService)
@@ -201,7 +187,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()
 		raw, err := db.DB()
-		if err != nil || raw.PingContext(ctx) != nil || rdb.Ping(ctx).Err() != nil || !mqttClient.IsConnected() {
+		if err != nil || raw.PingContext(ctx) != nil || rdb.Ping(ctx).Err() != nil {
 			c.JSON(503, gin.H{"status": "unavailable"})
 			return
 		}

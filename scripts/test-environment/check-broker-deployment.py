@@ -8,7 +8,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 env = os.environ.copy()
-env.update(MQTTS_AUTHZ_QUERY_TOKEN='q' * 40, BROKER_SECURITY_ADMIN_TOKEN='a' * 40, MQTT_PASSWORD='p' * 40,
+env.update(MQTTS_AUTHZ_QUERY_TOKEN='q' * 40, BROKER_SECURITY_ADMIN_TOKEN='a' * 40, MQTT_PASSWORD='p' * 40, INGEST_MQTT_PASSWORD='i' * 40,
            JWT_SECRET='j' * 40, OPENAI_COMPAT_BASE_URL='https://model.example/v1',
            OPENAI_COMPAT_MODEL='fixture', DATABASE_USER='postgres',
            DATABASE_PASSWORD='fixture', DATABASE_DBNAME='fixture',
@@ -41,6 +41,11 @@ with tempfile.TemporaryDirectory(prefix='broker-deployment-') as directory:
             if result.returncode:
                 raise RuntimeError('Compose validation failed: ' + result.stderr)
             services = json.loads(result.stdout)['services']
+            assert 'message-ingest' in services
+            ingest = services['message-ingest']
+            assert 'backend' not in ingest.get('depends_on', {})
+            assert ingest['environment']['MQTT_USERNAME'] != services['backend']['environment'].get('MQTT_USERNAME')
+            assert any(v['target'] == '/data' for v in ingest.get('volumes', []))
             if profile:
                 assert 'build' not in services['mqtts-authz']
                 assert services['mqtts-authz']['image'] == 'mqtts-authz:independent-fixture'
