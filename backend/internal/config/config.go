@@ -26,7 +26,13 @@ type Config struct {
 
 type BrokerSecurityConfig struct {
 	RequireMessageIdentity bool   `mapstructure:"require_message_identity"`
-	CallbackToken          string `mapstructure:"callback_token"`
+	Address                string `mapstructure:"address"`
+	AdminToken             string `mapstructure:"admin_token"`
+	Namespace              string `mapstructure:"namespace"`
+	Insecure               bool   `mapstructure:"insecure"`
+	CAFile                 string `mapstructure:"ca_file"`
+	CertFile               string `mapstructure:"cert_file"`
+	KeyFile                string `mapstructure:"key_file"`
 	SessionTTLSeconds      int    `mapstructure:"session_ttl_seconds"`
 }
 
@@ -218,7 +224,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("captcha.provider", "mock")
 	v.SetDefault("captcha.turnstile.endpoint", "https://challenges.cloudflare.com/turnstile/v0/siteverify")
 	bindEnvKeys(v,
-		"broker_security.callback_token",
+		"broker_security.address", "broker_security.admin_token", "broker_security.namespace", "broker_security.insecure", "broker_security.ca_file", "broker_security.cert_file", "broker_security.key_file",
 		"broker_security.session_ttl_seconds",
 		"broker_security.require_message_identity",
 		"app.host",

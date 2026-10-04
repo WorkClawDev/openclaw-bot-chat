@@ -1,7 +1,7 @@
 # Local test environment
 
 Run on Linux x86_64 from the repository root with Docker Compose v2, Node.js 22+,
-npm, Go 1.25+, curl, and tar. Set `MQTTS_IMAGE` to a prebuilt broker image as
+npm, Go 1.25+, curl, and tar. Set `MQTTS_IMAGE` and `MQTTS_AUTHZ_IMAGE` to prebuilt broker and authorization images as
 described in [the setup guide](../../docs/MQTTS_ACCESS.md). Broker builds/releases
 belong to its own repository; this test stack never checks out or compiles it:
 
@@ -32,13 +32,15 @@ without a model API key and supports UI and transport testing. SeaweedFS 4.48
 provides S3-compatible test object storage with generated keys and signature
 verification. The startup script downloads its official release binary, verifies
 the pinned SHA-256 digest, and caches it in `run/test-env/seaweedfs`.
-The broker validates browser and Bot sessions with the backend's scoped identity
-protocol. A separate private persistence identity connects after HTTP callbacks are ready.
+The broker validates browser and Bot sessions through the independent MQTTS authorization
+module using Protobuf/gRPC. The backend publishes scoped policies; it receives no
+authorization callback on the message path.
 The backend reports ready only after its persistence subscription is accepted.
 Use the production broker and storage provider separately for deployment testing.
 
 The PostgreSQL, Redis, and storage data use named Docker volumes. MQTTS is
-stateless in this configuration; PostgreSQL stores chat history.
+stateless in this configuration; its independent authorization module stores
+generic policies in a separate named volume. PostgreSQL stores chat history.
 `down` stops this test project and preserves its data. `up` can be repeated;
 it reuses account and fixture IDs and restarts the app with the current code.
 `check` runs Go tests, extension tests/build, frontend type checks, test-agent

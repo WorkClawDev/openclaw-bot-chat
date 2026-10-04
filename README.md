@@ -31,9 +31,10 @@ The backend is responsible for:
 The optional Docker Compose broker profile and isolated test stacks use a prebuilt
 [ChangerR/mqtts](https://github.com/ChangerR/mqtts) image. MQTTS is maintained and
 released independently; this repository contains its application-side adapter and
-configuration only. The generic HTTP provider authenticates each
-client through protected backend callbacks and checks publish, subscribe, and
-outbound delivery against current account, Agent, and group permissions.
+configuration only. Its independent `modules/authz` service receives generic
+policies from this backend and serves batched authorization through Protobuf/gRPC.
+The broker checks publish, subscribe and outbound delivery using bounded local
+caches, without calling the chat API.
 Browsers and Agents receive individual short-lived credentials from bootstrap.
 
 See [MQTTS setup, roles, migration, and verification](docs/MQTTS_ACCESS.md).
@@ -42,8 +43,8 @@ contract; the strict sender-identity setting also requires payload-aware checks.
 
 ## Quick Start With Docker Compose
 
-Select a prebuilt broker using `MQTTS_IMAGE` (release image, registry digest, or a
-locally loaded image; see the setup guide). Configure `BROKER_SECURITY_CALLBACK_TOKEN`, `MQTT_PASSWORD`,
+Select prebuilt runtimes using `MQTTS_IMAGE` and `MQTTS_AUTHZ_IMAGE` (release image, registry digest, or a
+locally loaded image; see the setup guide). Configure `MQTTS_AUTHZ_QUERY_TOKEN`, `BROKER_SECURITY_ADMIN_TOKEN`, `MQTT_PASSWORD`,
 and `JWT_SECRET` in an ignored `.env` with independent random secrets of at least
 32 characters, then start the core stack:
 
@@ -53,7 +54,7 @@ docker compose --profile broker ps
 ```
 
 To use an independently deployed broker, set `MQTT_BROKER`,
-`MQTT_TCP_PUBLIC_URL`, and `MQTT_WS_PUBLIC_URL` and omit `--profile broker`.
+`MQTT_TCP_PUBLIC_URL`, `MQTT_WS_PUBLIC_URL`, and `BROKER_SECURITY_ADDRESS` and omit `--profile broker`.
 No broker source checkout is needed in either mode.
 
 The bundled profile starts:
@@ -61,6 +62,7 @@ The bundled profile starts:
 - PostgreSQL
 - Redis
 - MQTTS (TCP and WebSocket on the same native listener)
+- MQTTS authorization module (private gRPC service with its own policy volume)
 - Backend
 - Frontend
 
@@ -95,7 +97,8 @@ Important environment variables:
 
 - `NEXT_PUBLIC_API_URL`: backend URL used by the frontend.
 - `MQTT_USERNAME` / `MQTT_PASSWORD`: private backend persistence identity; never returned to clients.
-- `BROKER_SECURITY_CALLBACK_TOKEN`: secret shared only by the backend and broker.
+- `BROKER_SECURITY_ADDRESS` / `BROKER_SECURITY_ADMIN_TOKEN`: private authorization management RPC.
+- `MQTTS_AUTHZ_QUERY_TOKEN`: broker query credential; different from the management token.
 - `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true`: enforce the MQTT payload author.
 - `MQTT_TCP_PUBLIC_URL`: broker TCP URL returned to the plugin / test agent.
 - `MQTT_WS_PUBLIC_URL`: broker WebSocket URL returned to the frontend.

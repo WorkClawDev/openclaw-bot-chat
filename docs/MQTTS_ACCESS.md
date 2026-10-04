@@ -1,75 +1,71 @@
-# 自有 MQTTS 与权限管理
+# 自有 MQTTS 与独立授权模块
 
-默认 Broker 是 [ChangerR/mqtts](https://github.com/ChangerR/mqtts)。此处 MQTTS
-指你的 C++ 项目；原生监听是 TCP/WS，公网 TLS/WSS 由入口代理终止。
-聊天数据继续存储在 PostgreSQL，Redis 保存短期 MQTT 身份。
+Broker 和授权服务都由 [ChangerR/mqtts](https://github.com/ChangerR/mqtts) 维护。
+授权代码位于该仓库 `modules/authz`，是独立 Go 模块、进程、镜像和授权库。
+聊天项目只包含管理 RPC 客户端、业务权限投影和接入配置，不编译 Broker 或服务源码。
+聊天数据在 PostgreSQL；Redis 继续承担应用自身用途，不再保存 MQTT 授权会话。
 
-## 两个项目的边界
+## 服务边界
 
-MQTTS 是独立的通用 Broker：独立源码、构建、测试和版本发布，不读取本项目的
-数据库，不理解 user/admin、Agent、群聊或聊天 JSON。HTTP provider 是可选的
-通用扩展，也可使用它自己的 SQLite/Redis provider。聊天项目通过 MQTT 和
-[HTTP 授权契约 v1](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/docs/http-auth.md)
-接入；所有业务权限、发送者识别与适配代码由本项目维护。
-
-首次连接和新权限仍需后端授权；已有授权由 Broker 的本地有界缓存处理，消息
-热路径不查询 HTTP、Redis 或聊天数据库。两个项目无需共享源码、数据库或发布
-流程。后端故障时，缓存授权可以用到原会话到期，且从上次成功授权起不超过
-5 分钟；故障不会续期。新连接、新权限或过期授权仍被拒绝。
-
-## 使用独立构建的镜像
-
-本仓库不再检出或编译 MQTTS 源码，也不要求两个仓库为同级目录。设置
-`MQTTS_IMAGE` 为已构建并验证的镜像标签或 registry digest。Broker 仓库的 CI
-提供 `mqtts-image-<source-sha>-linux-amd64` 工件，版本标签的 Release 提供相同
-运行镜像；下载后按以下方式装载：
-
-```sh
-# 在下载目录执行，先核对 metadata.json 中的 source_revision。
-sha256sum -c SHA256SUMS
-docker load --input mqtts-image.tar.gz
-# 使用 metadata.json 的 image 值，也可自行 retag/push 到私有 registry。
+```mermaid
+flowchart LR
+  UI[Web / Agent] <-->|MQTT TCP / WS| B[MQTTS Broker]
+  B -->|查询凭据 · Protobuf 批量 RPC| Z[MQTTS 授权模块]
+  APP[聊天后端] -->|管理凭据 · Apply / ListSessions| Z
+  APP --> DB[(聊天数据库)]
+  Z --> P[(独立授权库)]
+  B --- C[本地分片授权缓存]
 ```
 
-镜像需要支持 HTTP 契约 v1 的 `publish_payload: base64` 及可选缓存扩展。当前 PR 验收版本记录
-在 `broker/mqtts/compatibility.json`，CI 直接下载那次独立构建的镜像工件，不编译
-C++。工件保留90天；长期部署使用独立 Release 下载或固定 registry digest。
-`MQTTS_TEST_IMAGE` 仓库变量/手动工作流输入可以指定要测试的已发布镜像。
-MQTTS 新版本先经过本项目兼容性验证，再显式升级部署的镜像引用。
+聊天后端核对用户、Agent、Key、群成员及消息访问权限，把结果转成通用 Topic
+规则、到期时间及可选 JSON 字段绑定。授权模块不读取聊天数据库，也不回调聊天
+API；Broker 只依赖 [Protobuf 契约](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/modules/authz/proto/authorization.proto)。
+旧 `/internal/broker/*` HTTP callbacks 已移除。Broker 本身仍可选用其通用 HTTP provider。
 
-根目录 Compose 需要独立随机 `BROKER_SECURITY_CALLBACK_TOKEN`、`MQTT_PASSWORD`
-和 `JWT_SECRET`（至少32字符），放在忽略的 `.env`，同时设置 `MQTTS_IMAGE`。
-不要把密码写入 MQTT URL。`MQTT_USERNAME`、`MQTT_CLIENT_ID` 是后端持久消费者
-身份；bootstrap 返回各客户端独立随机会话，不能把后端密码填入 Web 或 Agent。
+授权模块使用内存快照读取和 bbolt 持久化策略。目前是单个权威授权实例，支持多个
+Broker 和应用发布者；没有实现授权库复制，不可对多个独立库做负载均衡。
+服务可独立部署和调整资源。未来横向复制需增加有序的策略同步机制。
+
+## 镜像、凭据和启动
+
+设置 `MQTTS_IMAGE` 和 `MQTTS_AUTHZ_IMAGE` 为预构建镜像或 registry digest。
+Broker CI 的 `mqtts-image-<source-sha>-linux-amd64` 工件包含两个镜像；下载后验证
+`SHA256SUMS`，再执行 `docker load --input mqtts-image.tar.gz`。`metadata.json` 提供
+镜像名、源码版本及 Protobuf SHA-256。本仓库 `broker/mqtts/compatibility.json`
+锁定通过兼容性验收的版本；CI 下载现成工件，不检出另一仓库。
+工件保留90天，长期部署应使用独立 Release 或固定 registry digest。
+自选验收镜像需同时设置 `MQTTS_TEST_IMAGE` 和 `MQTTS_AUTHZ_TEST_IMAGE` 仓库变量。
+
+| 凭据 / 配置 | 使用方 |
+| --- | --- |
+| `MQTTS_AUTHZ_QUERY_TOKEN` | Broker → 授权服务查询；≥32字符 |
+| `BROKER_SECURITY_ADMIN_TOKEN` | 聊天后端 → 授权服务管理；≥32字符且与查询凭据不同 |
+| `BROKER_SECURITY_ADDRESS` | 授权服务 gRPC 地址，Compose 默认 `mqtts-authz:50051` |
+| `BROKER_SECURITY_NAMESPACE` | 可选独立策略命名空间，默认 `openclaw` |
+| `MQTT_USERNAME` / `MQTT_PASSWORD` / `MQTT_CLIENT_ID` | 后端持久消费者身份；密码≥32字符 |
+| `JWT_SECRET` | 应用登录凭据；独立随机值 |
+
+浏览器和 Agent 只收到自己的随机短期 MQTT 密码。根 Compose 从忽略的 `.env`
+读取配置；个人助手的 prepare 生成 `broker-token` 与 `authz-admin-token` 独立文件。
+授权库单独 named volume，RPC 默认不发布到宿主机端口。
 
 ```sh
-# broker profile 只启动预构建镜像；--build 仅构建本项目服务。
+# 本地可选 profile 启动两个预构建 MQTTS 镜像。
 docker compose --profile broker up --build -d
-```
-
-根 Compose 使用 `broker/mqtts/mqtts.yaml`；个人助手 Compose 使用
-`deploy/personal-agent/mqtts.yaml`，从 `/run/secrets/broker-token` 读取回调 token。
-`node scripts/personal-agent-prepare.cjs` 生成本项目的秘密。测试脚本
-`scripts/test-env.sh up` 默认启动选定的预构建镜像；不会编译 Broker。
-旧 EMQX 配置文件仅保留供迁移参考。
-
-## 连接单独部署的 Broker
-
-在独立 MQTTS 部署中配置 HTTP provider，将认证/授权 URL 指向可达的聊天后端
-私网地址，并让两侧使用相同 callback token。本项目提供的 YAML 是消费方接入
-示例，外部 Broker 应按自己的部署地址调整。无需把后端放进 Broker 的 Compose。
-
-聊天项目 `.env` 设置 `MQTT_BROKER`、`MQTT_TCP_PUBLIC_URL`、`MQTT_WS_PUBLIC_URL`
-以及上述后端与回调凭据，然后**不启用 broker profile**：
-
-```sh
+# 外部部署则指定 Broker URLs、授权 RPC 地址及管理凭据，省略 profile。
 docker compose up --build -d
 ```
 
-此时不会创建本地 MQTTS 容器。后端先启动 HTTP，再异步连接 Broker；
-`/health/ready` 仅在 DB、Redis、MQTT 持久订阅均可用时成功。Broker 端口健康
-不等于应用已经就绪。个人助手 worker 还需设置 `MQTT_WORKER_URL` 为 worker
-可达的 TCP/TLS 地址。公网入口和证书配置见下文。
+所有服务没有对 Broker/授权容器的启动依赖。后端异步同步权限并重试 MQTT 连接，
+持久订阅、DB 和 Redis 均可用时才 ready。RPC 故障会使新 bootstrap 失败；已有
+缓存传输能继续不代表 API、历史查询和消息落库也不依赖后端。
+
+示例私网 Compose 显式使用 `BROKER_SECURITY_INSECURE=true` 与
+`AUTHZ_INSECURE=true`。跨主机部署应配置服务端 `AUTHZ_TLS_CERT`/`AUTHZ_TLS_KEY`，
+后端 `BROKER_SECURITY_CA_FILE`、可选 `BROKER_SECURITY_CERT_FILE`/`KEY_FILE`，
+Broker `ca_file`、可选 `client_cert_file`/`client_key_file`；启用客户端证书时服务端
+配置 `AUTHZ_CLIENT_CA`。Compose override 挂载证书并传入这些设置。保持主机名验证，
+不对公网开放管理 RPC。详细服务参数见 [模块说明](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/modules/authz/README.md)。
 
 ## 角色与资源范围
 
@@ -106,60 +102,35 @@ docker compose -f deploy/personal-agent/compose.yaml exec backend \
 `PUT /api/v1/admin/users/:id/access`（`role: user|admin`、`status: 0|1|2`，
 分别为停用/活跃/封禁）。每次请求都读取当前账号角色和状态；不依赖旧 JWT 的角色。
 
-## MQTT 权限、缓存与撤权
+## 批量授权、缓存与撤权
 
-Broker 的 HTTP provider 使用同一个私密 token 访问
-`/internal/broker/authentication`、`/internal/broker/authorization`、
-`/internal/broker/cache-version`。
-回调不应暴露到公网入口；不能在日志中输出请求体/密码。连接绑定 username、
-client ID、owner、Agent Key、到期时间以及订阅/发布范围。
+查询 RPC 为 `Authenticate`、`BatchAuthorize`、`GetRevision`；管理 RPC 为
+`Apply`、`ListSessions`。查询凭据不能修改权限，管理凭据不能用于 Broker 查询。
+单批服务上限64条、4 MiB，管理变更上限128条。每条查询有独立 ID、结果和期限。
+乱序回复按 ID 关联；未知/重复/缺失 ID 失败关闭，不能把另一条允许误配过来。
 
-MQTTS 在发布、订阅、**每次投递**时检查本地授权。缓存绑定每次 CONNECT 产生的
-独立会话、username/client ID、操作和 Topic。移出群聊、禁用 Agent、撤销 Key
-或封禁账号后，成功的权限变更接口更新应用 Redis 内的随机权限版本。Broker
-通过 HTTP 每250 ms轮询该版本，变化后清除缓存；在途旧响应不能恢复旧授权。
-撤权传播需要轮询间隔加网络/服务处理时间，并非跨进程的原子操作；隔离集成测试
-要求2秒内收敛。已交付到客户端的数据不会被追回。
-密码过期后连接可能仍然存在，但读写被拒绝；Web/worker 应续期并重新连接。
+Broker 默认4个 RPC 工作线程复用通道；至多等待1 ms，合并32条/4 MiB。
+CONNECT 不等待批量聚合。队列限制64条、16 MiB；500 ms超时包括排队，熔断冷却1秒。
+版本轮询有独立线程。MQTT 事件线程和发送协程不执行阻塞 RPC；冷投递等待时让出
+队列，保留同客户端顺序及有界等待任务。
 
-本项目配置10秒新鲜期、最长300秒授权租约、16384条分片 LRU。新鲜命中不访问
-HTTP；过新鲜期的命中立即返回，同时合并为一个后台刷新。显式拒绝清除旧授权；
-后端/Redis/数据库故障返回503，保留原租约，不推迟到期时间。拒绝最多缓存1秒。
-CONNECT 始终验证密码；跨连接不复用登录结果。4个独立 HTTP 工作者复用连接，
-队列最多64个请求、16 MiB请求体，500 ms超时，熔断与重试冷却1秒；慢回调不会
-阻塞 MQTT 事件线程。权限版本轮询使用单独工作者。
+缓存为16分片 LRU，16384条，10秒新鲜期，最长300秒。绑定连接会话、身份、操作、
+Topic 和 payload 摘要。新鲜命中不调用 RPC；过新鲜期后本地返回并合并后台刷新。
+显式拒绝清除授权；超时/故障不续期。缓存始终受原会话、策略租约和5分钟上限约束。
+策略发布者故障时，即使授权服务健康，也不能无限续租旧权限。
 
-接入示例配置2个 MQTT 事件线程，每个连接使用独立协程，每个事件线程另有4个
-发送协程。HTTP 授权线程与它们分开。冷投递授权尚未返回时，任务暂时让出发送
-队列，其他客户端可以继续收消息；同一客户端的消息按提交顺序发送。等待中的
-任务计入每个发送协程1000条的上限，完成时重新检查会话到期和授权版本。队列
-饱和、慢 socket 或大范围缓存失效仍可能增加延迟，新权限超时/过载会被拒绝。
-并发回归与可复现压测脚本由独立 Broker 仓库维护，见上述契约文档的并发章节；
-聊天项目只选择通过兼容性验证的 Broker 版本。
+业务变更成功后发送合并通知，后台重新投影授权库中的会话；每10秒再做一次校正。
+管理 CAS 在读取业务权限前取版本，防止并发发布者覆盖较新的撤权。新身份创建和
+仅续租不改变策略版本，避免登录高峰清空所有缓存或使撤权反复冲突。
+真正权限变化产生新版本，Broker 每250 ms检查并清缓存，在途旧响应不能恢复授权。
+正常撤权是异步收敛，受同步工作量和网络影响，隔离验收要求2秒内生效；不是跨进程
+原子事务。手工改库、提交后进程退出或通知丢失由定期校正修复；数据库故障不会续租。
 
-权限变更通知失败会在 Redis 恢复后重试。它不是事务性 outbox；手工改数据库、
-进程在提交后通知前退出等情况依靠下一次后台授权刷新发现，服务故障时仍受5分钟
-上限约束。新增权限变更路由需接入失效中间件。缓存维持的是已授权 MQTT 传输，
-不代表后端故障时历史查询、API 或消息持久化仍然可用。
-
-保持后端 `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true`，接入配置启用通用
-`publish_payload: base64`，`max_payload_bytes: 1048576`。MQTTS 将原始 MQTT payload
-编码为 Base64 放入回调的 `payload`，并标注 `payload_encoding: "base64"`。Broker
-不理解业务字段；后端解码、识别 `chat/` 消息，并检查发送者与 CONNECT 身份
-一致，拒绝冲突的 topic/conversation/sender 字段。普通用户不能借群聊发布权限
-冒充别人。业务事件消息也由后端决定处理方式。
-
-解码前后都有长度限制，缺少 payload、非法编码/JSON、超限内容在严格模式下
-被拒绝。回调会携带完整消息内容，必须走受保护的私网或 HTTPS，且不记录请求体。
-Base64 增加约1/3体积；只在未命中或刷新时构造回调，消息仍由 Broker 直接投递。
-消费方配置 `publish_cache_ignored_fields: '["id","timestamp","content"]'`：这些字段
-不参与当前权限判断。其他字段（包括 from、sender、topic/conversation、未知字段
-和大小写别名）全部保留在摘要中，避免同一 Topic 下改写发送者命中旧授权。
-重复 JSON 键、非法 JSON 和深层嵌套退回完整字节摘要。将来权限若依赖内容、ID
-或时间，必须同步移除对应的忽略项。通用 Broker 默认按完整 payload 取摘要，
-没有硬编码任何聊天字段。
-旧 `message_identity_prefix`/`message` 投影契约已移除，应先在隔离环境同步升级
-消费方适配和接入配置。MQTTS 会拒绝不认识的 provider 配置，避免静默降级。
+`BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 把 `from`/`sender`、Topic 等业务
+字段转换为通用 JSON-pointer 绑定，模块本身没有聊天字段常量。所有存在的别名必须
+一致；伪造身份、重复键及冲突大小写键拒绝。Protobuf 传递原始 bytes，单 payload
+最多1 MiB，无 Base64 膨胀。缓存忽略配置仅为 `id`、`timestamp`、`content`；其余字段
+保留。重复键或非法 JSON 退回完整字节摘要。若将来权限依赖内容，必须移除对应忽略项。
 
 私有存储下，旧 `/assets/image/:id`、`/assets/audio/:id` 公开重定向不能再替消息
 附件续签。下载地址通过已授权的消息历史获取。仅附件所有者主动选作自己、
@@ -182,7 +153,7 @@ Base64 增加约1/3体积；只在未命中或刷新时构造回调，消息仍�
 
 ## 迁移与验证
 
-先备份 PostgreSQL 并在独立副本应用角色迁移。启动独立 MQTTS/后端验证 ready，
+先备份 PostgreSQL 并在独立副本应用角色迁移。启动独立 MQTTS/授权模块/后端验证 ready，
 再切换运行环境的 Broker URL 和公开 WS/TCP 地址并重连客户端。旧会话密码
 不保证跨 Broker 复用，应重新 bootstrap。MQTTS 不迁移 EMQX 内存中的 retained
 消息/离线队列；应用的持久聊天历史仍从 PostgreSQL catch-up 获取。
@@ -205,12 +176,18 @@ node scripts/test-environment/mqtts-permissions.mjs
 
 该验收脚本创建临时账号，验证真实 WebSocket/TCP 双向收发与落库、越权访问、
 伪造发送者、移出群聊后的已有订阅、封禁后的 JWT/refresh/Agent Key 和并发
-管理员降权。不要针对生产库运行。Broker 自带的 Python 集成测试另外覆盖
-MQTT 3.1.1/5、错误密码/client ID、异常回调、过期身份和不完整配置启动失败。
+管理员降权。不要针对生产库运行。Broker 自带的集成测试另外覆盖
+MQTT 3.1.1/5、错误密码/client ID、异常 RPC/回调、过期身份和不完整配置启动失败。
 截图和实际账号仅保存在忽略的 `run/`，不提交 Git。
 
-CI 还运行 `scripts/test-environment/mqtts-cache-outage.mjs`：显式指定隔离后端的
-`MQTTS_TEST_BACKEND_PID` 和 `MQTTS_TEST_BACKEND_EXECUTABLE`，校验进程身份后
-短暂暂停它，等待超过10秒新鲜期，验证200条 WebSocket/TCP 双向消息完整送达，
-同时拒绝新连接。脚本在退出时恢复后端，并有额外恢复看门狗。该测试使用上一步
-生成的临时账号，故障报告仅包含通过状态与延迟，不上传账号/秘密。
+CI 分别暂停聊天后端和授权服务，使用 `scripts/test-environment/mqtts-cache-outage.mjs`。
+默认目标为 backend，需指定 `MQTTS_TEST_BACKEND_PID` 和精确 executable；
+`MQTTS_TEST_PAUSE_TARGET=authz` 时提供 `MQTTS_TEST_AUTHZ_PID`/`EXECUTABLE`。
+脚本验证进程身份，退出时恢复进程，另有恢复看门狗。只对隔离验收进程运行。
+
+实测均等待超过10秒缓存新鲜期，各200条 WebSocket ↔ TCP 消息送达，P95 约46 ms。
+暂停聊天后端时，已签发的冷身份仍可建立 MQTT 连接；暂停授权服务时新连接拒绝。
+实际 Chromium 登录、发送、PostgreSQL 落库、刷新历史和管理员搜索通过。
+Broker 仓库另有1000连接、500发布者、4 KiB 的实际收发测试：正常/授权服务暂停
+各32000条送达，吞吐约9535/9779条每秒，P95约184/180 ms。这是共享开发机测量值。
+报告不包含账号或秘密，截图及凭据仅保存在忽略的 `run/`。

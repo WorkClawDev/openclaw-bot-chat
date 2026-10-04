@@ -117,7 +117,7 @@ try {
   await send(userConnection, large);
   await eventually(() => botConnection.received.some(row => row.id === large.id && row.content.body === largeBody), 'Large UTF-8 payload changed in transit');
   await eventually(async () => (await call(owner, 'GET', `/messages/${dm}`)).some(row => row.id === large.id && row.content.body === largeBody), 'Large payload was not persisted intact');
-  pass('generic opaque payload callback preserves large UTF-8 messages and application persistence');
+  pass('independent authorization RPC preserves large UTF-8 messages and application persistence');
   const spoof = payload(stranger, topic, 'Forged sender');
   await send(userConnection, spoof).catch(() => {});
   await sleep(350);

@@ -4,32 +4,28 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
+	pb "github.com/openclaw-bot-chat/backend/internal/brokerrpc/authzv1"
 	"github.com/openclaw-bot-chat/backend/internal/config"
 	"github.com/openclaw-bot-chat/backend/internal/model"
-	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
-
-type BrokerSessionStore interface {
-	Put(context.Context, string, []byte, time.Duration) error
-	Get(context.Context, string) ([]byte, error)
-}
-type RedisBrokerSessionStore struct{ Client *redis.Client }
-
-func (s RedisBrokerSessionStore) Put(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	return s.Client.Set(ctx, key, value, ttl).Err()
-}
-func (s RedisBrokerSessionStore) Get(ctx context.Context, key string) ([]byte, error) {
-	return s.Client.Get(ctx, key).Bytes()
-}
 
 type BrokerSession struct {
 	Username     string    `json:"username"`
@@ -44,89 +40,24 @@ type BrokerSession struct {
 	ExpiresAt    int64     `json:"expires_at"`
 }
 
-type BrokerMessageIdentity struct {
-	From           *MessagePeerPayload `json:"from"`
-	SenderType     string              `json:"sender_type"`
-	SenderID       string              `json:"sender_id"`
-	ConversationID string              `json:"conversation_id"`
-	Topic          string              `json:"topic"`
-}
-
-// MaxBrokerPayloadBytes matches the application's configured MQTT packet limit.
-// The generic broker forwards opaque bytes; all message parsing belongs here.
-const MaxBrokerPayloadBytes = 1024 * 1024
-
-func (s *BrokerSecurityService) AuthorizePublish(ctx context.Context, username, clientID, topic, encoding string, payload *string) bool {
-	allowed, _ := s.AuthorizePublishDecision(ctx, username, clientID, topic, encoding, payload)
-	return allowed
-}
-func (s *BrokerSecurityService) AuthorizePublishDecision(ctx context.Context, username, clientID, topic, encoding string, payload *string) (bool, error) {
-	if payload == nil {
-		if encoding != "" {
-			return false, nil
-		}
-		return s.authorizeMessage(ctx, username, clientID, topic, nil)
-	}
-	if encoding != "base64" || len(*payload) > base64.StdEncoding.EncodedLen(MaxBrokerPayloadBytes) {
-		return false, nil
-	}
-	raw, err := base64.StdEncoding.Strict().DecodeString(*payload)
-	if err != nil || len(raw) > MaxBrokerPayloadBytes {
-		return false, nil
-	}
-	if !strings.HasPrefix(topic, "chat/") {
-		return true, nil
-	}
-	var message *BrokerMessageIdentity
-	if json.Unmarshal(raw, &message) != nil || message == nil {
-		return false, nil
-	}
-	return s.authorizeMessage(ctx, username, clientID, topic, message)
-}
-
-// Claimed identity comes from the actual publish packet forwarded by the broker.
-// The frontend cannot impersonate another group member or Agent by changing JSON.
-func (s *BrokerSecurityService) AuthorizeMessage(ctx context.Context, username, clientID, topic string, message *BrokerMessageIdentity) bool {
-	allowed, _ := s.authorizeMessage(ctx, username, clientID, topic, message)
-	return allowed
-}
-func (s *BrokerSecurityService) authorizeMessage(ctx context.Context, username, clientID, topic string, message *BrokerMessageIdentity) (bool, error) {
-	if !strings.HasPrefix(topic, "chat/") {
-		return true, nil
-	}
-	if message == nil {
-		return !s.settings.RequireMessageIdentity, nil
-	}
-	if username == s.server.Username && clientID == s.server.ClientID {
-		return true, nil
-	}
-	row, ok, err := s.session(ctx, username, clientID)
-	if !ok {
-		return false, err
-	}
-	if (message.ConversationID != "" && message.ConversationID != topic) || (message.Topic != "" && message.Topic != topic) {
-		return false, nil
-	}
-	kind, id := message.SenderType, message.SenderID
-	if message.From != nil {
-		if (kind != "" && kind != message.From.Type) || (id != "" && id != message.From.ID) {
-			return false, nil
-		}
-		kind, id = message.From.Type, message.From.ID
-	}
-	return kind == row.ActorType && id == row.ActorID.String(), nil
-}
-
+// BrokerSecurityService publishes business permissions to the independent MQTTS
+// authorization module. It is never called by the broker's message data path.
 type BrokerSecurityService struct {
-	store        BrokerSessionStore
 	settings     config.BrokerSecurityConfig
 	server       config.MQTTConfig
+	admin        pb.AdministrationClient
+	connection   *grpc.ClientConn
+	notify       chan struct{}
+	reconcile    sync.Mutex
 	validate     func(context.Context, *BrokerSession) (bool, error)
 	topicAllowed func(context.Context, *BrokerSession, string) (bool, error)
 }
 
-func NewBrokerSecurityService(store BrokerSessionStore, settings config.BrokerSecurityConfig, server config.MQTTConfig, db *gorm.DB, messages *MessageService) *BrokerSecurityService {
-	s := &BrokerSecurityService{store: store, settings: settings, server: server}
+func NewBrokerSecurityService(settings config.BrokerSecurityConfig, server config.MQTTConfig, db *gorm.DB, messages *MessageService) (*BrokerSecurityService, error) {
+	if settings.Namespace == "" {
+		settings.Namespace = "openclaw"
+	}
+	s := &BrokerSecurityService{settings: settings, server: server, notify: make(chan struct{}, 1)}
 	s.validate = func(ctx context.Context, row *BrokerSession) (bool, error) {
 		var count int64
 		if err := db.WithContext(ctx).Model(&model.User{}).Where("id = ? AND status = ? AND is_deleted = false", row.OwnerID, model.UserStatusActive).Count(&count).Error; err != nil || count != 1 {
@@ -160,33 +91,116 @@ func NewBrokerSecurityService(store BrokerSessionStore, settings config.BrokerSe
 		}
 		return err == nil, err
 	}
-	return s
+	if settings.Address == "" {
+		return s, nil
+	}
+	var transport credentials.TransportCredentials
+	if settings.Insecure {
+		if settings.CAFile != "" || settings.CertFile != "" || settings.KeyFile != "" {
+			return nil, errors.New("insecure authz RPC cannot use TLS options")
+		}
+		transport = insecure.NewCredentials()
+	} else {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if settings.CAFile != "" {
+			raw, err := os.ReadFile(settings.CAFile)
+			if err != nil {
+				return nil, err
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(raw) {
+				return nil, errors.New("invalid authz CA")
+			}
+			tlsConfig.RootCAs = pool
+		}
+		if settings.CertFile != "" || settings.KeyFile != "" {
+			cert, err := tls.LoadX509KeyPair(settings.CertFile, settings.KeyFile)
+			if err != nil {
+				return nil, err
+			}
+			tlsConfig.Certificates = []tls.Certificate{cert}
+		}
+		transport = credentials.NewTLS(tlsConfig)
+	}
+	conn, err := grpc.NewClient(settings.Address, grpc.WithTransportCredentials(transport), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4*1024*1024), grpc.MaxCallSendMsgSize(4*1024*1024)))
+	if err != nil {
+		return nil, err
+	}
+	s.connection = conn
+	s.admin = pb.NewAdministrationClient(conn)
+	return s, nil
+}
+func (s *BrokerSecurityService) Close() {
+	if s != nil && s.connection != nil {
+		_ = s.connection.Close()
+	}
 }
 func (s *BrokerSecurityService) Configured() bool {
-	return s != nil && s.store != nil && len(s.settings.CallbackToken) >= 32 && len(s.server.Password) >= 32 && s.server.Username != "" && s.server.ClientID != ""
+	return s != nil && s.admin != nil && len(s.settings.AdminToken) >= 32 && len(s.server.Password) >= 32 && s.server.Username != "" && s.server.ClientID != ""
 }
-func (s *BrokerSecurityService) ValidCallback(token string) bool {
-	return s.Configured() && subtle.ConstantTimeCompare([]byte(token), []byte(s.settings.CallbackToken)) == 1
+func (s *BrokerSecurityService) rpcContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+s.settings.AdminToken), cancel
 }
 func hashBrokerPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
 }
+
+func (s *BrokerSecurityService) project(ctx context.Context, scope *BrokerSession) (*pb.Session, error) {
+	valid, err := s.validate(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	password, err := hex.DecodeString(scope.PasswordHash)
+	if err != nil || len(password) != 32 {
+		return nil, errors.New("invalid broker credential hash")
+	}
+	source, err := json.Marshal(scope)
+	if err != nil {
+		return nil, err
+	}
+	row := &pb.Session{Username: scope.Username, ClientId: scope.ClientID, PasswordSha256: password, Namespace: s.settings.Namespace, Enabled: valid, ExpiresAtMs: uint64(scope.ExpiresAt) * 1000, PolicyValidUntilMs: uint64(time.Now().Add(5 * time.Minute).UnixMilli()), SourceContext: source}
+	if !valid {
+		return row, nil
+	}
+	identity := &pb.PayloadPolicy{CaseInsensitiveKeys: true, Bindings: []*pb.JsonBinding{
+		{Paths: []string{"/from/type", "/sender_type"}, EqualsString: scope.ActorType, RequiredAny: s.settings.RequireMessageIdentity},
+		{Paths: []string{"/from/id", "/sender_id"}, EqualsString: scope.ActorID.String(), RequiredAny: s.settings.RequireMessageIdentity},
+		{Paths: []string{"/conversation_id", "/topic"}, EqualsTopic: true},
+	}}
+	for _, action := range []pb.Action{pb.Action_SUBSCRIBE, pb.Action_PUBLISH} {
+		topics := scope.Subscribe
+		if action == pb.Action_PUBLISH {
+			topics = scope.Publish
+		}
+		for _, topic := range topics {
+			allowed, err := s.topicAllowed(ctx, scope, topic)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				continue
+			}
+			rule := &pb.Permission{Action: action, TopicFilter: topic}
+			if action == pb.Action_PUBLISH && strings.HasPrefix(topic, "chat/") {
+				rule.PayloadPolicy = identity
+			}
+			row.Permissions = append(row.Permissions, rule)
+		}
+	}
+	return row, nil
+}
+
 func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (string, string, int64, error) {
-	if !s.Configured() || scope.ClientID == "" || scope.ActorID == uuid.Nil || scope.OwnerID == uuid.Nil {
+	if !s.Configured() || scope.ClientID == "" || scope.ActorID == uuid.Nil || scope.OwnerID == uuid.Nil || (scope.ActorType != "user" && scope.ActorType != "bot") || (scope.ActorType == "user" && scope.ActorID != scope.OwnerID) {
 		return "", "", 0, errors.New("broker security unavailable")
 	}
-	if valid, err := s.validate(ctx, &scope); !valid || err != nil {
-		return "", "", 0, errors.New("broker security unavailable")
-	}
-	if (scope.ActorType != "user" && scope.ActorType != "bot") || (scope.ActorType == "user" && scope.ActorID != scope.OwnerID) {
-		return "", "", 0, errors.New("invalid broker actor")
-	}
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
 		return "", "", 0, err
 	}
-	password := base64.RawURLEncoding.EncodeToString(bytes)
+	password := base64.RawURLEncoding.EncodeToString(secret)
 	scope.Username = "pa-" + uuid.NewString()
 	scope.PasswordHash = hashBrokerPassword(password)
 	ttl := time.Duration(s.settings.SessionTTLSeconds) * time.Second
@@ -194,96 +208,138 @@ func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (
 		ttl = 5 * time.Minute
 	}
 	scope.ExpiresAt = time.Now().Add(ttl).Unix()
-	data, err := json.Marshal(scope)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if err = s.store.Put(ctx, "personal-agent:broker:"+scope.Username, data, ttl); err != nil {
-		return "", "", 0, err
-	}
-	return scope.Username, password, scope.ExpiresAt, nil
-}
-func (s *BrokerSecurityService) session(ctx context.Context, username, clientID string) (*BrokerSession, bool, error) {
-	if !s.Configured() {
-		return nil, false, nil
-	}
-	data, err := s.store.Get(ctx, "personal-agent:broker:"+username)
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, false, nil
+	for attempt := 0; attempt < 3; attempt++ {
+		rpcCtx, cancel := s.rpcContext(ctx)
+		snapshot, err := s.admin.ListSessions(rpcCtx, &pb.ListSessionsRequest{Namespace: s.settings.Namespace, PageSize: 1})
+		cancel()
+		if err != nil {
+			return "", "", 0, err
 		}
-		return nil, false, err
-	}
-	var row BrokerSession
-	if json.Unmarshal(data, &row) != nil || row.Username != username || row.ClientID != clientID || row.ExpiresAt <= time.Now().Unix() {
-		return nil, false, nil
-	}
-	if valid, err := s.validate(ctx, &row); !valid || err != nil {
-		return nil, false, err
-	}
-	return &row, true, nil
-}
-func (s *BrokerSecurityService) Authenticate(ctx context.Context, username, password, clientID string) (bool, int64) {
-	allowed, expiry, _ := s.AuthenticateDecision(ctx, username, password, clientID)
-	return allowed, expiry
-}
-func (s *BrokerSecurityService) AuthenticateDecision(ctx context.Context, username, password, clientID string) (bool, int64, error) {
-	if s.Configured() && username == s.server.Username && clientID == s.server.ClientID && subtle.ConstantTimeCompare([]byte(password), []byte(s.server.Password)) == 1 {
-		return true, 0, nil
-	}
-	row, ok, err := s.session(ctx, username, clientID)
-	if !ok {
-		return false, 0, err
-	}
-	return subtle.ConstantTimeCompare([]byte(hashBrokerPassword(password)), []byte(row.PasswordHash)) == 1, row.ExpiresAt, nil
-}
-func (s *BrokerSecurityService) Authorize(ctx context.Context, username, clientID, action, topic string) bool {
-	allowed, _ := s.AuthorizeDecision(ctx, username, clientID, action, topic)
-	return allowed
-}
-func (s *BrokerSecurityService) AuthorizeDecision(ctx context.Context, username, clientID, action, topic string) (bool, error) {
-	if !s.Configured() || (action != "publish" && action != "subscribe") || topic == "" {
-		return false, nil
-	}
-	if action == "publish" && strings.ContainsAny(topic, "+#") {
-		return false, nil
-	}
-	if username == s.server.Username && clientID == s.server.ClientID {
-		if action == "subscribe" {
-			return brokerFilterCovers("chat/#", topic), nil
+		row, err := s.project(ctx, &scope)
+		if err != nil {
+			return "", "", 0, err
 		}
-		return brokerFilterCovers("agent/user/+/events", topic) || brokerFilterCovers("chat/#", topic), nil
-	}
-	row, ok, err := s.session(ctx, username, clientID)
-	if !ok {
-		return false, err
-	}
-	allowed := row.Subscribe
-	if action == "publish" {
-		allowed = row.Publish
-	}
-	for _, filter := range allowed {
-		if brokerFilterCovers(filter, topic) {
-			return s.topicAllowed(ctx, row, topic)
+		if !row.Enabled {
+			return "", "", 0, errors.New("broker actor inactive")
 		}
+		rpcCtx, cancel = s.rpcContext(ctx)
+		_, err = s.admin.Apply(rpcCtx, &pb.ApplyRequest{CreateOnly: true, ExpectedVersion: snapshot.Version, Upserts: []*pb.Session{row}})
+		cancel()
+		if status.Code(err) == codes.Aborted {
+			continue
+		}
+		if err != nil {
+			return "", "", 0, err
+		}
+		return scope.Username, password, scope.ExpiresAt, nil
 	}
-	return false, nil
+	return "", "", 0, errors.New("broker policy changed; retry bootstrap")
 }
 
-// A requested subscription must be a subset of an issued filter. Exact user
-// topics cannot be enlarged into + or #; a bot's own DM filters remain scoped.
-func brokerFilterCovers(allowed, requested string) bool {
-	a, r := strings.Split(allowed, "/"), strings.Split(requested, "/")
-	for i, part := range a {
-		if part == "#" {
-			return i == len(a)-1
+func (s *BrokerSecurityService) serverPolicy() *pb.Session {
+	hash := sha256.Sum256([]byte(s.server.Password))
+	return &pb.Session{Username: s.server.Username, ClientId: s.server.ClientID, PasswordSha256: hash[:], Namespace: s.settings.Namespace, Enabled: true, PolicyValidUntilMs: uint64(time.Now().Add(5 * time.Minute).UnixMilli()), Permissions: []*pb.Permission{
+		{Action: pb.Action_SUBSCRIBE, TopicFilter: "chat/#"}, {Action: pb.Action_PUBLISH, TopicFilter: "chat/#"}, {Action: pb.Action_PUBLISH, TopicFilter: "agent/user/+/events"},
+	}}
+}
+
+// Reconcile reads the management version before reading application policies.
+// An overlapping publisher cannot replace a newer revocation with an old read.
+func (s *BrokerSecurityService) Reconcile(ctx context.Context) error {
+	if !s.Configured() {
+		return errors.New("broker security unavailable")
+	}
+	s.reconcile.Lock()
+	defer s.reconcile.Unlock()
+	cursor := ""
+	serverSeen := false
+	for {
+		rpcCtx, cancel := s.rpcContext(ctx)
+		page, err := s.admin.ListSessions(rpcCtx, &pb.ListSessionsRequest{Namespace: s.settings.Namespace, AfterUsername: cursor, PageSize: 64})
+		cancel()
+		if err != nil {
+			return err
 		}
-		if i >= len(r) || r[i] == "#" {
-			return false
+		update := &pb.ApplyRequest{ExpectedVersion: page.Version}
+		for _, row := range page.Sessions {
+			if row.Username == s.server.Username {
+				serverSeen = true
+				update.Upserts = append(update.Upserts, s.serverPolicy())
+				continue
+			}
+			if row.ExpiresAtMs <= uint64(time.Now().UnixMilli()) {
+				update.Deletes = append(update.Deletes, row.Username)
+				continue
+			}
+			var scope BrokerSession
+			if json.Unmarshal(row.SourceContext, &scope) != nil || scope.Username != row.Username || scope.ClientID != row.ClientId || uint64(scope.ExpiresAt)*1000 != row.ExpiresAtMs {
+				return errors.New("invalid broker policy source context")
+			}
+			projected, err := s.project(ctx, &scope)
+			if err != nil {
+				return err
+			}
+			update.Upserts = append(update.Upserts, projected)
 		}
-		if part != "+" && part != r[i] {
-			return false
+		if len(update.Upserts)+len(update.Deletes) > 0 {
+			rpcCtx, cancel = s.rpcContext(ctx)
+			_, err = s.admin.Apply(rpcCtx, update)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if !serverSeen {
+		rpcCtx, cancel := s.rpcContext(ctx)
+		defer cancel()
+		_, err := s.admin.Apply(rpcCtx, &pb.ApplyRequest{CreateOnly: true, Upserts: []*pb.Session{s.serverPolicy()}})
+		if status.Code(err) != codes.Aborted {
+			return err
 		}
 	}
-	return len(a) == len(r)
+	return nil
+}
+func (s *BrokerSecurityService) NotifyPermissionsChanged() {
+	if s == nil {
+		return
+	}
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
+}
+func (s *BrokerSecurityService) Run(ctx context.Context, onError func(error)) {
+	if !s.Configured() {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	s.NotifyPermissionsChanged()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.notify:
+		case <-ticker.C:
+		}
+		// Coalesced notifications and a single writer avoid one goroutine per change.
+		for attempt := 0; attempt < 3; attempt++ {
+			err := s.Reconcile(ctx)
+			if err == nil {
+				break
+			}
+			if status.Code(err) == codes.Aborted {
+				continue
+			}
+			if onError != nil {
+				onError(err)
+			}
+			break
+		}
+	}
 }

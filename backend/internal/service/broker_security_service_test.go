@@ -1,208 +1,151 @@
 package service
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
+	"crypto/sha256"
 	"errors"
 	"github.com/google/uuid"
+	pb "github.com/openclaw-bot-chat/backend/internal/brokerrpc/authzv1"
 	"github.com/openclaw-bot-chat/backend/internal/config"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
 	"time"
 )
 
-type brokerFixtureStore struct {
-	values map[string][]byte
-	broken bool
+type projectionRPC struct {
+	rows      []*pb.Session
+	calls     []*pb.ApplyRequest
+	broken    bool
+	conflict  bool
+	queryRead func()
+	token     string
 }
 
-func (s *brokerFixtureStore) Put(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	if s.broken {
-		return errors.New("offline")
+func (f *projectionRPC) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, _ ...grpc.CallOption) (*pb.ListSessionsResponse, error) {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	if len(md.Get("authorization")) != 1 || md.Get("authorization")[0] != "Bearer "+f.token {
+		return nil, errors.New("missing admin credential")
 	}
-	s.values[key] = value
-	return nil
-}
-func (s *brokerFixtureStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if s.broken {
-		return nil, errors.New("offline")
+	if f.broken {
+		return nil, errors.New("RPC offline")
 	}
-	return s.values[key], nil
+	if f.queryRead != nil {
+		f.queryRead()
+	}
+	rows := make([]*pb.Session, len(f.rows))
+	for i, r := range f.rows {
+		rows[i] = proto.Clone(r).(*pb.Session)
+	}
+	return &pb.ListSessionsResponse{Version: "before-policy-read", Sessions: rows}, nil
 }
-func brokerFixture() (*BrokerSecurityService, *brokerFixtureStore) {
-	store := &brokerFixtureStore{values: map[string][]byte{}}
-	s := &BrokerSecurityService{store: store, settings: config.BrokerSecurityConfig{CallbackToken: strings.Repeat("c", 40), SessionTTLSeconds: 300}, server: config.MQTTConfig{Username: "server", ClientID: "server-id", Password: strings.Repeat("p", 40)}, validate: func(context.Context, *BrokerSession) (bool, error) { return true, nil }, topicAllowed: func(context.Context, *BrokerSession, string) (bool, error) { return true, nil }}
-	return s, store
+func (f *projectionRPC) Apply(ctx context.Context, req *pb.ApplyRequest, _ ...grpc.CallOption) (*pb.ApplyResponse, error) {
+	if f.broken {
+		return nil, errors.New("RPC offline")
+	}
+	if f.conflict {
+		f.conflict = false
+		return nil, status.Error(codes.Aborted, "changed")
+	}
+	f.calls = append(f.calls, proto.Clone(req).(*pb.ApplyRequest))
+	return &pb.ApplyResponse{Version: "next"}, nil
 }
-func TestBrokerCredentialsBoundScopedAndRevoked(t *testing.T) {
-	s, store := brokerFixture()
-	ctx := context.Background()
-	bot, owner := uuid.New(), uuid.New()
-	topic := "chat/dm/user/" + owner.String() + "/bot/" + bot.String()
-	name, password, expiry, err := s.Mint(ctx, BrokerSession{ClientID: "client", ActorType: "bot", ActorID: bot, OwnerID: owner, Subscribe: []string{topic}, Publish: []string{topic}})
+func publisherFixture() (*BrokerSecurityService, *projectionRPC) {
+	token := strings.Repeat("a", 40)
+	f := &projectionRPC{token: token}
+	s := &BrokerSecurityService{admin: f, notify: make(chan struct{}, 1), settings: config.BrokerSecurityConfig{AdminToken: token, Namespace: "fixture", SessionTTLSeconds: 300, RequireMessageIdentity: true}, server: config.MQTTConfig{Username: "server", ClientID: "server-id", Password: strings.Repeat("p", 40)}, validate: func(context.Context, *BrokerSession) (bool, error) { return true, nil }, topicAllowed: func(context.Context, *BrokerSession, string) (bool, error) { return true, nil }}
+	return s, f
+}
+func TestMintPublishesBoundedGenericPolicyAndHash(t *testing.T) {
+	s, f := publisherFixture()
+	actor := uuid.New()
+	read := false
+	f.queryRead = func() { read = true }
+	s.validate = func(context.Context, *BrokerSession) (bool, error) {
+		if !read {
+			t.Fatal("policy read preceded version capture")
+		}
+		return true, nil
+	}
+	name, password, expiry, err := s.Mint(context.Background(), BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor, Subscribe: []string{"chat/group/g"}, Publish: []string{"chat/group/g"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if password == s.server.Password || strings.Contains(string(store.values["personal-agent:broker:"+name]), password) {
-		t.Fatal("raw/shared secret persisted")
+	if len(f.calls) != 1 {
+		t.Fatal("missing management write")
 	}
-	if ok, e := s.Authenticate(ctx, name, password, "client"); !ok || e != expiry {
-		t.Fatal("valid authentication failed")
+	update := f.calls[0]
+	row := update.Upserts[0]
+	hash := sha256.Sum256([]byte(password))
+	if !update.CreateOnly || update.ExpectedVersion == "" || row.Username != name || row.ClientId != "client" || !bytes.Equal(row.PasswordSha256, hash[:]) || row.ExpiresAtMs != uint64(expiry)*1000 || expiry > time.Now().Add(5*time.Minute).Unix() {
+		t.Fatal("invalid bounded credentials")
 	}
-	for _, pair := range [][2]string{{"wrong", "client"}, {password, "other"}} {
-		if ok, _ := s.Authenticate(ctx, name, pair[0], pair[1]); ok {
-			t.Fatal("unbound credential accepted")
-		}
+	if bytes.Contains(row.SourceContext, []byte(password)) {
+		t.Fatal("raw password persisted")
 	}
-	if !s.Authorize(ctx, name, "client", "publish", topic) || !s.Authorize(ctx, name, "client", "subscribe", topic) {
-		t.Fatal("scoped action denied")
+	if len(row.Permissions) != 2 || row.Permissions[1].PayloadPolicy == nil || !row.Permissions[1].PayloadPolicy.CaseInsensitiveKeys {
+		t.Fatal("missing message identity projection")
 	}
-	for _, bad := range []string{"chat/#", "chat/dm/user/+/bot/" + bot.String(), "agent/user/other/events", "chat/dm/user/other/bot/" + bot.String()} {
-		if s.Authorize(ctx, name, "client", "subscribe", bad) || s.Authorize(ctx, name, "client", "publish", bad) {
-			t.Fatal("scope enlarged", bad)
-		}
+	binding := row.Permissions[1].PayloadPolicy.Bindings[1]
+	if binding.EqualsString != actor.String() || !binding.RequiredAny {
+		t.Fatal("identity binding lost")
+	}
+	f.broken = true
+	if _, _, _, err = s.Mint(context.Background(), BrokerSession{ClientID: "x", ActorType: "user", ActorID: actor, OwnerID: actor}); err == nil {
+		t.Fatal("credential issued during RPC outage")
+	}
+}
+func TestProjectionRevokesScopesWithoutExtendingSession(t *testing.T) {
+	s, f := publisherFixture()
+	actor := uuid.New()
+	_, _, _, err := s.Mint(context.Background(), BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor, Publish: []string{"chat/group/g", "chat/group/keep"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := f.calls[0].Upserts[0]
+	f.rows = []*pb.Session{old, s.serverPolicy()}
+	f.calls = nil
+	s.topicAllowed = func(_ context.Context, _ *BrokerSession, topic string) (bool, error) {
+		return topic != "chat/group/g", nil
+	}
+	if err = s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	row := f.calls[0].Upserts[0]
+	if len(row.Permissions) != 1 || row.Permissions[0].TopicFilter != "chat/group/keep" || row.ExpiresAtMs != old.ExpiresAtMs {
+		t.Fatal("scope revocation/expiry broken")
 	}
 	s.validate = func(context.Context, *BrokerSession) (bool, error) { return false, nil }
-	if ok, _ := s.Authenticate(ctx, name, password, "client"); ok {
-		t.Fatal("revoked accepted")
+	f.calls = nil
+	if err = s.Reconcile(context.Background()); err != nil || f.calls[0].Upserts[0].Enabled {
+		t.Fatal("inactive actor still enabled", err)
 	}
-	if s.Authorize(ctx, name, "client", "publish", topic) {
-		t.Fatal("revoked publication allowed")
-	}
-}
-func TestBrokerExpiryStoreFailureAndCallbackFailClosed(t *testing.T) {
-	s, store := brokerFixture()
-	ctx := context.Background()
-	owner := uuid.New()
-	name, password, _, err := s.Mint(ctx, BrokerSession{ClientID: "client", ActorType: "user", ActorID: owner, OwnerID: owner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var row BrokerSession
-	json.Unmarshal(store.values["personal-agent:broker:"+name], &row)
-	row.ExpiresAt = time.Now().Unix() - 1
-	store.values["personal-agent:broker:"+name], _ = json.Marshal(row)
-	if ok, _ := s.Authenticate(ctx, name, password, "client"); ok {
-		t.Fatal("expired accepted")
-	}
-	store.broken = true
-	if ok, _ := s.Authenticate(ctx, name, password, "client"); ok {
-		t.Fatal("offline store accepted")
-	}
-	if _, _, _, err = s.Mint(ctx, BrokerSession{ClientID: "x", ActorType: "user", ActorID: owner, OwnerID: owner}); err == nil {
-		t.Fatal("offline mint succeeded")
-	}
-	if s.ValidCallback("") || s.ValidCallback("wrong") || !s.ValidCallback(strings.Repeat("c", 40)) {
-		t.Fatal("callback secret guard broken")
+	s.validate = func(context.Context, *BrokerSession) (bool, error) { return false, errors.New("database unavailable") }
+	f.calls = nil
+	if err = s.Reconcile(context.Background()); err == nil || len(f.calls) != 0 {
+		t.Fatal("DB failure renewed policy")
 	}
 }
-func TestBrokerFiltersCannotEnlargeIssuedScopes(t *testing.T) {
-	for _, tc := range []struct {
-		a, r string
-		ok   bool
-	}{{"chat/dm/user/+/bot/b", "chat/dm/user/u/bot/b", true}, {"chat/dm/user/+/bot/b", "chat/dm/user/+/bot/b", true}, {"chat/dm/user/+/bot/b", "chat/dm/#", false}, {"chat/dm/user/u/bot/b", "chat/dm/user/+/bot/b", false}, {"chat/#", "agent/user/u/events", false}, {"chat/#", "chat/x", true}} {
-		if brokerFilterCovers(tc.a, tc.r) != tc.ok {
-			t.Errorf("%s covers %s", tc.a, tc.r)
-		}
-	}
-}
-func TestBrokerServerIdentityHasNoClientCredentialShortcut(t *testing.T) {
-	s, _ := brokerFixture()
-	ctx := context.Background()
-	if ok, _ := s.Authenticate(ctx, "server", s.server.Password, "other-id"); ok {
-		t.Fatal("server client binding lost")
-	}
-	if !s.Authorize(ctx, "server", "server-id", "subscribe", "chat/#") || s.Authorize(ctx, "server", "server-id", "subscribe", "#") {
-		t.Fatal("server scope broken")
-	}
-}
-
-func TestBrokerPublishIdentityCannotImpersonateAnotherActor(t *testing.T) {
-	s, _ := brokerFixture()
-	s.settings.RequireMessageIdentity = true
-	ctx := context.Background()
+func TestProjectionCASRetryAndCoalescedNotifications(t *testing.T) {
+	s, f := publisherFixture()
+	f.conflict = true
 	actor := uuid.New()
-	name, _, _, err := s.Mint(ctx, BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor})
-	if err != nil {
+	if _, _, _, err := s.Mint(context.Background(), BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor}); err != nil {
 		t.Fatal(err)
 	}
-	topic := "chat/group/" + uuid.NewString()
-	message := &BrokerMessageIdentity{From: &MessagePeerPayload{Type: "user", ID: actor.String()}, ConversationID: topic}
-	if !s.AuthorizeMessage(ctx, name, "client", topic, message) {
-		t.Fatal("own identity denied")
+	for i := 0; i < 10000; i++ {
+		s.NotifyPermissionsChanged()
 	}
-	if s.AuthorizeMessage(ctx, name, "client", topic, nil) {
-		t.Fatal("identity missing")
+	if len(s.notify) != 1 {
+		t.Fatal("notifications unbounded")
 	}
-	message.From.ID = uuid.NewString()
-	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
-		t.Fatal("forged actor accepted")
-	}
-	message.From.ID = actor.String()
-	message.From.Type = "bot"
-	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
-		t.Fatal("forged actor type accepted")
-	}
-	message.From.Type = "user"
-	message.SenderID = uuid.NewString()
-	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
-		t.Fatal("contradicting sender fields accepted")
-	}
-	message.SenderID = ""
-	message.ConversationID = "chat/group/other"
-	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
-		t.Fatal("contradicting conversation accepted")
-	}
-}
-
-func TestBrokerOpaquePayloadIsInterpretedOnlyByApplication(t *testing.T) {
-	s, _ := brokerFixture()
-	s.settings.RequireMessageIdentity = true
-	ctx := context.Background()
-	actor := uuid.New()
-	name, _, _, err := s.Mint(ctx, BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor})
-	if err != nil {
-		t.Fatal(err)
-	}
-	topic := "chat/group/" + uuid.NewString()
-	body := func(id, destination string) string {
-		raw, _ := json.Marshal(map[string]any{
-			"from":            map[string]string{"type": "user", "id": id},
-			"conversation_id": destination,
-			"content":         strings.Repeat("non-identity content ", 1000),
-		})
-		return base64.StdEncoding.EncodeToString(raw)
-	}
-	valid := body(actor.String(), topic)
-	for _, tc := range []struct {
-		name, encoding, data string
-		allowed              bool
-	}{
-		{"valid large message", "base64", valid, true},
-		{"forged sender", "base64", body(uuid.NewString(), topic), false},
-		{"forged conversation", "base64", body(actor.String(), "chat/group/other"), false},
-		{"wrong encoding", "utf8", valid, false},
-		{"malformed base64", "base64", "%%%", false},
-		{"binary chat payload", "base64", base64.StdEncoding.EncodeToString([]byte{0, 255}), false},
-		{"null identity", "base64", base64.StdEncoding.EncodeToString([]byte("null")), false},
-		{"array identity", "base64", base64.StdEncoding.EncodeToString([]byte("[]")), false},
-		{"missing identity", "base64", base64.StdEncoding.EncodeToString([]byte("{}")), false},
-		{"oversized payload", "base64", base64.StdEncoding.EncodeToString(make([]byte, MaxBrokerPayloadBytes+1)), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := s.AuthorizePublish(ctx, name, "client", topic, tc.encoding, &tc.data); got != tc.allowed {
-				t.Fatalf("allowed=%v, want %v", got, tc.allowed)
-			}
-		})
-	}
-	if s.AuthorizePublish(ctx, name, "client", topic, "", nil) {
-		t.Fatal("strict mode accepted callback without actual publish payload")
-	}
-	// The compatibility setting is explicit; MQTT topic authorization still runs
-	// separately before this method is called.
-	s.settings.RequireMessageIdentity = false
-	if !s.AuthorizePublish(ctx, name, "client", topic, "", nil) {
-		t.Fatal("explicit topic-only compatibility mode failed")
+	server := s.serverPolicy()
+	if server.ExpiresAtMs != 0 || server.PolicyValidUntilMs > uint64(time.Now().Add(5*time.Minute).UnixMilli()) || len(server.Permissions) != 3 {
+		t.Fatal("server lease or scope unbounded")
 	}
 }

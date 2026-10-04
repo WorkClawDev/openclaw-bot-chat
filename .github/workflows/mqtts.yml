@@ -6,6 +6,10 @@ on:
         description: 'Prebuilt broker image to test (tag or registry digest); empty uses pinned CI artifact'
         required: false
         type: string
+      authz_image:
+        description: 'Matching prebuilt authorization image (required with a custom broker image)'
+        required: false
+        type: string
   push:
     paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', '.github/workflows/mqtts.yml']
   pull_request:
@@ -34,6 +38,7 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval=5s --health-retries=15
     env:
+      REQUESTED_AUTHZ_IMAGE: ${{ inputs.authz_image || vars.MQTTS_AUTHZ_TEST_IMAGE }}
       REQUESTED_MQTTS_IMAGE: ${{ inputs.mqtts_image || vars.MQTTS_TEST_IMAGE }}
       DATABASE_HOST: 127.0.0.1
       DATABASE_PORT: '5432'
@@ -53,6 +58,8 @@ jobs:
       MQTT_WS_PUBLIC_URL: ws://127.0.0.1:1886/mqtt
       MQTT_CLIENT_ID: acceptance-backend
       MQTT_USERNAME: acceptance-backend
+      BROKER_SECURITY_ADDRESS: 127.0.0.1:50052
+      BROKER_SECURITY_INSECURE: 'true'
       BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: 'true'
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +70,7 @@ jobs:
         if: env.REQUESTED_MQTTS_IMAGE == ''
         run: |
           python3 - <<'PYTHON'
-          import json, os, pathlib
+          import hashlib, json, os, pathlib
           lock = json.loads(pathlib.Path('broker/mqtts/compatibility.json').read_text())
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for key in ['repository', 'workflow_run_id', 'artifact_name']:
@@ -82,20 +89,26 @@ jobs:
         run: |
           (cd run/broker-runtime && sha256sum -c SHA256SUMS)
           python3 - <<'PYTHON'
-          import json, os, pathlib
+          import hashlib, json, os, pathlib
           lock = json.loads(pathlib.Path('broker/mqtts/compatibility.json').read_text())
           metadata = json.loads(pathlib.Path('run/broker-runtime/metadata.json').read_text())
-          assert metadata['schema_version'] == 1 and metadata['http_auth_contract'] == 1
+          assert metadata['schema_version'] == 1 and metadata['grpc_auth_contract'] == 1
           assert metadata['source_revision'] == lock['source_revision']
+          assert metadata['authz_proto_sha256'] == lock['authz_proto_sha256'] == hashlib.sha256(pathlib.Path('backend/internal/brokerrpc/authorization.proto').read_bytes()).hexdigest()
+          assert metadata['authz_image'] == 'mqtts-authz:sha-' + lock['source_revision']
           assert metadata['platform'] == 'linux/amd64'
           assert metadata['image'] == 'mqtts:sha-' + lock['source_revision']
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write('MQTTS_TEST_IMAGE=' + metadata['image'] + '\n')
+              output.write('MQTTS_AUTHZ_TEST_IMAGE=' + metadata['authz_image'] + '\n')
           PYTHON
           docker load --input run/broker-runtime/mqtts-image.tar.gz
       - name: Pull explicitly selected broker version
         if: env.REQUESTED_MQTTS_IMAGE != ''
         run: |
+          test -n "$REQUESTED_AUTHZ_IMAGE"
+          docker pull "$REQUESTED_AUTHZ_IMAGE"
+          echo "MQTTS_AUTHZ_TEST_IMAGE=$REQUESTED_AUTHZ_IMAGE" >> "$GITHUB_ENV"
           docker pull "$REQUESTED_MQTTS_IMAGE"
           echo "MQTTS_TEST_IMAGE=$REQUESTED_MQTTS_IMAGE" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
@@ -111,7 +124,7 @@ jobs:
           python3 - <<'PY'
           import os, secrets
           with open(os.environ['GITHUB_ENV'], 'a') as output:
-              for name in ['JWT_SECRET', 'MQTT_PASSWORD', 'BROKER_SECURITY_CALLBACK_TOKEN']:
+              for name in ['JWT_SECRET', 'MQTT_PASSWORD', 'MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']:
                   value = secrets.token_hex(32)
                   print('::add-mask::' + value)
                   output.write(name + '=' + value + '\n')
@@ -124,20 +137,26 @@ jobs:
           python3 - <<'PY'
           import pathlib
           source = pathlib.Path('broker/mqtts/mqtts.yaml').read_text()
-          source = source.replace('port: 1883', 'port: 1886').replace('http://backend:8080', 'http://127.0.0.1:18081')
+          source = source.replace('port: 1883', 'port: 1886').replace('mqtts-authz:50051', '127.0.0.1:50052')
           pathlib.Path('run/mqtts-ci.yaml').write_text(source)
           PY
+          docker run -d --name mqtts-authz-access --label mqtts.isolated-acceptance=true \
+            --network host --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /data:uid=10001,gid=10001 -e AUTHZ_INSECURE=true -e AUTHZ_LISTEN=127.0.0.1:50052 \
+            -e AUTHZ_QUERY_TOKEN="$MQTTS_AUTHZ_QUERY_TOKEN" -e AUTHZ_ADMIN_TOKEN="$BROKER_SECURITY_ADMIN_TOKEN" "$MQTTS_AUTHZ_TEST_IMAGE"
           docker run -d --name mqtts-access --network host --read-only --cap-drop ALL \
             --security-opt no-new-privileges \
-            -e BROKER_SECURITY_CALLBACK_TOKEN -e NO_PROXY=localhost,127.0.0.1 \
+            -e MQTTS_AUTHZ_QUERY_TOKEN -e NO_PROXY=localhost,127.0.0.1 \
             -v "$PWD/run/mqtts-ci.yaml:/app/config/mqtts.yaml:ro" "$MQTTS_TEST_IMAGE"
           backend_executable="$PWD/run/backend"
           (cd backend && exec "$backend_executable") > run/backend.log 2>&1 &
           backend_pid=$!
-          trap 'kill -CONT "$backend_pid" 2>/dev/null || true; kill "$backend_pid" 2>/dev/null || true; docker logs mqtts-access; docker rm -f mqtts-access' EXIT
+          trap 'kill -CONT "$backend_pid" 2>/dev/null || true; kill "$backend_pid" 2>/dev/null || true; docker logs mqtts-access; docker rm -f mqtts-access mqtts-authz-access' EXIT
           export MQTTS_TEST_STATE_DIR="$PWD/run/mqtts-permissions"
           MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" node scripts/test-environment/mqtts-permissions.mjs
           MQTTS_TEST_BACKEND_PID="$backend_pid" MQTTS_TEST_BACKEND_EXECUTABLE="$backend_executable" \
+            node scripts/test-environment/mqtts-cache-outage.mjs
+          MQTTS_TEST_PAUSE_TARGET=authz MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access \
             node scripts/test-environment/mqtts-cache-outage.mjs
       - uses: actions/upload-artifact@v4
         with:

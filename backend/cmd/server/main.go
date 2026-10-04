@@ -135,8 +135,8 @@ func main() {
 		TLSServerName:  cfg.MQTT.TLSServerName,
 	}, log, msgService)
 
-	// HTTP must be available before a broker can call back to authenticate the
-	// persistence client. Retry startup connections while readiness stays false.
+	// The independent authorization module may still be receiving its initial
+	// policy projection. Retry startup while MQTT readiness stays false.
 	mqttContext, mqttCancel := context.WithCancel(context.Background())
 	defer func() { mqttCancel(); mqttClient.Disconnect() }()
 	go func() {
@@ -169,8 +169,13 @@ func main() {
 	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
-	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
-	brokerSecurityHandler := &handler.BrokerSecurityHandler{Service: security, Revision: &service.BrokerRevision{Store: service.RedisBrokerRevisionStore{Client: rdb}}}
+	security, err := service.NewBrokerSecurityService(cfg.BrokerSecurity, cfg.MQTT, db, msgService)
+	if err != nil {
+		log.Fatal().Err(err).Msg("authorization RPC configuration failed")
+	}
+	defer security.Close()
+	go security.Run(mqttContext, func(err error) { log.Warn().Err(err).Msg("authorization policy synchronization failed; retrying") })
+	brokerSecurityHandler := &handler.BrokerSecurityHandler{Service: security}
 	router.Use(brokerSecurityHandler.InvalidatePermissions())
 	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
 	adminRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
@@ -186,13 +191,12 @@ func main() {
 	journalHandler.RegisterUser(runUserRoutes)
 	if !security.Configured() {
 		if cfg.App.Mode == "release" {
-			log.Fatal().Msg("broker security requires callback token and server password of at least 32 characters")
+			log.Fatal().Msg("broker security requires authorization RPC address, admin token and server password of at least 32 characters")
 		}
 		log.Warn().Msg("broker security unconfigured; realtime bootstrap will refuse credentials")
 	}
 	realtimeHandler.SetBrokerSecurity(security)
 	botRuntimeHandler.SetBrokerSecurity(security)
-	brokerSecurityHandler.Register(router)
 	router.GET("/health/ready", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()

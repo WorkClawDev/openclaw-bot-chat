@@ -8,11 +8,11 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 env = os.environ.copy()
-env.update(BROKER_SECURITY_CALLBACK_TOKEN='c' * 40, MQTT_PASSWORD='p' * 40,
+env.update(MQTTS_AUTHZ_QUERY_TOKEN='q' * 40, BROKER_SECURITY_ADMIN_TOKEN='a' * 40, MQTT_PASSWORD='p' * 40,
            JWT_SECRET='j' * 40, OPENAI_COMPAT_BASE_URL='https://model.example/v1',
            OPENAI_COMPAT_MODEL='fixture', DATABASE_USER='postgres',
            DATABASE_PASSWORD='fixture', DATABASE_DBNAME='fixture',
-           MQTTS_IMAGE='mqtts:independent-fixture', STORAGE_S3_BUCKET='fixture')
+           MQTTS_AUTHZ_IMAGE='mqtts-authz:independent-fixture', MQTTS_IMAGE='mqtts:independent-fixture', STORAGE_S3_BUCKET='fixture')
 variants = [
     (root, ['docker-compose.yml']),
     (root, ['deploy/docker-compose.test.yml']),
@@ -42,10 +42,14 @@ with tempfile.TemporaryDirectory(prefix='broker-deployment-') as directory:
                 raise RuntimeError('Compose validation failed: ' + result.stderr)
             services = json.loads(result.stdout)['services']
             if profile:
+                assert 'build' not in services['mqtts-authz']
+                assert services['mqtts-authz']['image'] == 'mqtts-authz:independent-fixture'
+                assert 'ports' not in services['mqtts-authz'], 'Management RPC must remain private by default'
                 assert 'build' not in services['mqtts'], 'Consumer configuration must not build broker source'
                 assert services['mqtts']['image'] == 'mqtts:independent-fixture'
             else:
+                assert 'mqtts-authz' not in services
                 assert 'mqtts' not in services, 'External mode must not create a local broker'
-            assert all('mqtts' not in service.get('depends_on', {}) for service in services.values()), \
+            assert all(not {'mqtts', 'mqtts-authz'} & set(service.get('depends_on', {})) for service in services.values()), \
                 'Application services must start independently of a bundled broker'
             print('PASS', ', '.join(files), 'prebuilt broker' if profile else 'external broker')

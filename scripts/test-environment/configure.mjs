@@ -25,6 +25,7 @@ try {
       TEST_MQTT_WS_PORT: process.env.TEST_MQTT_WS_PORT || '8083',
       TEST_FRONTEND_UID: String(process.getuid?.() ?? 1000),
       TEST_FRONTEND_GID: String(process.getgid?.() ?? 1000),
+      MQTTS_AUTHZ_IMAGE: process.env.MQTTS_AUTHZ_IMAGE || 'mqtts-authz:local',
       MQTTS_IMAGE: process.env.MQTTS_IMAGE || 'mqtts:local',
       TEST_NODE_IMAGE: 'mirror.gcr.io/library/node:22-bookworm-slim',
       TEST_POSTGRES_IMAGE: 'mirror.gcr.io/library/postgres:15-alpine',
@@ -47,7 +48,10 @@ try {
       MQTT_CLIENT_ID: 'openclaw-test-backend',
       MQTT_TCP_PUBLIC_URL: `mqtt://127.0.0.1:${process.env.TEST_MQTT_PORT || '1883'}`,
       MQTT_WS_PUBLIC_URL: mqtt.toString(),
-      BROKER_SECURITY_CALLBACK_TOKEN: secret(),
+      MQTTS_AUTHZ_QUERY_TOKEN: secret(),
+      BROKER_SECURITY_ADMIN_TOKEN: secret(),
+      BROKER_SECURITY_ADDRESS: 'mqtts-authz:50051',
+      BROKER_SECURITY_INSECURE: 'true',
       BROKER_SECURITY_SESSION_TTL_SECONDS: '300',
       STORAGE_PROVIDER: 's3',
       STORAGE_S3_ENDPOINT: 'storage:9000',
@@ -63,17 +67,18 @@ try {
     await writeFile(envFile, Object.entries(values).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n') + '\n', { mode: 0o600, flag: 'wx' });
   }
   let config = await settings();
-  if (!config.BROKER_SECURITY_CALLBACK_TOKEN) {
-    await appendFile(envFile, `\nBROKER_SECURITY_CALLBACK_TOKEN=${JSON.stringify(randomBytes(24).toString('hex'))}\nBROKER_SECURITY_SESSION_TTL_SECONDS="300"\n`);
-    config = await settings();
+  for (const name of ['MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']) {
+    if (!config[name]) await appendFile(envFile, `\n${name}=${JSON.stringify(randomBytes(24).toString('hex'))}\n`);
   }
+  config = await settings();
   if (!config.TEST_FRONTEND_UID || !config.TEST_FRONTEND_GID) {
     await appendFile(envFile, `\nTEST_FRONTEND_UID=${JSON.stringify(String(process.getuid?.() ?? 1000))}\nTEST_FRONTEND_GID=${JSON.stringify(String(process.getgid?.() ?? 1000))}\n`);
     config = await settings();
   }
-  if (!/^[a-zA-Z0-9_-]{32,}$/.test(config.BROKER_SECURITY_CALLBACK_TOKEN)) {
-    throw new Error('Broker callback token must contain at least 32 letters, digits, underscores or hyphens');
+  for (const name of ['MQTTS_AUTHZ_QUERY_TOKEN', 'BROKER_SECURITY_ADMIN_TOKEN']) {
+    if (!/^[a-zA-Z0-9_-]{32,}$/.test(config[name])) throw new Error(`${name} must contain at least 32 letters, digits, underscores or hyphens`);
   }
+  if (config.MQTTS_AUTHZ_QUERY_TOKEN === config.BROKER_SECURITY_ADMIN_TOKEN) throw new Error('Query and management tokens must differ');
   const origin = new URL(config.TEST_PUBLIC_URL);
   if (!['http:', 'https:'].includes(origin.protocol) || origin.pathname !== '/') {
     throw new Error('TEST_PUBLIC_URL must be an HTTP(S) origin without a path');

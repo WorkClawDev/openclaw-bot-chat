@@ -26,6 +26,18 @@ services:
       timeout: 5s
       retries: 5
 
+  mqtts-authz:
+    profiles: [broker]
+    image: ${MQTTS_AUTHZ_IMAGE:-mqtts-authz:local}
+    environment:
+      AUTHZ_INSECURE: "true"
+      AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN}
+      AUTHZ_ADMIN_TOKEN: ${BROKER_SECURITY_ADMIN_TOKEN}
+    volumes: ["mqtts_authz_data:/data"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   mqtts:
     profiles: [broker]
     image: ${MQTTS_IMAGE:-mqtts:local}
@@ -33,9 +45,9 @@ services:
       - "${MQTT_TCP_PORT_MAPPING:-127.0.0.1:1883:1883}"
       - "${MQTT_WS_PORT_MAPPING:-127.0.0.1:8083:1883}"
     environment:
-      BROKER_SECURITY_CALLBACK_TOKEN: ${BROKER_SECURITY_CALLBACK_TOKEN:?Set a random callback token of at least 32 characters}
-      NO_PROXY: localhost,127.0.0.1,backend
-      no_proxy: localhost,127.0.0.1,backend
+      MQTTS_AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN:-}
+      NO_PROXY: localhost,127.0.0.1,mqtts-authz
+      no_proxy: localhost,127.0.0.1,mqtts-authz
     volumes:
       - ./broker/mqtts/mqtts.yaml:/app/config/mqtts.yaml:ro
     read_only: true
@@ -99,7 +111,10 @@ services:
       - REDIS_PORT=6379
       - MQTT_BROKER=${MQTT_BROKER:-tcp://mqtts:1883}
       - MQTT_CLIENT_ID=${MQTT_CLIENT_ID:-openclaw-backend}
-      - BROKER_SECURITY_CALLBACK_TOKEN=${BROKER_SECURITY_CALLBACK_TOKEN}
+      - BROKER_SECURITY_ADDRESS=${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      - BROKER_SECURITY_INSECURE=${BROKER_SECURITY_INSECURE:-true}
+      - BROKER_SECURITY_ADMIN_TOKEN=${BROKER_SECURITY_ADMIN_TOKEN}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1},mqtts-authz
       - BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true
       - MQTT_USERNAME=${MQTT_USERNAME:-openclaw_backend}
       - MQTT_PASSWORD=${MQTT_PASSWORD:?Set a random server password of at least 32 characters}
@@ -155,6 +170,7 @@ services:
       - NODE_ENV=production
 
 volumes:
+  mqtts_authz_data:
   postgres_data:
   redis_data:
   minio_data:

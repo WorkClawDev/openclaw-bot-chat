@@ -30,14 +30,26 @@ services:
       timeout: 5s
       retries: 12
 
+  mqtts-authz:
+    profiles: [broker]
+    image: ${MQTTS_AUTHZ_IMAGE:-mqtts-authz:local}
+    environment:
+      AUTHZ_INSECURE: "true"
+      AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN}
+      AUTHZ_ADMIN_TOKEN: ${BROKER_SECURITY_ADMIN_TOKEN}
+    volumes: ["mqtts_authz_data:/data"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   mqtts:
     profiles: [broker]
     image: ${MQTTS_IMAGE:-mqtts:local}
     restart: unless-stopped
     environment:
-      BROKER_SECURITY_CALLBACK_TOKEN: ${BROKER_SECURITY_CALLBACK_TOKEN}
-      NO_PROXY: localhost,127.0.0.1,backend
-      no_proxy: localhost,127.0.0.1,backend
+      MQTTS_AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN}
+      NO_PROXY: localhost,127.0.0.1,mqtts-authz
+      no_proxy: localhost,127.0.0.1,mqtts-authz
     ports:
       - "127.0.0.1:${TEST_MQTT_PORT:-1883}:1883"
       - "127.0.0.1:${TEST_MQTT_WS_PORT:-8083}:1883"
@@ -101,6 +113,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MQTT_BROKER: tcp://mqtts:1883
+      BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
       BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
     ports:
       - "127.0.0.1:${TEST_API_PORT:-8080}:8080"
@@ -181,6 +195,7 @@ services:
       retries: 12
 
 volumes:
+  mqtts_authz_data:
   postgres_data:
   redis_data:
   seaweed_data:

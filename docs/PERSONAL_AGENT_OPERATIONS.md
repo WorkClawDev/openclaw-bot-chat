@@ -12,7 +12,7 @@
 
 ## 隔离启动
 
-先选择独立构建的 MQTTS 镜像，在部署 `.env` 设置 `MQTTS_IMAGE`；本项目不再编译 Broker 源码。所有命令在仓库根目录执行。使用 Node ≥22，本次主机和 worker 验证为 Node 24，前端使用 Node 22 镜像。
+先选择独立构建的 MQTTS 镜像，在部署 `.env` 设置 `MQTTS_IMAGE` 和 `MQTTS_AUTHZ_IMAGE`；本项目不再编译 Broker 源码。所有命令在仓库根目录执行。使用 Node ≥22，本次主机和 worker 验证为 Node 24，前端使用 Node 22 镜像。
 
 ```sh
 node --version
@@ -25,7 +25,7 @@ node scripts/personal-agent-prepare.cjs
 先启动基础服务和 Web，使用隔离账户创建自己的 bot，从界面生成 bot key。将其填入 `.runtime/bot-key`，模型密钥填入 `.runtime/model-key`，不要把密钥放进命令参数或 Git。没有配置这些值时 worker 会拒绝启动。
 
 ```sh
-docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent --profile broker up --build -d mqtts frontend
+docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent --profile broker up --build -d mqtts-authz mqtts frontend
 docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent up --build -d worker
 ```
 
@@ -35,17 +35,17 @@ docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/co
 
 本地 CPU 模型可通过 `host.docker.internal` 访问主机服务，并在 `.env` 调整 `OPENAI_COMPAT_TIMEOUT_MS`、`OPENAI_COMPAT_MCP_TOTAL_BUDGET_MS`、`OPENAI_COMPAT_MAX_TOKENS`、`OPENAI_COMPAT_STREAM_USAGE` 和 `OPENAI_COMPAT_SYSTEM_PROMPT`。本次分别使用 240000、600000、512、true 及逐次调用工具的提示；默认 45 秒工具预算可能在 CPU 模型首轮推理期间耗尽。
 
-专用 project 固定为 `personal-agent`。端口仅绑定主机 loopback：Web13000、API18080、MQTT1885、WS8085、对象存储19000；数据库、Redis 不向主机发布，MQTTS 没有 EMQX dashboard。不得将同名数据库或卷指向生产。根目录和专用 Compose 均使用 MQTTS HTTP 认证/授权配置，不能混用旧共享账户的 broker。
+专用 project 固定为 `personal-agent`。端口仅绑定主机 loopback：Web13000、API18080、MQTT1885、WS8085、对象存储19000；数据库、Redis 不向主机发布，MQTTS 没有 EMQX dashboard。不得将同名数据库或卷指向生产。根目录和专用 Compose 均使用 MQTTS gRPC 认证/授权配置，不能混用旧共享账户的 broker。
 
 这个 Compose 是单机隔离验收配置，`APP_MODE=debug` 且手机号认证关闭。远端日常部署还需配置 HTTPS/WSS、外部可解析的 storage public endpoint、模型和存储服务、备份及真实验收。iOS 真机无法使用主机127.0.0.1；需要明确设置可达服务地址及对应 JWT、broker WS 和 storage public URL。
 
 ## MQTT 身份和权限
 
-客户端 bootstrap 不再收到后端的共享 MQTT 账户，而是与 owner/bot/clientID/订阅和发布范围绑定的随机密码。Redis只保存密码 hash 和短期会话，业务 run/记忆/消息仍在 PostgreSQL。HTTP callbacks 检查身份、bot key 活跃/过期、主题范围及实际会话权限；回调 token 缺失、Redis故障、身份撤销或请求异常均显式 deny。只有已认证的 broker 能调用 callbacks。后端持久消费者只获准订阅 `chat/#`，通知只能发布指定命名空间。
+客户端 bootstrap 返回绑定 owner/bot/clientID/订阅和发布范围的随机短期身份。聊天后端将业务权限转换成通用策略，通过管理 RPC 发布到 MQTTS 的独立 `modules/authz` 服务；该服务使用自己的授权库，不查询聊天数据库。Broker 使用独立查询凭据，通过 Protobuf 批量授权，消息热路径命中本地缓存。
 
-会话有效期默认300秒，限制为60–300秒。MQTTS 在每次发布、订阅和投递时重新校验权限及过期时间，已建立订阅在移出群聊、封禁账号或撤销 Agent Key 后也不能继续接收新消息；已经交付给客户端的历史内容不可能追回。worker 提前续期，Web 定时刷新，iOS 断开后重新 bootstrap。过期连接可能保持 TCP，但不能继续读写。个人执行入口另外绑定真实 MQTT transport topic，仅 owner 私聊可以发起工具。
+会话有效期默认300秒，限制为60–300秒；发布、订阅和每次投递都受原会话及策略租约约束。权限变更触发合并的后台同步，另有每10秒定期校正；Broker 每250 ms检查版本。故障不延长缓存或策略租约。聊天后端暂停时，已签发身份仍可连接 MQTT；授权服务暂停时，拒绝新连接，已有授权最多保留到原会话到期且不超过5分钟。API 和消息落库仍依赖聊天后端。
 
-配置 `BROKER_SECURITY_CALLBACK_TOKEN`（≥32字符）和 `BROKER_SECURITY_SESSION_TTL_SECONDS`；后端 `MQTT_PASSWORD` 同样≥32字符，release 配置缺失会拒绝启动。MQTTS 从独立 secret 读取 callback token，backend 先启动 HTTP 再异步连接 broker，持久订阅成功后才返回 ready。`BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 配合通用 `publish_payload: base64` 回调，由后端解析原始消息并阻止发送者冒充；MQTTS 不理解聊天字段。
+配置 `BROKER_SECURITY_ADDRESS`、`BROKER_SECURITY_ADMIN_TOKEN` 和 `BROKER_SECURITY_SESSION_TTL_SECONDS`；后端 `MQTT_PASSWORD` 同样≥32字符。个人助手部署分别挂载 `broker-token`（查询）和 `authz-admin-token`（管理），prepare 不覆盖已有秘密。`BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 把发送者及 Topic 约束投影为通用 JSON 绑定；`publish_payload: bytes` 通过 Protobuf 传递原始字节。私网 Compose 明确启用 RPC 明文，远端配置 TLS/mTLS，详见 [MQTTS 配置](MQTTS_ACCESS.md)。
 
 ## 工具、文件与不确定结果
 
