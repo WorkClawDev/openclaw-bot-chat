@@ -2,7 +2,7 @@
   "schema_version": 1,
   "http_auth_contract": 1,
   "repository": "ChangerR/mqtts",
-  "source_revision": "c3470b3750ca37833d86e2946a4df187ae791d7e",
-  "workflow_run_id": 37193484481,
-  "artifact_name": "mqtts-image-c3470b3750ca37833d86e2946a4df187ae791d7e-linux-amd64"
+  "source_revision": "42381081fe7f458916670b4b8b29f063d840cd81",
+  "workflow_run_id": 37202216296,
+  "artifact_name": "mqtts-image-42381081fe7f458916670b4b8b29f063d840cd81-linux-amd64"
 }
