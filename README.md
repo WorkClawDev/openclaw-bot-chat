@@ -71,6 +71,18 @@ Common local ports:
 - MQTT WebSocket: `8083` with path `/mqtt`
 - EMQX Dashboard: `18083`
 
+## Local Test Environment
+
+```bash
+./scripts/test-env.sh up
+```
+
+This starts an independent test stack with a browser gateway, MQTT, PostgreSQL,
+Redis, S3 test storage, and an Echo Test Bot. Open `http://127.0.0.1:3000` and use
+the credentials saved in the ignored `run/test-env/account.json`.
+
+See [test environment commands and configuration](scripts/test-environment/README.md).
+
 ## Configuration
 
 Important environment variables:
