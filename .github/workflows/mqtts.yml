@@ -7,9 +7,9 @@ on:
         required: false
         type: string
   push:
-    paths: ['backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
   pull_request:
-    paths: ['backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
 permissions:
   contents: read
   actions: read
@@ -56,6 +56,8 @@ jobs:
       BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: 'true'
     steps:
       - uses: actions/checkout@v4
+      - name: Validate independent deployment configurations
+        run: python3 scripts/test-environment/check-broker-deployment.py
       - name: Read pinned broker artifact
         id: broker
         if: env.REQUESTED_MQTTS_IMAGE == ''
