@@ -76,6 +76,7 @@ case "${1:-up}" in
   status) status ;;
   logs) compose --profile fixtures logs --tail 80 "${@:2}" ;;
   smoke) node "$TOOLS_DIR/smoke.mjs" ;;
+  browser) node "$TOOLS_DIR/browser-smoke.mjs" ;;
   check)
     go_bin="$(find_go)"
     (cd "$REPO_ROOT/backend" && GOMAXPROCS=4 GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" "$go_bin" test -p 4 ./...)
@@ -84,5 +85,5 @@ case "${1:-up}" in
     (cd "$REPO_ROOT/test/openclaw-bot-chat" && npm run ci)
     PATH="$(dirname -- "$go_bin"):$PATH" GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" node "$REPO_ROOT/test/personal-agent-evals/run.cjs"
     ;;
-  *) echo 'Usage: scripts/test-env.sh [up|install|down|restart|status|logs [service]|smoke|check]' >&2; exit 2 ;;
+  *) echo 'Usage: scripts/test-env.sh [up|install|down|restart|status|logs [service]|smoke|browser|check]' >&2; exit 2 ;;
 esac

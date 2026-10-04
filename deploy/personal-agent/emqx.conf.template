@@ -1,7 +1,17 @@
+node {
+ name = "emqx@127.0.0.1"
+ data_dir = "data"
+}
 log.console_handler.level = warning
 listeners.tcp.default.bind = "0.0.0.0:1883"
 listeners.ws.default.bind = "0.0.0.0:8083"
 authentication = [{
+ mechanism = password_based
+ backend = built_in_database
+ user_id_type = username
+ password_hash_algorithm.name = plain
+ bootstrap_file = "/opt/emqx/etc/personal-agent-auth.csv"
+}, {
  mechanism = password_based
  backend = http
  method = post
@@ -14,7 +24,7 @@ authorization {
  no_match = deny
  deny_action = disconnect
  cache.enable = false
- sources = [{
+ sources = [{type = file, path = "/opt/emqx/etc/personal-agent-acl.conf"}, {
   type = http
   method = post
   url = "http://backend:8080/internal/broker/authorization"

@@ -7,6 +7,7 @@ npm, Go 1.25+, curl, and tar:
 ./scripts/test-env.sh up
 ./scripts/test-env.sh status
 ./scripts/test-env.sh smoke
+./scripts/test-env.sh browser
 ./scripts/test-env.sh check
 ./scripts/test-env.sh logs echo-bot
 ./scripts/test-env.sh down
@@ -38,6 +39,17 @@ it reuses account and fixture IDs and restarts the app with the current code.
 `check` runs Go tests, extension tests/build, frontend type checks, test-agent
 tests/type checks, and the deterministic personal-agent evaluations.
 The main production Compose file is independent of this test project.
+
+`browser` uses the frontend's Playwright dependency and a local Chromium browser
+to verify login, the first message to a newly created bot and group without a
+reload, actual message persistence, and the assistant page. It creates disposable
+fixtures under the test account. Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` when
+Chromium is not at `/usr/bin/chromium`, or install Playwright's Chromium using
+`cd frontend && npx playwright install chromium`. Screenshots remain under the
+ignored test state directory.
+
+The independent production-container and real-model acceptance results are in
+[the project acceptance report](../../docs/PROJECT_ACCEPTANCE.md).
 
 Before the first run, `TEST_PUBLIC_URL` and `TEST_WEB_PORT` can select an origin
 and bind port. To change them later, update `.env.test`, including

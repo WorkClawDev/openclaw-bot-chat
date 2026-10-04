@@ -233,9 +233,9 @@ export default function BotsPage() {
             <CreateEditBotForm
               bot={view === 'edit' ? selectedBot : null}
               onCancel={() => { setView('chat'); setShowMobileList(true); }}
-              onSuccess={(bot) => {
+              onSuccess={async (bot) => {
+                await refreshBots()
                 openBotConversation(bot)
-                void refreshBots()
                 setSelectedBot(bot)
                 setView('chat')
                 setShowMobileList(false)
@@ -278,7 +278,7 @@ function CreateEditBotForm({
 }: {
   bot: Bot | null
   onCancel: () => void
-  onSuccess: (bot: Bot) => void
+  onSuccess: (bot: Bot) => void | Promise<void>
   onShowKeys: (bot: Bot) => void
 }) {
   const [name, setName] = useState(bot?.name || '')
@@ -311,10 +311,10 @@ function CreateEditBotForm({
 
       if (bot) {
         const updated = await botsApi.update(bot.id, payload)
-        onSuccess(updated)
+        await onSuccess(updated)
       } else {
         const created = await botsApi.create(payload)
-        onSuccess(created)
+        await onSuccess(created)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save bot')

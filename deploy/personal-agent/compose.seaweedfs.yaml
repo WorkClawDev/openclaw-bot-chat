@@ -1,0 +1,21 @@
+# Optional real S3 storage when the pinned MinIO distribution is unavailable.
+# Install the verified binary with: node scripts/test-environment/install-storage.mjs
+services:
+  minio:
+    image: ${PERSONAL_AGENT_STORAGE_RUNTIME_IMAGE:-node:22-bookworm-slim}
+    entrypoint: [/bin/sh, /opt/seaweedfs-start.sh]
+    command: []
+    volumes:
+      - ${PERSONAL_AGENT_SEAWEEDFS_DIR:-../../run/test-env/seaweedfs}:/opt/seaweedfs:ro
+      - ./seaweedfs-start.sh:/opt/seaweedfs-start.sh:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:9000').then(r=>{if(r.status>=500)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+  minio-init:
+    image: ${PERSONAL_AGENT_STORAGE_RUNTIME_IMAGE:-node:22-bookworm-slim}
+    entrypoint: [node, -e]
+    command: ["fetch('http://minio:9000').then(r=>{if(r.status>=500)process.exit(1)}).catch(()=>process.exit(1))"]
+    depends_on:
+      minio: {condition: service_healthy}

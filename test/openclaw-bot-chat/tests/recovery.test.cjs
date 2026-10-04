@@ -4,6 +4,13 @@ const {stableReplyId}=require('../dist/router/message.js');
 const {ManagedBotRuntime}=require('../dist/runtime/bot.js');
 const {executeTool}=require('../examples/openai-handler/tool-policy.cjs');
 const {compactContext,messageGroups}=require('../examples/openai-handler/context.cjs');
+test('explicit container TCP broker overrides a public bootstrap WebSocket URL', () => {
+ const bootstrap = {broker:{ws_url:'ws://127.0.0.1:8085/mqtt',tcp_url:'mqtt://127.0.0.1:1885'}};
+ const resolve = config => ManagedBotRuntime.prototype.resolveBrokerUrl.call({config},bootstrap);
+ assert.equal(resolve({mqttTcpUrl:'mqtt://emqx:1883'}),'mqtt://emqx:1883');
+ assert.equal(resolve({mqttWsUrl:'ws://emqx:8083/mqtt',mqttTcpUrl:'mqtt://emqx:1883'}),'ws://emqx:8083/mqtt');
+ assert.equal(resolve({}),'ws://127.0.0.1:8085/mqtt');
+});
 test('history consumes 501 offline messages across pages from local cursor',async()=>{const all=Array.from({length:501},(_,i)=>({message_id:String(i),seq:i+1}));const received=[];let pages=0;await recoverHistory(async(after,limit)=>{pages++;return all.filter(item=>item.seq>after).slice(0,limit)},async item=>received.push(item.seq),0,200);assert.equal(pages,3);assert.deepEqual(received,all.map(item=>item.seq));});
 test('outgoing reply id remains stable across restart and separates waiting notice',()=>{assert.equal(stableReplyId('bot','message'),stableReplyId('bot','message'));assert.notEqual(stableReplyId('bot','message'),stableReplyId('bot','message','waiting_approval'));});
 function runtimeFixture(agent,records,publish){

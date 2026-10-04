@@ -79,7 +79,7 @@ func (r *AgentJournalRepository) CompleteTool(ctx context.Context, bot *model.Bo
 }
 
 func (r *AgentJournalRepository) UncertainTools(ctx context.Context, owner uuid.UUID) ([]model.AgentToolCall, error) {
-	var rows []model.AgentToolCall
+	rows := []model.AgentToolCall{}
 	err := r.db.WithContext(ctx).Table("agent_tool_calls t").Select("t.*").Joins("JOIN agent_runs r ON CAST(r.id AS TEXT) = t.run_id").Where("t.owner_id = ? AND t.idempotent = ? AND t.status = 'started' AND r.lease_until = 0 AND r.status IN ?", owner, false, []string{"waiting_input", "paused", "failed"}).Limit(100).Scan(&rows).Error
 	return rows, err
 }
