@@ -184,3 +184,11 @@ func (p *S3Provider) PutObject(ctx context.Context, input PutObjectInput) (*Obje
 func (p *S3Provider) DeleteObject(ctx context.Context, objectKey string) error {
 	return p.client.RemoveObject(ctx, p.bucket, objectKey, minio.RemoveObjectOptions{})
 }
+
+func (p *S3Provider) CreateInternalDownload(ctx context.Context, key string, expires time.Duration) (string, error) {
+	url, err := p.client.PresignedGetObject(ctx, p.bucket, key, expires, nil)
+	if err != nil {
+		return "", err
+	}
+	return url.String(), nil
+}

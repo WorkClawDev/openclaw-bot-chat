@@ -80,6 +80,7 @@ export function createMqttRealtimeClient(): MqttRealtimeClient {
     })
 
     nextClient.on('message', (topic, payload) => {
+      if(topic.startsWith('agent/user/')){window.dispatchEvent(new CustomEvent('agent-update'));return}
       const parsed = parsePayload(payload)
       if (!parsed) {
         return
@@ -147,9 +148,8 @@ export function createMqttRealtimeClient(): MqttRealtimeClient {
       return
     }
 
-    if (client && !client.connected) {
-      client.end(true)
-      client = null
+    if (client) {
+      await disconnect()
     }
 
     return connectClient(options)

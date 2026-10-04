@@ -1,0 +1,173 @@
+name: personal-agent
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_DB: personal_agent
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+    secrets: [db-password]
+    volumes: ["postgres:/var/lib/postgresql/data", "./postgres-init.sql:/docker-entrypoint-initdb.d/00-uuid.sql:ro"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U agent -d personal_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  emqx:
+    image: emqx/emqx:5.8.5
+    command: ["/bin/sh", "/opt/emqx/etc/personal-agent-start.sh"]
+    secrets: [broker-token, dashboard-key, node-cookie]
+    volumes:
+      - ./emqx.conf.template:/opt/emqx/etc/personal-agent.conf.template:ro
+      - ./emqx-start.sh:/opt/emqx/etc/personal-agent-start.sh:ro
+      - emqx:/opt/emqx/data
+    ports: ["127.0.0.1:1885:1883", "127.0.0.1:8085:8083"]
+    environment:
+      EMQX_NODE__NAME: emqx@127.0.0.1
+    healthcheck:
+      test: [CMD-SHELL, "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: [server, /data]
+    environment:
+      MINIO_ROOT_USER: personal-agent-storage
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/storage-key
+    secrets: [storage-key]
+    volumes: ["assets:/data"]
+    ports: ["127.0.0.1:19000:9000"]
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    secrets: [storage-key]
+    depends_on: [minio]
+    entrypoint: [/bin/sh, -c]
+    command:
+      - 'until mc alias set local http://minio:9000 personal-agent-storage "$$(cat /run/secrets/storage-key)" >/dev/null 2>&1; do sleep 2; done; mc mb --ignore-existing local/personal-agent >/dev/null'
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/personal-agent/backend.Dockerfile
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    secrets: [db-password, jwt-key, backend-password, broker-token, storage-key]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      emqx: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:18080:8080"]
+    environment:
+      PERSONAL_AGENT_SECRET_BINDINGS: DATABASE_PASSWORD:db-password JWT_SECRET:jwt-key MQTT_PASSWORD:backend-password BROKER_SECURITY_CALLBACK_TOKEN:broker-token STORAGE_S3_SECRET_KEY:storage-key
+      APP_MODE: debug
+      DATABASE_HOST: postgres
+      DATABASE_USER: agent
+      DATABASE_DBNAME: personal_agent
+      REDIS_HOST: redis
+      MQTT_BROKER: tcp://emqx:1883
+      MQTT_CLIENT_ID: personal-agent-backend
+      MQTT_USERNAME: personal-agent-backend
+      MQTT_TCP_PUBLIC_URL: mqtt://127.0.0.1:1885
+      MQTT_WS_PUBLIC_URL: ws://127.0.0.1:8085/mqtt
+      BROKER_SECURITY_SESSION_TTL_SECONDS: 300
+      AUTH_PHONE_ENABLED: "false"
+      STORAGE_PROVIDER: s3
+      STORAGE_PRIVATE_READ: "true"
+      STORAGE_S3_ENDPOINT: minio:9000
+      STORAGE_S3_PUBLIC_ENDPOINT: 127.0.0.1:19000
+      STORAGE_S3_BUCKET: personal-agent
+      STORAGE_S3_REGION: us-east-1
+      STORAGE_S3_ACCESS_KEY: personal-agent-storage
+      STORAGE_S3_SSL: "false"
+      LOG_LEVEL: info
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+  frontend:
+    build:
+      context: ../../frontend
+      args: {NEXT_PUBLIC_API_URL: "http://127.0.0.1:18080"}
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ["127.0.0.1:13000:3000"]
+    depends_on:
+      backend: {condition: service_healthy}
+  worker-init:
+    image: alpine:3.23
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    volumes: ["state:/state", "output:/output"]
+    command: ["sh", "-c", "chown 1000:1000 /state /output && chmod 700 /state /output"]
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/personal-agent/worker.Dockerfile
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 2
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    secrets: [bot-key, model-key]
+    volumes:
+      - state:/state
+      - ./.runtime/input:/workspace/input:ro
+      - output:/workspace/output
+    environment:
+      PERSONAL_AGENT_SECRET_BINDINGS: BOT_CHAT_BOT_KEY:bot-key OPENAI_COMPAT_API_KEY:model-key
+      BOT_CHAT_BACKEND_URL: http://backend:8080
+      BOT_CHAT_MQTT_TCP_URL: mqtt://emqx:1883
+      OPENAI_COMPAT_WORKSPACE_ID: personal-agent-workspace
+      OPENCLAW_STATE_DIR: /state
+      OPENCLAW_AGENT_HANDLER: /app/examples/openai-compatible-handler.cjs
+      OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:?Set provider URL in deploy/personal-agent/.env}
+      OPENAI_COMPAT_MODEL: ${OPENAI_COMPAT_MODEL:?Set model in deploy/personal-agent/.env}
+      OPENAI_COMPAT_MAX_TOKENS: 2048
+      OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS: /workspace/input,/workspace/output
+      OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS: /workspace/output
+      OPENAI_COMPAT_BASH_ENABLED: "false"
+      BOT_CHAT_RUNTIME_DEBUG: "false"
+    depends_on:
+      backend: {condition: service_healthy}
+      worker-init: {condition: service_completed_successfully}
+    restart: unless-stopped
+secrets:
+  dashboard-key: {file: ./.runtime/dashboard-key}
+  node-cookie: {file: ./.runtime/node-cookie}
+  db-password: {file: ./.runtime/db-password}
+  jwt-key: {file: ./.runtime/jwt-key}
+  backend-password: {file: ./.runtime/backend-password}
+  broker-token: {file: ./.runtime/broker-token}
+  storage-key: {file: ./.runtime/storage-key}
+  bot-key: {file: ./.runtime/bot-key}
+  model-key: {file: ./.runtime/model-key}
+volumes:
+  postgres: {}
+  redis: {}
+  assets: {}
+  emqx: {}
+  state: {}
+  output: {}

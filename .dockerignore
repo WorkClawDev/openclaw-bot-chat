@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/dist
+**/.next
+**/.env
+**/.env.*
+**/.test-agent*.json
+**/data
+**/*.xcresult
+**/DerivedData
+**/screenshots
+deploy/personal-agent/.runtime
+test/personal-agent-evals/results

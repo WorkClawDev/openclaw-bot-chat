@@ -273,6 +273,10 @@ export const realtimeApi = {
 }
 
 export const assetsApi = {
+  prepareFileUpload: (data: {file_name:string;content_type:string;size:number;conversation_id?:string}) => request<PreparedUpload>("/api/v1/assets/file/upload-prepare",{method:"POST",body:JSON.stringify(data)}),
+  completeFileUpload: (data:{asset_id:string;object_key:string}) => request<Asset>("/api/v1/assets/file/complete",{method:"POST",body:JSON.stringify(data)}),
+  file: (id:string) => request<Asset>(`/api/v1/assets/file/${encodeURIComponent(id)}`),
+
   prepareImageUpload: (data: { file_name: string; content_type: string; size: number; conversation_id?: string }) =>
     request<PreparedUpload>('/api/v1/assets/image/upload-prepare', {
       method: 'POST',
@@ -431,3 +435,26 @@ export const healthApi = {
 }
 
 export { AUTH_SESSION_EXPIRED_EVENT, getApiBase, getToken }
+
+export interface AgentApproval {id:string;run_id:string;tool:string;parameter_hash:string;arguments:Record<string,unknown>;status:string;expires_at:string}
+export const agentApi = {
+  approvals: () => request<AgentApproval[]>("/api/v1/agent/approvals"),
+  decide: (id:string, approved:boolean) => request<unknown>(`/api/v1/agent/approvals/${encodeURIComponent(id)}/decision`, {method:"POST",body:JSON.stringify({approved})}),
+}
+
+export interface AgentRun {id:string;task_id?:string;conversation:string;status:string;cancel_requested:boolean;steps:number;max_steps:number;error?:string;result?:{content?:string};event_seq:number}
+export interface AgentRunEvent {id:string;seq:number;type:string;data:Record<string,unknown>;created_at:string}
+export const runsApi = {
+ list:()=>request<AgentRun[]>("/api/v1/agent/runs"),
+ events:(id:string,after=0)=>request<AgentRunEvent[]>(`/api/v1/agent/runs/${encodeURIComponent(id)}/events?after_seq=${after}`),
+ action:(id:string,action:"cancel"|"resume",input="")=>request<unknown>(`/api/v1/agent/runs/${encodeURIComponent(id)}/${action}`,{method:"POST",body:JSON.stringify({input})}),
+}
+
+export interface AgentArtifact {id:string;run_id:string;file_name:string;mime_type:string;sha256:string;version:number;size:number;document_id?:string}
+export const artifactsApi={list:(run:string)=>request<AgentArtifact[]>(`/api/v1/agent/runs/${run}/artifacts`),download:(id:string)=>request<Asset>(`/api/v1/agent/artifacts/${id}/download`)}
+export interface AgentMemory {id:string;bot_id:string;scope:string;content:string;source:string;confirmed:boolean}
+export interface AgentSchedule {id:string;bot_id:string;title:string;prompt:string;timezone:string;recurrence:string;missed_policy:string;status:string;next_at:string;last_task_id?:string;last_task_status?:string;last_task_note?:string}
+export const memoryApi={list:()=>request<AgentMemory[]>('/api/v1/agent/memories'),save:(data:Omit<AgentMemory,'id'>,id?:string)=>request<AgentMemory>(`/api/v1/agent/memories${id?'/'+id:''}`,{method:id?'PUT':'POST',body:JSON.stringify(data)}),remove:(id:string)=>request(`/api/v1/agent/memories/${id}`,{method:'DELETE'}),export:()=>request<AgentMemory[]>('/api/v1/agent/memories/export')}
+export const schedulesApi={list:()=>request<AgentSchedule[]>('/api/v1/agent/schedules'),create:(data:Record<string,unknown>)=>request<AgentSchedule>('/api/v1/agent/schedules',{method:'POST',body:JSON.stringify(data)}),action:(id:string,action:'pause'|'resume'|'cancel')=>request(`/api/v1/agent/schedules/${id}/${action}`,{method:'POST'})}
+
+export const reconciliationApi = { list:()=>request<Array<{id:string;run_id:string;tool:string}>>('/api/v1/agent/tool-calls/uncertain'), resolve:(id:string,outcome:string,evidence:string)=>request(`/api/v1/agent/tool-calls/${id}/reconcile`,{method:'POST',body:JSON.stringify({outcome,evidence})}) }

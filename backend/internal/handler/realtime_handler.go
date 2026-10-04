@@ -14,6 +14,7 @@ import (
 type RealtimeHandler struct {
 	msgService *service.MessageService
 	broker     config.BrokerClientConfig
+	security   *service.BrokerSecurityService
 }
 
 const (
@@ -50,8 +51,6 @@ func NewRealtimeHandler(msgService *service.MessageService, mqttCfg config.MQTTC
 		broker: config.BrokerClientConfig{
 			TCPPublicURL: mqttCfg.TCPPublicURL,
 			WSPublicURL:  mqttCfg.WSPublicURL,
-			Username:     mqttCfg.Username,
-			Password:     mqttCfg.Password,
 			QOS:          int(mqttCfg.QOS),
 		},
 	}
@@ -70,12 +69,22 @@ func (h *RealtimeHandler) Bootstrap(c *gin.Context) {
 		return
 	}
 	responseTopic := fmt.Sprintf(botChatSlashAutocompleteResponseTopicFmt, userID.String())
-	subscriptionTopics := service.UniqueTopicsForExport(append(topics, botChatSlashCommandTopic, responseTopic))
+	subscriptionTopics := service.UniqueTopicsForExport(append(topics, botChatSlashCommandTopic, responseTopic, "agent/user/"+userID.String()+"/events"))
 	publishTopics := service.UniqueTopicsForExport(append(topics, botChatSlashAutocompleteRequestTopic))
 
+	clientID := fmt.Sprintf("frontend-%s-%s", userID.String(), uuid.NewString()[:8])
+	broker := h.broker
+	username, password, expiry, err := h.security.Mint(c.Request.Context(), service.BrokerSession{ClientID: clientID, ActorType: "user", ActorID: userID, OwnerID: userID, Subscribe: subscriptionTopics, Publish: publishTopics})
+	if err != nil {
+		c.JSON(503, gin.H{"message": "scoped broker credentials unavailable"})
+		return
+	}
+	broker.Username = username
+	broker.Password = password
+	broker.ExpiresAt = expiry
 	apiresponse.Success(c, realtimeBootstrapResponse{
-		Broker:                         h.broker,
-		ClientID:                       fmt.Sprintf("frontend-%s-%s", userID.String(), uuid.NewString()[:8]),
+		Broker:                         broker,
+		ClientID:                       clientID,
 		PrincipalType:                  "user",
 		PrincipalID:                    userID.String(),
 		Subscriptions:                  toRealtimeSubscriptions(subscriptionTopics, h.broker.QOS),
@@ -98,4 +107,8 @@ func toRealtimeSubscriptions(topics []string, qos int) []realtimeSubscription {
 		})
 	}
 	return items
+}
+
+func (h *RealtimeHandler) SetBrokerSecurity(security *service.BrokerSecurityService) {
+	h.security = security
 }

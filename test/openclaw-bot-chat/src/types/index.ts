@@ -19,6 +19,7 @@ export interface BotChatMessage {
 }
 
 export interface BotInfo {
+  owner_id?: string;
   id: string;
   name?: string;
   description?: string;
@@ -55,6 +56,7 @@ export interface Checkpoint {
 }
 
 export interface BrokerInfo {
+  expires_at?: number;
   tcp_url: string;
   ws_url?: string;
   username?: string;
@@ -78,6 +80,20 @@ export interface BootstrapResponse {
 }
 
 export interface OpenClawRequest {
+  signal?: AbortSignal;
+  loadState?: () => Promise<Record<string,unknown>>;
+  saveState?: (state:Record<string,unknown>) => Promise<void>;
+  loadExecution?: () => Promise<Record<string,unknown>>;
+  saveExecution?: (state:Record<string,unknown>) => Promise<void>;
+  memories?: Array<{id:string;content:string;source:string;scope:string}>;
+  saveMemory?: (content:string) => Promise<unknown>;
+  deleteMemory?: (id:string) => Promise<unknown>;
+  getFile?: (id:string) => Promise<Record<string,unknown>>;
+  deliverArtifact?: (input:Record<string,unknown>) => Promise<Record<string,unknown>>;
+  beforeTool?: (intent:Record<string,unknown>) => Promise<{status:string;result?:{value:unknown}}>;
+  afterTool?: (intent:Record<string,unknown>) => Promise<void>;
+  authorize?: (intent: {tool:string;parameter_hash:string;run_id?:string;arguments?:Record<string,unknown>}) => Promise<{approved:boolean;run_id:string;parameter_hash:string;expires_at:string}>;
+  audit?: (event: Record<string,unknown>) => Promise<void>;
   session_id: string;
   content: string;
   attachments?: OpenClawAttachment[];
@@ -102,6 +118,7 @@ export interface OpenClawResponse {
 }
 
 export interface OpenClawAgent {
+  close?:()=>Promise<void>;
   respond(request: OpenClawRequest): Promise<OpenClawResponse>;
 }
 

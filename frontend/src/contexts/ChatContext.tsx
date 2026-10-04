@@ -62,6 +62,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [groups, setGroups] = useState<Group[]>([])
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const [realtimeBootstrap, setRealtimeBootstrap] = useState<RealtimeBootstrapResponse | null>(null)
+  useEffect(() => {
+    if (!isAuthenticated || !realtimeBootstrap?.broker.expires_at) return
+    let active = true
+    const timer = setInterval(() => {
+      if (realtimeBootstrap.broker.expires_at! * 1000 - Date.now() > 60000) return
+      void realtimeApi.bootstrap().then(value => { if(active) setRealtimeBootstrap(value) }).catch(() => {})
+    }, 30000)
+    return () => { active = false; clearInterval(timer) }
+  }, [isAuthenticated, realtimeBootstrap])
+
   const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false)
   const [connectionState, setConnectionState] = useState<RealtimeConnectionState>('idle')
   const subscriptionsRef = useRef<Map<string, () => void>>(new Map())

@@ -77,6 +77,10 @@ func main() {
 	groupRepo := repository.NewGroupRepository(db)
 	assetRepo := repository.NewAssetRepository(db)
 	auditRepo := repository.NewAuditLogRepository(db)
+	approvalService := service.NewAgentApprovalService(repository.NewAgentApprovalRepository(db))
+	approvalHandler := handler.NewAgentApprovalHandler(approvalService)
+	journalHandler := handler.NewAgentJournalHandler(repository.NewAgentJournalRepository(db))
+	runHandler := handler.NewAgentRunHandler(repository.NewAgentRunRepository(db))
 	taskRepo := repository.NewTaskRepository(db)
 	documentRepo := repository.NewDocumentRepository(db)
 
@@ -144,10 +148,64 @@ func main() {
 	groupHandler := handler.NewGroupHandler(groupService)
 	taskHandler := handler.NewTaskHandler(taskService)
 	taskRuntimeHandler := handler.NewTaskRuntimeHandler(taskService)
+	taskRuntimeHandler.SetRunRepository(runHandler.Repo)
 	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager)
+	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
+
+	journalRoutes := router.Group("/api/v1/bot-runtime/agent")
+	journalRoutes.Use(middleware.BotKeyAuth(botService))
+	journalHandler.Register(journalRoutes, runHandler)
+	runHandler.RegisterRuntime(journalRoutes)
+	runUserRoutes := router.Group("/api/v1/agent")
+	runUserRoutes.Use(middleware.JWTAuth(jwtManager))
+	runHandler.RegisterUser(runUserRoutes)
+	journalHandler.RegisterUser(runUserRoutes)
+	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
+	if !security.Configured() {
+		if cfg.App.Mode == "release" {
+			log.Fatal().Msg("broker security requires callback token and server password of at least 32 characters")
+		}
+		log.Warn().Msg("broker security unconfigured; realtime bootstrap will refuse credentials")
+	}
+	realtimeHandler.SetBrokerSecurity(security)
+	botRuntimeHandler.SetBrokerSecurity(security)
+	(&handler.BrokerSecurityHandler{Service: security}).Register(router)
+	router.GET("/health/ready", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		raw, err := db.DB()
+		if err != nil || raw.PingContext(ctx) != nil || rdb.Ping(ctx).Err() != nil || !mqttClient.IsConnected() {
+			c.JSON(503, gin.H{"status": "unavailable"})
+			return
+		}
+		c.JSON(200, gin.H{"status": "ready"})
+	})
+	fileHandler := handler.NewAgentFileHandler(assetService, documentService, repository.NewAgentArtifactRepository(db), runHandler)
+	fileHandler.RegisterRuntime(journalRoutes)
+	fileHandler.RegisterUser(runUserRoutes)
+	memoryScheduleHandler := &handler.AgentMemoryScheduleHandler{Memory: repository.NewAgentMemoryRepository(db), Schedules: repository.NewAgentScheduleRepository(db)}
+	memoryScheduleHandler.RegisterUser(runUserRoutes)
+	memoryScheduleHandler.RegisterRuntime(journalRoutes, runHandler)
+	schedulerContext, schedulerCancel := context.WithCancel(context.Background())
+	defer schedulerCancel()
+	service.StartAgentEventPublisher(schedulerContext, runHandler.Repo, mqttClient.PublishAgentNotice)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-schedulerContext.Done():
+				return
+			case <-ticker.C:
+				if err := runHandler.Repo.ReapCancelled(schedulerContext, time.Now().UnixMilli()); err != nil {
+					log.Error().Err(err).Msg("cancelled run cleanup failed")
+				}
+			}
+		}
+	}()
+	memoryScheduleHandler.Start(schedulerContext, func(err error) { log.Error().Err(err).Msg("agent scheduler failed") })
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -213,6 +271,17 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.TaskDependency{},
 		&model.TaskEvent{},
 		&model.AuditLog{},
+		&model.AgentApproval{},
+		&model.AgentInbox{},
+		&model.AgentContext{},
+		&model.AgentToolCall{},
+		&model.AgentMemory{},
+		&model.AgentMemoryRevision{},
+		&model.AgentSchedule{},
+		&model.AgentScheduleOccurrence{},
+		&model.AgentRun{},
+		&model.AgentRunEvent{},
+		&model.AgentArtifact{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
@@ -252,6 +321,7 @@ func setupRoutes(
 	documentHandler *handler.DocumentHandler,
 	botService *service.BotService,
 	jwtManager *jwt.Manager,
+	approvalHandlers ...*handler.AgentApprovalHandler,
 ) {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -272,6 +342,10 @@ func setupRoutes(
 	botRuntime := api.Group("/bot-runtime")
 	botRuntime.Use(middleware.BotKeyAuth(botService))
 	{
+		if len(approvalHandlers) > 0 {
+			botRuntime.POST("/approvals", approvalHandlers[0].Request)
+			botRuntime.GET("/approvals/:id", approvalHandlers[0].Get)
+		}
 		botRuntime.GET("/bootstrap", botRuntimeHandler.Bootstrap)
 		botRuntime.GET("/messages/*conversation_id", botRuntimeHandler.GetConversationMessages)
 		botRuntime.POST("/assets/image/import", botRuntimeHandler.ImportImage)
@@ -297,6 +371,10 @@ func setupRoutes(
 	protected := api.Group("")
 	protected.Use(middleware.JWTAuth(jwtManager))
 	{
+		if len(approvalHandlers) > 0 {
+			protected.GET("/agent/approvals", approvalHandlers[0].List)
+			protected.POST("/agent/approvals/:id/decision", approvalHandlers[0].Decide)
+		}
 		protected.POST("/auth/logout", authHandler.Logout)
 		protected.GET("/auth/me", authHandler.Me)
 		protected.PUT("/auth/me", authHandler.UpdateMe)
@@ -322,6 +400,9 @@ func setupRoutes(
 		protected.GET("/messages", msgHandler.GetMessages)
 		protected.GET("/messages/*conversation_id", msgHandler.GetMessagesByConversation)
 		protected.GET("/conversations", msgHandler.GetConversations)
+		protected.POST("/assets/file/upload-prepare", assetHandler.PrepareFileUpload)
+		protected.POST("/assets/file/complete", assetHandler.CompleteFileUpload)
+		protected.GET("/assets/file/:id", assetHandler.GetFile)
 		protected.POST("/assets/image/upload-prepare", assetHandler.PrepareImageUpload)
 		protected.POST("/assets/image/complete", assetHandler.CompleteImageUpload)
 		protected.POST("/assets/audio/upload-prepare", assetHandler.PrepareAudioUpload)

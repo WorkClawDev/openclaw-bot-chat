@@ -6,7 +6,7 @@ import { Theme } from 'emoji-picker-react'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
 import { groupsApi, tasksApi } from '@/lib/api'
-import { uploadAudioAsset, uploadImageAsset } from '@/lib/imageUpload'
+import { uploadAudioAsset, uploadFileAsset, uploadImageAsset } from '@/lib/imageUpload'
 import { Bot, ComposerMessageInput, GroupMember, SlashCommand } from '@/lib/types'
 import { STICKERS, Sticker } from '@/lib/stickers'
 
@@ -257,10 +257,10 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
     setIsUploading(true)
     try {
-      const asset = await uploadImageAsset(file, { conversationId: currentConversation.send_topic })
+      const isImage=file.type.startsWith('image/'); const asset = await (isImage?uploadImageAsset:uploadFileAsset)(file, { conversationId: currentConversation.send_topic })
 
       await onSendMessage({
-        type: 'image',
+        type: isImage ? 'image' : 'file',
         body: content.trim() || file.name,
         asset,
         meta: buildMentionMeta(content, mentionBots),
@@ -269,7 +269,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       setMentionActive(false)
       setSlashActive(false)
     } catch (error) {
-      console.error('Failed to upload image:', error)
+      setSendError(error instanceof Error ? error.message : '附件上传失败')
     } finally {
       setIsUploading(false)
       e.target.value = ''
@@ -603,7 +603,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
+          accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.pdf,.docx,.xlsx"
           className="hidden"
           onChange={(e) => {
             void handleImageSelect(e)

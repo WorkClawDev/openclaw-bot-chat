@@ -156,6 +156,7 @@ interface BootstrapResponse {
     username?: string;
     password?: string;
     qos?: number;
+    expires_at?: number;
   };
   subscriptions?: Array<{ topic?: string; qos?: number }>;
   publish_topics?: string[];
@@ -264,6 +265,9 @@ class DefaultBotChatRuntime implements BotChatRuntime {
   private qos: MqttQos = 1;
   private backendUrl?: string;
   private botKey?: string;
+  private brokerRenewTimer?: NodeJS.Timeout;
+  private brokerRenewController?: AbortController;
+  private brokerRenewActive = false;
   private taskPollTimer?: NodeJS.Timeout;
   private taskPollActive = false;
   private executingTaskIds = new Set<string>();
@@ -318,7 +322,8 @@ class DefaultBotChatRuntime implements BotChatRuntime {
 
     this.publishTopics = new Set(readStringArray(bootstrap.publish_topics));
     this.publishTopic = readString(bootstrap.publish_topics?.[0]);
-    const subscriptions = readStringArray(bootstrap.subscriptions?.map((item) => item.topic));
+    let subscriptions = readStringArray(bootstrap.subscriptions?.map((item) => item.topic));
+    let brokerExpiresAt = bootstrap.broker?.expires_at;
 
     this.statePath = buildBotChatStatePath(config);
     await this.loadState();
@@ -331,6 +336,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       reconnectPeriod: BOT_CHAT_MQTT_RECONNECT_MS,
       connectTimeout: BOT_CHAT_MQTT_CONNECT_TIMEOUT_MS,
       clean: true,
+      resubscribe: false,
       username: readString(bootstrap.broker?.username),
       password: readString(bootstrap.broker?.password),
     });
@@ -378,6 +384,38 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       });
     });
 
+    this.brokerRenewController = new AbortController();
+    const renewalSignal = this.brokerRenewController.signal;
+    this.brokerRenewTimer = setInterval(() => {
+      if (!this.started || this.brokerRenewActive || !brokerExpiresAt ||
+          brokerExpiresAt * 1000 > Date.now() + 60000) return;
+      this.brokerRenewActive = true;
+      void bootstrapBot(backendUrl, botKey, renewalSignal).then((fresh) => {
+        if (!this.started || renewalSignal.aborted || !this.mqttClient) return;
+        const clientId = readString(fresh.client_id);
+        const username = readString(fresh.broker?.username);
+        const password = readString(fresh.broker?.password);
+        const expiresAt = fresh.broker?.expires_at;
+        if (readString(fresh.bot?.id) !== this.botId || !clientId || !username || !password ||
+            !expiresAt || expiresAt * 1000 <= Date.now()) {
+          throw new Error("invalid renewed broker identity or session");
+        }
+        subscriptions = readStringArray(fresh.subscriptions?.map((item) => item.topic));
+        this.publishTopics = new Set(readStringArray(fresh.publish_topics));
+        this.publishTopic = readString(fresh.publish_topics?.[0]);
+        this.qos = normalizeQos(fresh.broker?.qos);
+        brokerExpiresAt = expiresAt;
+        this.connected = false;
+        // mqtt.reconnect(opts) only updates stores; CONNECT credentials live in options.
+        this.mqttClient.options.clientId = clientId;
+        this.mqttClient.options.username = username;
+        this.mqttClient.options.password = password;
+        this.mqttClient.reconnect();
+      }).catch(() => {
+        if (this.started && !renewalSignal.aborted) logger.warn("botchat.mqtt.renewal_failed");
+      }).finally(() => { this.brokerRenewActive = false; });
+    }, 15000);
+    this.brokerRenewTimer.unref();
     this.startTaskPolling(config);
   }
 
@@ -388,6 +426,10 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     this.started = false;
     this.connected = false;
     this.stopTaskPolling();
+    if (this.brokerRenewTimer) clearInterval(this.brokerRenewTimer);
+    this.brokerRenewTimer = undefined;
+    this.brokerRenewController?.abort();
+    this.brokerRenewController = undefined;
     this.rejectConnectWaiters(new Error("mqtt client stopped"));
 
     await new Promise<void>((resolve) => {
@@ -854,10 +896,12 @@ async function createApprover(
 async function bootstrapBot(
   backendUrl: string,
   botKey: string,
+  signal?: AbortSignal,
 ): Promise<BootstrapResponse> {
   const url = `${backendUrl.replace(/\/+$/, "")}/api/v1/bot-runtime/bootstrap`;
   const response = await fetch(url, {
     method: "GET",
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
     headers: {
       Accept: "application/json",
       "X-Bot-Key": botKey,

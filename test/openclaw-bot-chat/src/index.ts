@@ -1,4 +1,5 @@
 import path from "node:path";
+import {mkdir,writeFile} from "node:fs/promises";
 
 import { loadConfig, type PluginConfig } from "./config";
 import {
@@ -44,9 +45,15 @@ export async function main(): Promise<void> {
   const permissionApprover = await createPermissionApprover(config);
   const runtime = new OpenClawBotRuntime(config, agent, permissionApprover);
 
+  let ready=false;
+  await mkdir(config.stateDir,{recursive:true});
+  const heartbeat=async()=>writeFile(path.join(config.stateDir,"health.json"),JSON.stringify({at:Date.now(),ready:ready&&runtime.healthy(),pid:process.pid}),{mode:0o600});
+  const timer=setInterval(()=>void heartbeat().catch(()=>{}),10000);timer.unref();
   const shutdown = async (signal: string): Promise<void> => {
+    ready=false;clearInterval(timer);await heartbeat();
     console.info(`[openclaw-bot-chat] shutting down on ${signal}`);
     await runtime.stop();
+    await agent.close?.();
     process.exit(0);
   };
 
@@ -58,6 +65,7 @@ export async function main(): Promise<void> {
   });
 
   await runtime.start();
+  ready=true;await heartbeat();
   console.info("[openclaw-bot-chat] runtime started");
 }
 
@@ -127,13 +135,15 @@ async function loadHandlerAgent(handlerPath: string): Promise<OpenClawAgent> {
     handlerPath: resolvedPath,
   });
 
-  return createInstrumentedAgent(
+  const instrumented=createInstrumentedAgent(
     "handler",
     {
       handlerPath: resolvedPath,
     },
     async (request) => candidate(request),
   );
+  if(loaded&&typeof loaded==="object"&&"close" in loaded && typeof loaded.close==="function") instrumented.close=()=>Promise.resolve((loaded as {close:()=>Promise<void>}).close());
+  return instrumented;
 }
 
 function createHttpAgent(url: string, timeoutMs: number): OpenClawAgent {
@@ -156,7 +166,7 @@ function createHttpAgent(url: string, timeoutMs: number): OpenClawAgent {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       });
 
       const rawText = await response.text();

@@ -69,6 +69,7 @@ struct SettingsView: View {
                 FrostedBackground()
 
                 ScrollView {
+                    NavigationLink("个人助手") { AssistantView() }.padding()
                     settingsContent
                 }
                 .scrollIndicators(.hidden)

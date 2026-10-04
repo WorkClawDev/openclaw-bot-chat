@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { executeTool } = require("./tool-policy.cjs");
 
 function createMcpRuntimeManager(options) {
   const {
@@ -25,6 +26,9 @@ function createMcpRuntimeManager(options) {
   } = options;
 
   let runtimePromise;
+  let initializedAt=0;
+  let rebuildingPromise;
+  const reconnectDelayMs=options.reconnectDelayMs??30000;
 
   function isToolEnabled(toolName) {
     if (allowedToolsRegex && !allowedToolsRegex.test(toolName)) {
@@ -41,7 +45,7 @@ function createMcpRuntimeManager(options) {
   }
 
   function resolveMcpEnv(rawEnv) {
-    const baseEnv = { ...process.env };
+    const baseEnv = { PATH: process.env.PATH, LANG: "C.UTF-8",HOME:"/nonexistent",USER:"agent",LOGNAME:"agent",SHELL:"/bin/false" };
     if (!isRecord(rawEnv)) {
       return baseEnv;
     }
@@ -110,7 +114,7 @@ function createMcpRuntimeManager(options) {
     return normalizeMcpConfig(parsed);
   }
 
-  async function createRuntime() {
+  async function createRuntime(signal) {
     const config = loadMcpConfig();
     if (!config || !isRecord(config.mcpServers)) {
       return null;
@@ -121,6 +125,9 @@ function createMcpRuntimeManager(options) {
     const runtime = {
       servers: new Map(),
       tools: [],
+      connections: [],
+      health: {},
+      activeCalls:0,
     };
 
     for (const [serverName, serverConfig] of Object.entries(config.mcpServers)) {
@@ -140,24 +147,43 @@ function createMcpRuntimeManager(options) {
         ? path.resolve(readString(serverConfig.cwd))
         : process.cwd();
 
-      const transport = new stdio.StdioClientTransport({ command, args, env, cwd });
+      const transport = new stdio.StdioClientTransport({ command, args, env, cwd, stderr:"pipe" });
       const client = new sdk.Client(
         { name: "openclaw-bot-chat-openai-handler", version: "1.0.0" },
         { capabilities: {} },
       );
 
-      await client.connect(transport);
-      const listed = await client.listTools();
+      let listed;
+      try {
+        await client.connect(transport,{signal,timeout:Math.min(toolTimeoutMs,10000)});
+        listed = await client.listTools(undefined,{signal,timeout:Math.min(toolTimeoutMs,10000)});
+        runtime.connections.push(client);
+        runtime.health[serverName] = { state: "ready" };
+        client.onclose=()=>{runtime.health[serverName]={state:"disconnected"}};
+      } catch (error) {
+        runtime.health[serverName] = { state: "unavailable", error: "connection or discovery failed" };
+        await client.close().catch(() => {});
+        if(signal?.aborted){await Promise.allSettled(runtime.connections.map(connection=>connection.close()));throw signal.reason;}
+        continue;
+      }
       for (const tool of listed.tools || []) {
         const exposedName = includeServerPrefix
           ? `${sanitizeToolPrefix(serverName)}__${tool.name}`
           : String(tool.name);
-        if (!isToolEnabled(exposedName)) {
+        const policy = serverConfig.tools && serverConfig.tools[tool.name];
+        if (!policy || !Array.isArray(policy.capabilities) || policy.capabilities.includes("exec") || (policy.capabilities.some(cap=>cap==="read"||cap==="write") && (!Array.isArray(policy.paths)||!policy.paths.length)) || !isToolEnabled(exposedName)) {
           continue;
         }
         runtime.servers.set(exposedName, {
           client,
+          serverName,
           originalName: tool.name,
+          definition: { name: exposedName, parameters: tool.inputSchema || { type: "object", additionalProperties: true }, policy: {
+            capabilities: policy.capabilities,
+            idempotent: policy.idempotent === true,
+            approvalRequired: policy.approvalRequired !== false,
+            paths: Array.isArray(policy.paths) ? policy.paths : [],
+          } },
         });
         runtime.tools.push({
           type: "function",
@@ -170,9 +196,7 @@ function createMcpRuntimeManager(options) {
       }
     }
 
-    if (runtime.tools.length === 0) {
-      return null;
-    }
+
 
     debugLog("handler.mcp.initialized", {
       servers: runtime.tools.map((tool) => tool.function.name),
@@ -181,14 +205,17 @@ function createMcpRuntimeManager(options) {
     return runtime;
   }
 
-  async function getRuntime() {
+  async function getRuntime(signal) {
+    signal?.throwIfAborted();
+    if(rebuildingPromise)return rebuildingPromise;
     if (runtimePromise) {
-      return runtimePromise;
+      const previous=await runtimePromise;
+      if (!previous || previous.activeCalls || Date.now()-initializedAt<reconnectDelayMs || Object.values(previous.health).every(entry=>entry.state==="ready")) return previous;
+      rebuildingPromise=(async()=>{await Promise.allSettled(previous.connections.map(client=>client.close()));initializedAt=Date.now();runtimePromise=createRuntime(signal).catch(error=>{runtimePromise=undefined;throw error});return runtimePromise})().finally(()=>{rebuildingPromise=undefined});
+      return rebuildingPromise;
     }
-    runtimePromise = createRuntime().catch((error) => {
-      runtimePromise = undefined;
-      throw error;
-    });
+    initializedAt=Date.now();
+    runtimePromise=createRuntime(signal).catch(error=>{runtimePromise=undefined;throw error});
     return runtimePromise;
   }
 
@@ -200,7 +227,7 @@ function createMcpRuntimeManager(options) {
     };
   }
 
-  async function callTool(runtime, toolCall, toolBudget) {
+  async function callTool(runtime, toolCall, toolBudget, context = {}) {
     if (Date.now() - toolBudget.startedAt > totalBudgetMs) {
       throw new Error(`MCP tool budget exceeded total duration ${totalBudgetMs}ms`);
     }
@@ -220,26 +247,30 @@ function createMcpRuntimeManager(options) {
     if (typeof rawArgs === "string" && rawArgs.trim()) {
       args = JSON.parse(rawArgs);
     }
-    enforceToolPermissions(functionName, args, {
-      fileEditEnabled,
-      fileEditAllowedRoots,
-    });
+    const timeout = AbortSignal.timeout(toolTimeoutMs);
+    const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
+    let result;
+    runtime.activeCalls++;
+    try {
+      result = await executeTool(target.definition, args, { ...context, signal }, () => target.client.callTool({ name: target.originalName, arguments: args }, undefined, { signal, timeout: toolTimeoutMs }));
+    } catch (error) {
+      if (signal.aborted) {await target.client.close().catch(()=>{});const uncertain=new Error("MCP call interrupted; external result is uncertain and must be reconciled before retry");uncertain.code="TOOL_UNCERTAIN";throw uncertain;}
+      throw error;
+    } finally {runtime.activeCalls--;}
+    if (result.isError) throw new Error(stringifyToolResult(result));
 
-    const result = await Promise.race([
-      target.client.callTool({ name: target.originalName, arguments: args }),
-      delayReject(toolTimeoutMs, `MCP tool timeout after ${toolTimeoutMs}ms: ${functionName}`),
-    ]);
     return truncateText(stringifyToolResult(result), toolResultMaxChars);
   }
 
-  async function callToolsRound(runtime, toolCalls, toolBudget) {
+  async function callToolsRound(runtime, toolCalls, toolBudget, context = {}) {
     const outputs = [];
     for (let index = 0; index < toolCalls.length; index += maxParallelTools) {
       const batch = toolCalls.slice(index, index + maxParallelTools);
-      const settled = await Promise.allSettled(batch.map((toolCall) => callTool(runtime, toolCall, toolBudget)));
+      const settled = await Promise.allSettled(batch.map((toolCall) => callTool(runtime, toolCall, toolBudget, context)));
       for (let i = 0; i < settled.length; i += 1) {
         const item = settled[i];
         const toolCall = batch[i];
+        if (item.status === "rejected" && (["APPROVAL_PENDING","TOOL_UNCERTAIN"].includes(item.reason.code) || context.signal?.aborted)) throw item.reason;
         if (item.status === "fulfilled") {
           outputs.push({ tool_call_id: toolCall.id, content: item.value });
         } else {
@@ -256,10 +287,11 @@ function createMcpRuntimeManager(options) {
   function summarizeCapabilities(runtime) {
     const hasMcp = Boolean(runtime && Array.isArray(runtime.tools) && runtime.tools.length > 0);
     if (!hasMcp) {
-      return JSON.stringify({ mcp_tools_enabled: false });
+      return JSON.stringify({ mcp_tools_enabled: false,health:runtime?.health??{} });
     }
     return JSON.stringify({
       mcp_tools_enabled: true,
+      health:runtime.health,
       tool_count: runtime.tools.length,
       tool_names: runtime.tools.map((item) => item.function.name),
     });
@@ -271,102 +303,12 @@ function createMcpRuntimeManager(options) {
 
   return {
     getRuntime,
+    close: async () => { const runtime = await runtimePromise; await Promise.allSettled((runtime?.connections || []).map(client => client.close())); runtimePromise = undefined; },
     createToolBudget,
     callToolsRound,
     summarizeCapabilities,
     hasTool,
   };
-}
-
-function enforceToolPermissions(functionName, args, options) {
-  const { fileEditEnabled, fileEditAllowedRoots } = options;
-  const toolName = String(functionName || "");
-
-  if (!isPotentialWriteTool(toolName)) {
-    return;
-  }
-
-  if (!fileEditEnabled) {
-    throw new Error(`Tool '${toolName}' is blocked: file edit permission is disabled`);
-  }
-
-  if (!Array.isArray(fileEditAllowedRoots) || fileEditAllowedRoots.length === 0) {
-    return;
-  }
-
-  const paths = extractPathLikeValues(args);
-  for (const rawPath of paths) {
-    const resolved = path.resolve(process.cwd(), rawPath);
-    const allowed = fileEditAllowedRoots.some((root) => isWithinRoot(resolved, root));
-    if (!allowed) {
-      throw new Error(`Tool '${toolName}' attempted path outside allowed roots: ${rawPath}`);
-    }
-  }
-}
-
-function isPotentialWriteTool(toolName) {
-  return /(write|edit|patch|create|delete|remove|move|rename|mkdir|exec|run|bash|shell)/i.test(toolName);
-}
-
-function extractPathLikeValues(value, keyPath = "") {
-  const output = [];
-  if (typeof value === "string") {
-    if (looksLikePath(keyPath, value)) {
-      output.push(value);
-    }
-    return output;
-  }
-  if (!value || typeof value !== "object") {
-    return output;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      output.push(...extractPathLikeValues(item, keyPath));
-    }
-    return output;
-  }
-  for (const [key, nested] of Object.entries(value)) {
-    const nextPath = keyPath ? `${keyPath}.${key}` : key;
-    output.push(...extractPathLikeValues(nested, nextPath));
-  }
-  return output;
-}
-
-function looksLikePath(keyPath, value) {
-  if (!value || value.length > 4096) {
-    return false;
-  }
-  if (/^[a-z]+:\/\//i.test(value)) {
-    return false;
-  }
-
-  if (looksLikePathKey(keyPath)) {
-    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
-  }
-
-  return looksLikeFilesystemPath(value);
-}
-
-function looksLikePathKey(keyPath) {
-  return /(^|\.)(path|paths|file|files|filepath|filename|target|destination|cwd|root|dir|directory|output|input)$/i.test(keyPath);
-}
-
-function looksLikeFilesystemPath(value) {
-  return (
-    value.startsWith(".") ||
-    value.startsWith("~") ||
-    value.startsWith("/") ||
-    value.startsWith("\\") ||
-    /^[a-z]:[\\/]/i.test(value) ||
-    value.includes("/") ||
-    value.includes("\\")
-  );
-}
-
-function isWithinRoot(targetPath, rootPath) {
-  const normalizedRoot = path.resolve(rootPath);
-  const relative = path.relative(normalizedRoot, targetPath);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function stringifyToolResult(result) {

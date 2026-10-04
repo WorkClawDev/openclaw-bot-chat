@@ -140,3 +140,14 @@ func BuildTopic(prefix string, topicParts ...string) string {
 	}
 	return result
 }
+
+func (c *Client) PublishAgentNotice(topic string, payload []byte) error {
+	if c.client == nil || !c.client.IsConnectionOpen() {
+		return fmt.Errorf("broker unavailable")
+	}
+	token := c.client.Publish(topic, 1, false, payload)
+	if !token.WaitTimeout(3 * time.Second) {
+		return fmt.Errorf("broker publish timeout")
+	}
+	return token.Error()
+}

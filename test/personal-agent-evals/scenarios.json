@@ -1,0 +1,372 @@
+[
+  {
+    "id": "PA-01",
+    "scenario": "default CJS handler supports diagnostics and session-specific memory",
+    "engine": "node",
+    "test": "default CJS handler supports diagnostics and session-specific memory",
+    "real_prompt": "把零散便签整理成工作清单，保存我明确确认的偏好，然后在新会话继续使用。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-02",
+    "scenario": "session and checkpoint state survive reopening",
+    "engine": "node",
+    "test": "session and checkpoint state survive reopening",
+    "real_prompt": "关闭并重新启动助手，核对会话和处理位置保留。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-03",
+    "scenario": "default handler calls isolated OpenAI compatible HTTP fixture",
+    "engine": "node",
+    "test": "default handler calls isolated OpenAI compatible HTTP fixture",
+    "real_prompt": "用真实配置的模型回答工作规划问题，确认可完成请求且无假成功。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "task"
+  },
+  {
+    "id": "PA-04",
+    "scenario": "doctor reports invalid configuration without exposing credentials",
+    "engine": "node",
+    "test": "doctor reports invalid configuration without exposing credentials",
+    "real_prompt": "用缺少模型配置的环境启动 doctor，确认错误可定位且无密钥输出。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-05",
+    "scenario": "real CSV, XLSX, DOCX and PDF text extraction preserves content",
+    "engine": "node",
+    "test": "real CSV, XLSX, DOCX and PDF text extraction preserves content",
+    "real_prompt": "读 CSV、XLSX、DOCX、可提取文本 PDF，分别整理销售汇总与资料摘要。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-06",
+    "scenario": "scanned PDF, invalid format, oversized input and cancellation fail visibly",
+    "engine": "node",
+    "test": "scanned PDF, invalid format, oversized input and cancellation fail visibly",
+    "real_prompt": "上传扫描 PDF、错误扩展名和超限文件，要求给出真实失败原因。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-07",
+    "scenario": "archive bomb is refused before document parsing",
+    "engine": "node",
+    "test": "archive bomb is refused before document parsing",
+    "real_prompt": "上传压缩比异常的文档，确认解析前拒绝。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-08",
+    "scenario": "external file URL without authenticated asset cannot be downloaded",
+    "engine": "node",
+    "test": "external file URL without authenticated asset cannot be downloaded",
+    "real_prompt": "给助手一个未经资产授权的外部文件地址，确认不下载。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-09",
+    "scenario": "table output is an actual workbook and delivery needs the real provider",
+    "engine": "node",
+    "test": "table output is an actual workbook and delivery needs the real provider",
+    "real_prompt": "读取 /workspace/input/sample.csv，计算汇总，生成 /workspace/output/summary.xlsx 并用 local__deliver_file 交付真实文件。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "task"
+  },
+  {
+    "id": "PA-10",
+    "scenario": "stream preserves split UTF-8 and complete tool arguments",
+    "engine": "node",
+    "test": "stream preserves split UTF-8 and complete tool arguments",
+    "real_prompt": "输出包含中文和分段工具参数的流式回答，确认中文字和调用完整。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-11",
+    "scenario": "truncated stream cannot become a successful result",
+    "engine": "node",
+    "test": "truncated stream cannot become a successful result",
+    "real_prompt": "在回答中断网，确认部分文本不被当成完成成果。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-12",
+    "scenario": "cancellation interrupts stream consumption",
+    "engine": "node",
+    "test": "cancellation interrupts stream consumption",
+    "real_prompt": "开始流式工作后停止，确认读取和后续调用取消。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-13",
+    "scenario": "restarting handler preserves approved memory and resumes exact pending tool without repeating model planning",
+    "engine": "node",
+    "test": "restarting handler preserves approved memory and resumes exact pending tool without repeating model planning",
+    "real_prompt": "保存并修改个人记忆，在新进程恢复，核对待授权的原参数不会重规划。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-14",
+    "scenario": "confirmed memory commands use durable provider and delete derived history",
+    "engine": "node",
+    "test": "confirmed memory commands use durable provider and delete derived history",
+    "real_prompt": "显式保存个人偏好后删除，核对新会话不会检索已删除内容。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-15",
+    "scenario": "history consumes 501 offline messages across pages from local cursor",
+    "engine": "node",
+    "test": "history consumes 501 offline messages across pages from local cursor",
+    "real_prompt": "离线收到 501 条工作消息后重连，确认分页补偿无漏项。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-16",
+    "scenario": "outgoing reply id remains stable across restart and separates waiting notice",
+    "engine": "node",
+    "test": "outgoing reply id remains stable across restart and separates waiting notice",
+    "real_prompt": "重复投递同一消息，核对回复 ID 和等待通知 ID 稳定且不同。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-17",
+    "scenario": "100 duplicate deliveries create one logical execution",
+    "engine": "node",
+    "test": "100 duplicate deliveries create one logical execution",
+    "real_prompt": "对同一工作消息重复投递 100 次，确认只执行一次。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-18",
+    "scenario": "crash after persisted result and before broker publish resumes outbox without model repeat",
+    "engine": "node",
+    "test": "crash after persisted result and before broker publish resumes outbox without model repeat",
+    "real_prompt": "在结果已保存但 MQTT 尚未发送时关闭 worker，重启后只补发原结果。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-19",
+    "scenario": "uncertain external side effect does not repeat on crash recovery",
+    "engine": "node",
+    "test": "uncertain external side effect does not repeat on crash recovery",
+    "real_prompt": "外部写入发生后模拟 worker 崩溃，要求核对实际结果，禁止盲目重试。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-20",
+    "scenario": "compression keeps complete tool pairs and historical data out of system role",
+    "engine": "node",
+    "test": "compression keeps complete tool pairs and historical data out of system role",
+    "real_prompt": "长期任务包含成对的工具调用，压缩上下文后继续完成当前目标。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-21",
+    "scenario": "execution gate caps running work and rejects excess queue after custody",
+    "engine": "node",
+    "test": "execution gate caps running work and rejects excess queue after custody",
+    "real_prompt": "并发派发大量工作，确认总体并发及排队上限生效。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-22",
+    "scenario": "personal agent rejects non-owner and group messages before durable custody or execution",
+    "engine": "node",
+    "test": "personal agent rejects non-owner and group messages before durable custody or execution",
+    "real_prompt": "其他用户和群成员尝试让个人助手读取资料，确认没有调用模型或工具。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-23",
+    "scenario": "two executors cannot execute a concurrently claimed run",
+    "engine": "node",
+    "test": "two executors cannot execute a concurrently claimed run",
+    "real_prompt": "两个 worker 同时领取同一工作，核对仅一个执行模型。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-24",
+    "scenario": "waiting for input releases run with durable question rather than reporting success",
+    "engine": "node",
+    "test": "waiting for input releases run with durable question rather than reporting success",
+    "real_prompt": "派发缺少目标文件的任务，助手保存问题并释放执行租约。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-25",
+    "scenario": "user abort transitions controlled execution to cancelled",
+    "engine": "node",
+    "test": "user abort transitions controlled execution to cancelled",
+    "real_prompt": "运行任务时停止，核对受控工具取消且任务保留已有成果。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-26",
+    "scenario": "empty roots, traversal, links, hidden files and dangling links are denied",
+    "engine": "node",
+    "test": "empty roots, traversal, links, hidden files and dangling links are denied",
+    "real_prompt": "未设置 roots、符号链接和隐藏凭据路径读取请求必须拒绝。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-27",
+    "scenario": "schema and expired or modified approvals never execute side effects",
+    "engine": "node",
+    "test": "schema and expired or modified approvals never execute side effects",
+    "real_prompt": "改变审批参数或使用过期审批，核对副作用不执行。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-28",
+    "scenario": "local write goes through common schema and authorized roots",
+    "engine": "node",
+    "test": "local write goes through common schema and authorized roots",
+    "real_prompt": "生成 Markdown 结果，只能写入授权输出目录。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-29",
+    "scenario": "cancellation kills process group before delayed writes",
+    "engine": "node",
+    "test": "cancellation kills process group before delayed writes",
+    "real_prompt": "执行有延迟写入的受控进程并取消，核对之后没有文件副作用。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-30",
+    "scenario": "shell cannot fall back to host when isolated runner is absent",
+    "engine": "node",
+    "test": "shell cannot fall back to host when isolated runner is absent",
+    "real_prompt": "没有隔离 runner 时请求 Shell，核对明确拒绝。",
+    "real_criteria": "检查真实执行事件、权限拒绝或持久数据及产物；不得以模型自述作为通过证据。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-31",
+    "scenario": "TestConfirmedMemoryDeletionInvalidatesContext",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/repository",
+    "test": "TestConfirmedMemoryDeletionInvalidatesContext",
+    "real_prompt": "确认保存记忆，删除后核对数据库及派生摘要不再检索。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-32",
+    "scenario": "TestScheduleRestartDedupAndMissedPolicy",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/repository",
+    "test": "TestScheduleRestartDedupAndMissedPolicy",
+    "real_prompt": "创建周期计划后关闭服务并跨过多个时间点，重启只补跑一次。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-33",
+    "scenario": "TestSchedulePreservesLocalHourAcrossDST",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/repository",
+    "test": "TestSchedulePreservesLocalHourAcrossDST",
+    "real_prompt": "跨越夏令时变化执行每天计划，核对用户当地时间保持。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-34",
+    "scenario": "TestRunCompetitionFencingAndWaiting",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/repository",
+    "test": "TestRunCompetitionFencingAndWaiting",
+    "real_prompt": "让两个 worker 竞争并尝试旧 fence 写入，核对旧执行者写入失败。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-35",
+    "scenario": "TestArtifactOwnershipAndVersion",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/repository",
+    "test": "TestArtifactOwnershipAndVersion",
+    "real_prompt": "另一账户尝试下载产物，核对权限拒绝且版本/hash 与原账户一致。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-36",
+    "scenario": "TestCancelledCrashedWorkerIsReapedAndFenced",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/repository",
+    "test": "TestCancelledCrashedWorkerIsReapedAndFenced",
+    "real_prompt": "请求停止后 worker 崩溃，等待租约到期，核对 run 终止且不能复活。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-37",
+    "scenario": "TestAgentTaskResultRequiresUserReview",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/service",
+    "test": "TestAgentTaskResultRequiresUserReview",
+    "real_prompt": "完成派发任务，确认进入待审核，只有用户接受才完成。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-38",
+    "scenario": "TestAgentApprovalOwnerAndParameterBinding",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/service",
+    "test": "TestAgentApprovalOwnerAndParameterBinding",
+    "real_prompt": "批准指定工具参数后篡改请求，确认旧审批无效。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-39",
+    "scenario": "TestBrokerCredentialsBoundScopedAndRevoked",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/service",
+    "test": "TestBrokerCredentialsBoundScopedAndRevoked",
+    "real_prompt": "使用其他 clientID、其他主题或撤销的 bot key 连接 broker，确认拒绝。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  },
+  {
+    "id": "PA-40",
+    "scenario": "TestBrokerExpiryStoreFailureAndCallbackFailClosed",
+    "engine": "go",
+    "package": "github.com/openclaw-bot-chat/backend/internal/service",
+    "test": "TestBrokerExpiryStoreFailureAndCallbackFailClosed",
+    "real_prompt": "让会话过期或 Redis 离线，确认 broker 认证和授权失败时拒绝。",
+    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "live_mode": "manual"
+  }
+]
