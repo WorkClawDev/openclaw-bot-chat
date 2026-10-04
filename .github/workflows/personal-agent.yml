@@ -25,10 +25,18 @@ jobs:
       - run: node test/personal-agent-evals/run.cjs
       - run: npm --prefix extensions/openclaw-bot-chat ci && npm --prefix extensions/openclaw-bot-chat run check && npm --prefix extensions/openclaw-bot-chat run build && npm --prefix extensions/openclaw-bot-chat test
       - run: npm --prefix frontend ci && npm --prefix frontend run build
+      - name: Verify agent chat and scrolling in Chromium
+        working-directory: frontend
+        run: |
+          npx playwright install --with-deps chromium
+          CHAT_UI_START=1 npm run test:chat
       - run: npm --prefix frontend audit --omit=dev && npm --prefix test/openclaw-bot-chat audit --omit=dev
       - run: OPENAI_COMPAT_BASE_URL=https://fixture.invalid/v1 OPENAI_COMPAT_MODEL=fixture docker compose -f deploy/personal-agent/compose.yaml -p personal-agent config --quiet
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: deterministic-evaluation
-          path: test/personal-agent-evals/results/
+          path: |
+            test/personal-agent-evals/results/
+            run/agent-chat-ui/playwright/
+            run/agent-chat-ui/browser-results.json

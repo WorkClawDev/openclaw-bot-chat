@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChat } from '@/contexts/ChatContext'
 import { botsApi } from '@/lib/api'
@@ -10,14 +10,11 @@ import { Input } from '@/components/Input'
 import { Avatar } from '@/components/Avatar'
 import { IconButton } from '@/components/IconButton'
 import { Modal } from '@/components/Modal'
-import { PaneHeader } from '@/components/PaneHeader'
-import { StatusPill } from '@/components/StatusPill'
 import { WorkspaceCollectionPane } from '@/components/WorkspaceCollectionPane'
 import { LoadingPage } from '@/components/Loading'
 import { ConversationItem } from '@/components/Chat/ConversationItem'
-import { MessageBubble } from '@/components/Chat/MessageBubble'
-import { ChatInput } from '@/components/Chat/ChatInput'
-import { useAnchoredChatScroll } from '@/components/Chat/useAnchoredChatScroll'
+import { AgentIcon } from '@/components/Chat/AgentIcon'
+import { AgentConversation } from '@/components/Chat/AgentConversation'
 import { cropAndUploadAvatar } from '@/lib/imageUpload'
 import type { Bot, BotKey } from '@/lib/types'
 
@@ -104,10 +101,7 @@ export default function BotsPage() {
   }
 
   const currentMessages = currentConversation ? messages.get(currentConversation.id) || [] : []
-  const chatScroll = useAnchoredChatScroll({
-    conversationId: currentConversation?.type === 'bot' ? currentConversation.id : undefined,
-    messages: currentMessages,
-  })
+  const mentionNames = useMemo(() => bots.map(bot => bot.name), [bots])
 
   if (authLoading) return <LoadingPage />
   if (!isAuthenticated) return null
@@ -115,15 +109,16 @@ export default function BotsPage() {
   return (
     <AppLayout>
       <WorkspaceCollectionPane
-        title="Bots"
+        title="Agents"
+        description="A place to think, make, and get things done."
         createLabel="Create bot"
-        searchPlaceholder="Search bots..."
+        searchPlaceholder="Find an agent…"
         searchTerm={searchTerm}
         onSearchChange={setSearchTerm}
         items={filteredBots}
         isLoading={chatLoading}
         isVisible={showMobileList}
-        emptyLabel="No bots found"
+        emptyLabel="No agents found"
         emptyActionLabel="Create one"
         onCreate={() => { setView('create'); setShowMobileList(false); }}
         renderItem={(bot) => (
@@ -134,86 +129,17 @@ export default function BotsPage() {
             isActive={selectedBot?.id === bot.id && view === 'chat'}
             onClick={() => handleBotClick(bot)}
             status="none"
-            lastMessage={bot.description || ''}
+            lastMessage={bot.description || 'Open workspace'}
           />
         )}
       />
 
       {/* Column 3: Main Area */}
-      <section className={`flex-1 h-full flex flex-col bg-white relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
-        {view === 'chat' && currentConversation ? (
-          <>
-            <PaneHeader
-              leading={
-                <>
-                <IconButton
-                  onClick={() => setShowMobileList(true)}
-                  label="Back to bots"
-                  variant="ghost"
-                  className="md:hidden"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
-                </IconButton>
-                <Avatar name={currentConversation.name} src={currentConversation.avatar} size="md" />
-                </>
-              }
-              title={currentConversation.name}
-              subtitle={
-                <>
-                  <StatusPill tone={connectionState === 'connected' ? 'success' : 'warning'}>
-                    {connectionState === 'connected' ? 'online · bot' : `${connectionState || 'connecting'} · bot`}
-                  </StatusPill>
-                </>
-              }
-              actions={
-                <IconButton
-                  onClick={() => setView('edit')}
-                  label="Configure bot"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </IconButton>
-              }
-            />
-
-            {/* Messages */}
-            <div
-              ref={chatScroll.scrollRef}
-              data-testid="bot-message-scroll"
-              className="flex-1 overflow-y-auto overscroll-contain px-4 py-5 md:px-6 md:py-6"
-              style={{ overflowAnchor: 'none' }}
-            >
-              {currentMessages.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center gap-4 text-slate-300 opacity-60">
-                  <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center">
-                    <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                    </svg>
-                  </div>
-                  <p className="text-sm font-medium italic">
-                    {isRefreshingMessages ? 'Loading messages...' : `Start your conversation with ${selectedBot?.name}`}
-                  </p>
-                </div>
-              ) : (
-                <div ref={chatScroll.contentRef} className="flex min-h-full flex-col justify-end">
-                  {currentMessages.map((msg) => (
-                    <MessageBubble
-                      key={msg.id}
-                      message={msg}
-                      isOwn={msg.sender_id === user?.id}
-                      showSenderName={false}
-                      mentions={bots.map(b => b.name)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Input */}
-            <ChatInput onSendMessage={sendMessage} placeholder={`Message ${selectedBot?.name}...`} />
-          </>
+      <section className={`flex-1 min-w-0 h-full flex flex-col bg-white relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
+        {view === 'chat' && currentConversation?.type === 'bot' && selectedBot ? (
+          <AgentConversation key={currentConversation.id} bot={selectedBot} conversation={currentConversation}
+            messages={currentMessages} mentions={mentionNames} userId={user?.id} loading={isRefreshingMessages}
+            connectionState={connectionState} onBack={() => setShowMobileList(true)} onConfigure={() => setView('edit')} onSend={sendMessage} />
         ) : view === 'create' || view === 'edit' ? (
           <div className="flex-1 overflow-y-auto p-5 md:p-10 lg:p-12 max-w-2xl mx-auto w-full">
             <header className="mb-6 md:mb-8 flex items-start gap-3">
@@ -244,16 +170,12 @@ export default function BotsPage() {
             />
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-slate-300 gap-6">
-            <div className="w-32 h-32 bg-slate-50 rounded-3xl flex items-center justify-center shadow-inner">
-               <svg className="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-            </div>
-            <div className="text-center">
-              <h3 className="text-lg font-bold text-slate-400">Select a bot to start chatting</h3>
-              <p className="text-sm">Or create a new one using the button in the side list.</p>
-            </div>
+          <div className="agent-home">
+            <span className="agent-welcome-mark"><AgentIcon name="spark" size={30} /></span>
+            <p className="agent-eyebrow mt-6">YOUR AGENT WORKSPACE</p>
+            <h1>Good work starts with a conversation.</h1>
+            <p>Choose an agent to explore an idea, work with your files, or move a task forward.</p>
+            <button className="agent-primary-button mt-6" onClick={() => { setView('create'); setShowMobileList(false) }}>Create an agent <span aria-hidden="true">＋</span></button>
           </div>
         )}
       </section>

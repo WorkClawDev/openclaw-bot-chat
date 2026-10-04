@@ -28,9 +28,10 @@ export function ConversationItem({
   return (
     <button
       onClick={onClick}
-      className={`group relative flex h-[76px] w-full items-center gap-3 px-4 text-left transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500 ${
+      aria-current={isActive ? 'true' : undefined}
+      className={`conversation-item group relative flex h-[76px] w-full items-center gap-3 px-4 text-left transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500 ${
         isActive
-          ? 'bg-sky-50'
+          ? 'is-active bg-sky-50'
           : 'hover:bg-white/70'
       }`}
     >

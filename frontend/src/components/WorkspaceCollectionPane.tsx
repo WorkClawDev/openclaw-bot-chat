@@ -6,6 +6,7 @@ import { IconButton } from './IconButton'
 
 interface WorkspaceCollectionPaneProps<T> {
   title: string
+  description?: string
   createLabel: string
   searchPlaceholder: string
   searchTerm: string
@@ -21,6 +22,7 @@ interface WorkspaceCollectionPaneProps<T> {
 
 export function WorkspaceCollectionPane<T>({
   title,
+  description,
   createLabel,
   searchPlaceholder,
   searchTerm,
@@ -34,16 +36,17 @@ export function WorkspaceCollectionPane<T>({
   renderItem,
 }: WorkspaceCollectionPaneProps<T>) {
   return (
-    <aside className={`h-full w-full flex-shrink-0 flex-col overflow-hidden border-r border-slate-200/70 bg-white/80 backdrop-blur-xl md:w-[320px] lg:w-[340px] ${isVisible ? 'flex' : 'hidden md:flex'}`}>
+    <aside className={`workspace-collection h-full w-full flex-shrink-0 flex-col overflow-hidden border-r border-slate-200/70 md:w-[260px] lg:w-[272px] ${isVisible ? 'flex' : 'hidden md:flex'}`}>
       <div className="space-y-4 border-b border-slate-200/70 p-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold tracking-normal text-slate-800">{title}</h2>
+          <div><p className="agent-eyebrow mb-1">WORKSPACE</p><h2 className="text-lg font-semibold tracking-normal text-slate-800">{title}</h2></div>
           <IconButton onClick={onCreate} label={createLabel} variant="primary" size="sm">
             <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
             </svg>
           </IconButton>
         </div>
+        {description && <p className="text-xs leading-relaxed text-slate-500">{description}</p>}
         <div className="relative">
           <input
             type="text"

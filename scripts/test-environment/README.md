@@ -48,6 +48,17 @@ Chromium is not at `/usr/bin/chromium`, or install Playwright's Chromium using
 `cd frontend && npx playwright install chromium`. Screenshots remain under the
 ignored test state directory.
 
+`npm --prefix frontend run test:chat` runs the Agent workspace browser contracts
+against the running frontend (port 3000 by default). They use isolated HTTP/MQTT
+fixtures to check a 500-message virtual timeline, streaming and reading-position
+preservation, approvals, run actions, downloads, Agent isolation, mobile layout,
+dark mode, reduced motion, and IME composition. These fixtures do not replace the
+live broker/persistence checks above. Set `CHAT_UI_URL` to test another running
+frontend. After `npm --prefix frontend run build`, `CHAT_UI_START=1 npm --prefix
+frontend run test:chat` can start its own production server on port 13002.
+Screenshots, traces, and the JSON report are written to `run/agent-chat-ui/` and
+are excluded from Git. CI also runs this suite and uploads its evidence.
+
 The independent production-container and real-model acceptance results are in
 [the project acceptance report](../../docs/PROJECT_ACCEPTANCE.md).
 
