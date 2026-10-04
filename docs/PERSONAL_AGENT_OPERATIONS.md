@@ -12,7 +12,7 @@
 
 ## 隔离启动
 
-先递归克隆 `ChangerR/mqtts` 到本项目的同级目录，或设置绝对路径 `MQTTS_SOURCE_DIR`。所有命令在仓库根目录执行。使用 Node ≥22，本次主机和 worker 验证为 Node 24，前端使用 Node 22 镜像。
+先选择独立构建的 MQTTS 镜像，在部署 `.env` 设置 `MQTTS_IMAGE`；本项目不再编译 Broker 源码。所有命令在仓库根目录执行。使用 Node ≥22，本次主机和 worker 验证为 Node 24，前端使用 Node 22 镜像。
 
 ```sh
 node --version
@@ -25,7 +25,7 @@ node scripts/personal-agent-prepare.cjs
 先启动基础服务和 Web，使用隔离账户创建自己的 bot，从界面生成 bot key。将其填入 `.runtime/bot-key`，模型密钥填入 `.runtime/model-key`，不要把密钥放进命令参数或 Git。没有配置这些值时 worker 会拒绝启动。
 
 ```sh
-docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent up --build -d frontend
+docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent --profile broker up --build -d mqtts frontend
 docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/compose.yaml -p personal-agent up --build -d worker
 ```
 
@@ -45,7 +45,7 @@ docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/co
 
 会话有效期默认300秒，限制为60–300秒。MQTTS 在每次发布、订阅和投递时重新校验权限及过期时间，已建立订阅在移出群聊、封禁账号或撤销 Agent Key 后也不能继续接收新消息；已经交付给客户端的历史内容不可能追回。worker 提前续期，Web 定时刷新，iOS 断开后重新 bootstrap。过期连接可能保持 TCP，但不能继续读写。个人执行入口另外绑定真实 MQTT transport topic，仅 owner 私聊可以发起工具。
 
-配置 `BROKER_SECURITY_CALLBACK_TOKEN`（≥32字符）和 `BROKER_SECURITY_SESSION_TTL_SECONDS`；后端 `MQTT_PASSWORD` 同样≥32字符，release 配置缺失会拒绝启动。MQTTS 从独立 secret 读取 callback token，backend 先启动 HTTP 再异步连接 broker，持久订阅成功后才返回 ready。`BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 配合 broker `message_identity_prefix: "chat/"` 阻止伪造消息发送者。
+配置 `BROKER_SECURITY_CALLBACK_TOKEN`（≥32字符）和 `BROKER_SECURITY_SESSION_TTL_SECONDS`；后端 `MQTT_PASSWORD` 同样≥32字符，release 配置缺失会拒绝启动。MQTTS 从独立 secret 读取 callback token，backend 先启动 HTTP 再异步连接 broker，持久订阅成功后才返回 ready。`BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 配合通用 `publish_payload: base64` 回调，由后端解析原始消息并阻止发送者冒充；MQTTS 不理解聊天字段。
 
 ## 工具、文件与不确定结果
 

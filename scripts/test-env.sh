@@ -54,7 +54,7 @@ prepare() {
 up() {
   prepare
   compose up -d --wait --wait-timeout 120 postgres redis
-  compose up --build -d --force-recreate --wait --wait-timeout 120 mqtts
+  compose up -d --force-recreate --wait --wait-timeout 120 mqtts
   compose up -d --force-recreate --wait --wait-timeout 120 storage
   compose up -d --force-recreate --wait --wait-timeout 240 backend frontend proxy
   node "$TOOLS_DIR/seed.mjs"
@@ -64,17 +64,17 @@ up() {
 }
 
 status() {
-  compose --profile fixtures ps
+  compose --profile broker --profile fixtures ps
   node -e 'const fs=require("fs"),{parseEnv}=require("util");const c=parseEnv(fs.readFileSync(process.argv[1],"utf8"));console.log("Web: "+c.TEST_PUBLIC_URL);console.log("Credentials: "+process.argv[2])' "$ENV_FILE" "$STATE_DIR/account.json"
 }
 
 case "${1:-up}" in
   up) up ;;
   install) prepare ;;
-  down) compose --profile fixtures down ;;
-  restart) compose --profile fixtures down; up ;;
+  down) compose --profile broker --profile fixtures down ;;
+  restart) compose --profile broker --profile fixtures down; up ;;
   status) status ;;
-  logs) compose --profile fixtures logs --tail 80 "${@:2}" ;;
+  logs) compose --profile broker --profile fixtures logs --tail 80 "${@:2}" ;;
   smoke) node "$TOOLS_DIR/smoke.mjs" ;;
   browser) node "$TOOLS_DIR/browser-smoke.mjs" ;;
   check)

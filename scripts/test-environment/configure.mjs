@@ -25,6 +25,7 @@ try {
       TEST_MQTT_WS_PORT: process.env.TEST_MQTT_WS_PORT || '8083',
       TEST_FRONTEND_UID: String(process.getuid?.() ?? 1000),
       TEST_FRONTEND_GID: String(process.getgid?.() ?? 1000),
+      MQTTS_IMAGE: process.env.MQTTS_IMAGE || 'mqtts:local',
       TEST_NODE_IMAGE: 'mirror.gcr.io/library/node:22-bookworm-slim',
       TEST_POSTGRES_IMAGE: 'mirror.gcr.io/library/postgres:15-alpine',
       TEST_REDIS_IMAGE: 'mirror.gcr.io/library/redis:7-alpine',

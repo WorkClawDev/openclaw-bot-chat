@@ -1,8 +1,9 @@
 # Local test environment
 
 Run on Linux x86_64 from the repository root with Docker Compose v2, Node.js 22+,
-npm, Go 1.25+, curl, and tar. Clone `ChangerR/mqtts` recursively beside this
-repository, or set `MQTTS_SOURCE_DIR` to its absolute path:
+npm, Go 1.25+, curl, and tar. Set `MQTTS_IMAGE` to a prebuilt broker image as
+described in [the setup guide](../../docs/MQTTS_ACCESS.md). Broker builds/releases
+belong to its own repository; this test stack never checks out or compiles it:
 
 ```bash
 ./scripts/test-env.sh up

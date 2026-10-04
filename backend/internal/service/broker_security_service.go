@@ -52,8 +52,33 @@ type BrokerMessageIdentity struct {
 	Topic          string              `json:"topic"`
 }
 
-// The broker extracts identity from the actual publish packet. The frontend
-// cannot claim to be another group member or an Agent merely by changing JSON.
+// MaxBrokerPayloadBytes matches the application's configured MQTT packet limit.
+// The generic broker forwards opaque bytes; all message parsing belongs here.
+const MaxBrokerPayloadBytes = 1024 * 1024
+
+func (s *BrokerSecurityService) AuthorizePublish(ctx context.Context, username, clientID, topic, encoding string, payload *string) bool {
+	if payload == nil {
+		return encoding == "" && s.AuthorizeMessage(ctx, username, clientID, topic, nil)
+	}
+	if encoding != "base64" || len(*payload) > base64.StdEncoding.EncodedLen(MaxBrokerPayloadBytes) {
+		return false
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(*payload)
+	if err != nil || len(raw) > MaxBrokerPayloadBytes {
+		return false
+	}
+	if !strings.HasPrefix(topic, "chat/") {
+		return true
+	}
+	var message *BrokerMessageIdentity
+	if json.Unmarshal(raw, &message) != nil || message == nil {
+		return false
+	}
+	return s.AuthorizeMessage(ctx, username, clientID, topic, message)
+}
+
+// Claimed identity comes from the actual publish packet forwarded by the broker.
+// The frontend cannot impersonate another group member or Agent by changing JSON.
 func (s *BrokerSecurityService) AuthorizeMessage(ctx context.Context, username, clientID, topic string, message *BrokerMessageIdentity) bool {
 	if !strings.HasPrefix(topic, "chat/") {
 		return true

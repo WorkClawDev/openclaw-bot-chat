@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"encoding/base64"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/openclaw-bot-chat/backend/internal/service"
-	"net/http"
 )
 
 type BrokerSecurityHandler struct {
@@ -15,14 +17,19 @@ func (h *BrokerSecurityHandler) Register(router *gin.Engine) {
 	router.POST("/internal/broker/authorization", h.Authorize)
 }
 func (h *BrokerSecurityHandler) call(c *gin.Context, auth bool) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 8192)
+	limit := int64(8192)
+	if !auth {
+		limit += int64(base64.StdEncoding.EncodedLen(service.MaxBrokerPayloadBytes))
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 	var req struct {
-		Username string                         `json:"username"`
-		Password string                         `json:"password"`
-		ClientID string                         `json:"clientid"`
-		Action   string                         `json:"action"`
-		Topic    string                         `json:"topic"`
-		Message  *service.BrokerMessageIdentity `json:"message"`
+		Username        string  `json:"username"`
+		Password        string  `json:"password"`
+		ClientID        string  `json:"clientid"`
+		Action          string  `json:"action"`
+		Topic           string  `json:"topic"`
+		PayloadEncoding string  `json:"payload_encoding"`
+		Payload         *string `json:"payload"`
 	}
 	allowed := false
 	var expiry int64
@@ -32,7 +39,7 @@ func (h *BrokerSecurityHandler) call(c *gin.Context, auth bool) {
 		} else {
 			allowed = h.Service.Authorize(c.Request.Context(), req.Username, req.ClientID, req.Action, req.Topic)
 			if allowed && req.Action == "publish" {
-				allowed = h.Service.AuthorizeMessage(c.Request.Context(), req.Username, req.ClientID, req.Topic, req.Message)
+				allowed = h.Service.AuthorizePublish(c.Request.Context(), req.Username, req.ClientID, req.Topic, req.PayloadEncoding, req.Payload)
 			}
 		}
 	}

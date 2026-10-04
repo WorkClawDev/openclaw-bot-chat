@@ -99,6 +99,14 @@ try {
     await eventually(() => userConnection.received.some(row => row.id === reply.id), 'Browser did not receive Agent reply');
     await eventually(async () => { const history = await call(owner, 'GET', `/messages/${channel}`); return [request.id, reply.id].every(id => history.some(row => row.id === id)); }, 'Request and reply were not persisted');
   }
+  // The generic broker forwards opaque bytes; the application inspects identity.
+  // This exceeds the former 8 KiB metadata-only callback body limit.
+  const largeBody = '独立 Broker / 应用权限\n'.repeat(1024).trim();
+  const large = payload(owner, dm, largeBody);
+  await send(userConnection, large);
+  await eventually(() => botConnection.received.some(row => row.id === large.id && row.content.body === largeBody), 'Large UTF-8 payload changed in transit');
+  await eventually(async () => (await call(owner, 'GET', `/messages/${dm}`)).some(row => row.id === large.id && row.content.body === largeBody), 'Large payload was not persisted intact');
+  pass('generic opaque payload callback preserves large UTF-8 messages and application persistence');
   const spoof = payload(stranger, topic, 'Forged sender');
   await send(userConnection, spoof).catch(() => {});
   await sleep(350);

@@ -23,9 +23,8 @@ services:
       timeout: 3s
       retries: 15
   mqtts:
+    profiles: [broker]
     image: ${MQTTS_IMAGE:-mqtts:local}
-    build:
-      context: ${MQTTS_SOURCE_DIR:-../../../mqtts}
     secrets: [broker-token]
     volumes:
       - ./mqtts.yaml:/app/config/mqtts.yaml:ro
@@ -70,7 +69,6 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-      mqtts: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
     ports: ["127.0.0.1:18080:8080"]
     environment:
@@ -80,11 +78,11 @@ services:
       DATABASE_USER: agent
       DATABASE_DBNAME: personal_agent
       REDIS_HOST: redis
-      MQTT_BROKER: tcp://mqtts:1883
+      MQTT_BROKER: ${MQTT_BROKER:-tcp://mqtts:1883}
       MQTT_CLIENT_ID: personal-agent-backend
       MQTT_USERNAME: personal-agent-backend
-      MQTT_TCP_PUBLIC_URL: mqtt://127.0.0.1:1885
-      MQTT_WS_PUBLIC_URL: ws://127.0.0.1:8085/mqtt
+      MQTT_TCP_PUBLIC_URL: ${MQTT_TCP_PUBLIC_URL:-mqtt://127.0.0.1:1885}
+      MQTT_WS_PUBLIC_URL: ${MQTT_WS_PUBLIC_URL:-ws://127.0.0.1:8085/mqtt}
       BROKER_SECURITY_SESSION_TTL_SECONDS: 300
       BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
       AUTH_PHONE_ENABLED: "false"
@@ -144,7 +142,7 @@ services:
     environment:
       PERSONAL_AGENT_SECRET_BINDINGS: BOT_CHAT_BOT_KEY:bot-key OPENAI_COMPAT_API_KEY:model-key
       BOT_CHAT_BACKEND_URL: http://backend:8080
-      BOT_CHAT_MQTT_TCP_URL: mqtt://mqtts:1883
+      BOT_CHAT_MQTT_TCP_URL: ${MQTT_WORKER_URL:-mqtt://mqtts:1883}
       OPENAI_COMPAT_WORKSPACE_ID: personal-agent-workspace
       OPENCLAW_STATE_DIR: /state
       OPENCLAW_AGENT_HANDLER: /app/examples/openai-compatible-handler.cjs

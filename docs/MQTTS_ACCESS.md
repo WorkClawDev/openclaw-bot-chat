@@ -4,30 +4,72 @@
 指你的 C++ 项目；原生监听是 TCP/WS，公网 TLS/WSS 由入口代理终止。
 聊天数据继续存储在 PostgreSQL，Redis 保存短期 MQTT 身份。
 
-## 配套部署
+## 两个项目的边界
 
-递归克隆两个仓库为同级目录。MQTTS 必须包含本次 HTTP auth provider、TCP/WS
-认证和投递权限检查，旧 main 不具备这些能力。合并配套 PR 后再使用默认分支；
-验收期间使用 `codex/openclaw-auth`。可以用绝对路径 `MQTTS_SOURCE_DIR` 覆盖。
+MQTTS 是独立的通用 Broker：独立源码、构建、测试和版本发布，不读取本项目的
+数据库，不理解 user/admin、Agent、群聊或聊天 JSON。HTTP provider 是可选的
+通用扩展，也可使用它自己的 SQLite/Redis provider。聊天项目通过 MQTT 和
+[HTTP 授权契约 v1](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/docs/http-auth.md)
+接入；所有业务权限、发送者识别与适配代码由本项目维护。
+
+启用本项目的 HTTP 授权配置后，客户端操作仍需后端返回授权结果。这个运行时
+调用是可配置的接口依赖；无需共享源码、数据库或发布流程。后端不可用时，使用
+此策略的客户端请求被拒绝，但 Broker 本身可先启动。不要通过关闭认证规避业务
+权限检查。
+
+## 使用独立构建的镜像
+
+本仓库不再检出或编译 MQTTS 源码，也不要求两个仓库为同级目录。设置
+`MQTTS_IMAGE` 为已构建并验证的镜像标签或 registry digest。Broker 仓库的 CI
+提供 `mqtts-image-<source-sha>-linux-amd64` 工件，版本标签的 Release 提供相同
+运行镜像；下载后按以下方式装载：
 
 ```sh
-git clone --recurse-submodules https://github.com/ChangerR/mqtts.git ../mqtts
-# 配套 PR 合并前，在 ../mqtts 检出 codex/openclaw-auth。
+# 在下载目录执行，先核对 metadata.json 中的 source_revision。
+sha256sum -c SHA256SUMS
+docker load --input mqtts-image.tar.gz
+# 使用 metadata.json 的 image 值，也可自行 retag/push 到私有 registry。
 ```
 
-根目录 Compose 要求独立随机 `BROKER_SECURITY_CALLBACK_TOKEN`、`MQTT_PASSWORD`
-和 `JWT_SECRET`（至少32字符），放在忽略的 `.env`。不要把密码写入 MQTT URL。
-`MQTT_USERNAME`、`MQTT_CLIENT_ID` 是后端持久消费者身份；bootstrap 返回的是
-各客户端独立随机会话，不能把后端密码填入 Web 或 Agent。
+镜像需要支持 HTTP 契约 v1 的 `publish_payload: base64`。当前 PR 验收版本记录
+在 `broker/mqtts/compatibility.json`，CI 直接下载那次独立构建的镜像工件，不编译
+C++。工件保留90天；长期部署使用独立 Release 下载或固定 registry digest。
+`MQTTS_TEST_IMAGE` 仓库变量/手动工作流输入可以指定要测试的已发布镜像。
+MQTTS 新版本先经过本项目兼容性验证，再显式升级部署的镜像引用。
 
-`docker compose up --build -d` 使用 `broker/mqtts/mqtts.yaml`；专用个人助手
-Compose 使用 `deploy/personal-agent/mqtts.yaml`，从 `/run/secrets/broker-token`
-读取回调 token。`node scripts/personal-agent-prepare.cjs` 生成所需秘密。
-`scripts/test-env.sh up` 也默认使用 MQTTS。旧 EMQX 配置文件仅保留供迁移参考。
+根目录 Compose 需要独立随机 `BROKER_SECURITY_CALLBACK_TOKEN`、`MQTT_PASSWORD`
+和 `JWT_SECRET`（至少32字符），放在忽略的 `.env`，同时设置 `MQTTS_IMAGE`。
+不要把密码写入 MQTT URL。`MQTT_USERNAME`、`MQTT_CLIENT_ID` 是后端持久消费者
+身份；bootstrap 返回各客户端独立随机会话，不能把后端密码填入 Web 或 Agent。
 
-后端先启动 HTTP，再异步连接 Broker；MQTTS 启动不要求回调已经在线，但回调
-失败时拒绝客户端。`/health/ready` 仅在 DB、Redis、MQTT 持久订阅均可用时成功。
-Compose 的 Broker 健康检查只验证监听端口，应用就绪应检查后端 ready。
+```sh
+# broker profile 只启动预构建镜像；--build 仅构建本项目服务。
+docker compose --profile broker up --build -d
+```
+
+根 Compose 使用 `broker/mqtts/mqtts.yaml`；个人助手 Compose 使用
+`deploy/personal-agent/mqtts.yaml`，从 `/run/secrets/broker-token` 读取回调 token。
+`node scripts/personal-agent-prepare.cjs` 生成本项目的秘密。测试脚本
+`scripts/test-env.sh up` 默认启动选定的预构建镜像；不会编译 Broker。
+旧 EMQX 配置文件仅保留供迁移参考。
+
+## 连接单独部署的 Broker
+
+在独立 MQTTS 部署中配置 HTTP provider，将认证/授权 URL 指向可达的聊天后端
+私网地址，并让两侧使用相同 callback token。本项目提供的 YAML 是消费方接入
+示例，外部 Broker 应按自己的部署地址调整。无需把后端放进 Broker 的 Compose。
+
+聊天项目 `.env` 设置 `MQTT_BROKER`、`MQTT_TCP_PUBLIC_URL`、`MQTT_WS_PUBLIC_URL`
+以及上述后端与回调凭据，然后**不启用 broker profile**：
+
+```sh
+docker compose up --build -d
+```
+
+此时不会创建本地 MQTTS 容器。后端先启动 HTTP，再异步连接 Broker；
+`/health/ready` 仅在 DB、Redis、MQTT 持久订阅均可用时成功。Broker 端口健康
+不等于应用已经就绪。个人助手 worker 还需设置 `MQTT_WORKER_URL` 为 worker
+可达的 TCP/TLS 地址。公网入口和证书配置见下文。
 
 ## 角色与资源范围
 
@@ -76,10 +118,18 @@ MQTTS 在发布、订阅、**每次投递**时检查权限。移出群聊、禁�
 密码过期后连接可能仍然存在，但读写被拒绝；Web/worker 应续期并重新连接。
 后端、Redis 或授权回调不可用时拒绝访问；没有匿名降级或 HTTP ACL 缓存。
 
-保持后端 `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 和 Broker
-`message_identity_prefix: "chat/"` 配套。Broker 从真实 MQTT payload 提取发送者，
-后端检查其与 CONNECT 身份一致，并拒绝冲突的 topic/conversation/sender 字段。
-普通用户不能借群聊发布权限冒充另一个用户或 Agent。
+保持后端 `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true`，接入配置启用通用
+`publish_payload: base64`，`max_payload_bytes: 1048576`。MQTTS 将原始 MQTT payload
+编码为 Base64 放入回调的 `payload`，并标注 `payload_encoding: "base64"`；它不
+解析任何业务字段。后端解码、识别 `chat/` 消息，并检查发送者与 CONNECT 身份
+一致，拒绝冲突的 topic/conversation/sender 字段。普通用户不能借群聊发布权限
+冒充别人。业务事件消息也由后端决定处理方式。
+
+解码前后都有长度限制，缺少 payload、非法编码/JSON、超限内容在严格模式下
+被拒绝。回调会携带完整消息内容，必须走受保护的私网或 HTTPS，且不记录请求体。
+Base64 增加约1/3体积；这是启用内容授权时的开销，消息仍由 Broker 直接投递。
+旧 `message_identity_prefix`/`message` 投影契约已移除，应先在隔离环境同步升级
+消费方适配和接入配置。MQTTS 会拒绝不认识的 provider 配置，避免静默降级。
 
 私有存储下，旧 `/assets/image/:id`、`/assets/audio/:id` 公开重定向不能再替消息
 附件续签。下载地址通过已授权的消息历史获取。仅附件所有者主动选作自己、
@@ -98,7 +148,7 @@ MQTTS 在发布、订阅、**每次投递**时检查权限。移出群聊、禁�
 `MQTT_TLS_KEY_FILE`（客户端证书，必须成对）、`MQTT_TLS_SERVER_NAME`（验证主机名）。
 对应证书以只读文件挂载，Compose 自定义 override 需传递这些变量。
 不支持跳过证书验证。浏览器 WSS 使用浏览器信任库，不能靠后端 CA 配置绕过。
-自建 Broker 若已在远端运行，也需升级同样的 HTTP provider 和回调配置。
+远端 Broker 需满足这里的通用认证/授权契约；无需安装聊天项目源码。
 
 ## 迁移与验证
 

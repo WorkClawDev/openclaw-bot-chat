@@ -1,9 +1,18 @@
-name: MQTTS access integration
+name: Broker contract integration
 on:
+  workflow_dispatch:
+    inputs:
+      mqtts_image:
+        description: 'Prebuilt broker image to test (tag or registry digest); empty uses pinned CI artifact'
+        required: false
+        type: string
   push:
     paths: ['backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
   pull_request:
     paths: ['backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+permissions:
+  contents: read
+  actions: read
 jobs:
   permissions:
     runs-on: ubuntu-24.04
@@ -25,6 +34,7 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval=5s --health-retries=15
     env:
+      REQUESTED_MQTTS_IMAGE: ${{ inputs.mqtts_image || vars.MQTTS_TEST_IMAGE }}
       DATABASE_HOST: 127.0.0.1
       DATABASE_PORT: '5432'
       DATABASE_USER: postgres
@@ -46,12 +56,46 @@ jobs:
       BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: 'true'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - name: Read pinned broker artifact
+        id: broker
+        if: env.REQUESTED_MQTTS_IMAGE == ''
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, pathlib
+          lock = json.loads(pathlib.Path('broker/mqtts/compatibility.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key in ['repository', 'workflow_run_id', 'artifact_name']:
+                  output.write(key + '=' + str(lock[key]) + '\n')
+          PYTHON
+      - uses: actions/download-artifact@v4
+        if: env.REQUESTED_MQTTS_IMAGE == ''
         with:
-          repository: ChangerR/mqtts
-          ref: 5f878e4769706f88649a3edf1094dc6fcf0221c2
-          path: run/mqtts-source
-          submodules: recursive
+          repository: ${{ steps.broker.outputs.repository }}
+          run-id: ${{ steps.broker.outputs.workflow_run_id }}
+          name: ${{ steps.broker.outputs.artifact_name }}
+          github-token: ${{ github.token }}
+          path: run/broker-runtime
+      - name: Verify and load independently built image
+        if: env.REQUESTED_MQTTS_IMAGE == ''
+        run: |
+          (cd run/broker-runtime && sha256sum -c SHA256SUMS)
+          python3 - <<'PYTHON'
+          import json, os, pathlib
+          lock = json.loads(pathlib.Path('broker/mqtts/compatibility.json').read_text())
+          metadata = json.loads(pathlib.Path('run/broker-runtime/metadata.json').read_text())
+          assert metadata['schema_version'] == 1 and metadata['http_auth_contract'] == 1
+          assert metadata['source_revision'] == lock['source_revision']
+          assert metadata['platform'] == 'linux/amd64'
+          assert metadata['image'] == 'mqtts:sha-' + lock['source_revision']
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('MQTTS_TEST_IMAGE=' + metadata['image'] + '\n')
+          PYTHON
+          docker load --input run/broker-runtime/mqtts-image.tar.gz
+      - name: Pull explicitly selected broker version
+        if: env.REQUESTED_MQTTS_IMAGE != ''
+        run: |
+          docker pull "$REQUESTED_MQTTS_IMAGE"
+          echo "MQTTS_TEST_IMAGE=$REQUESTED_MQTTS_IMAGE" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
@@ -59,16 +103,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config g++ libssl-dev libyaml-cpp-dev libsqlite3-dev libhiredis-dev protobuf-compiler libprotobuf-dev libcurl4-openssl-dev nlohmann-json3-dev python3 postgresql-client
-      - name: Install pinned llhttp
-        run: |
-          bash run/mqtts-source/bin/install-llhttp.sh "$RUNNER_TEMP/mqtts-llhttp"
-          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/mqtts-llhttp/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mqtts-llhttp/lib" >> "$GITHUB_ENV"
-      - name: Build companion broker
-        run: |
-          cmake -S run/mqtts-source -B run/mqtts-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE='-O1 -g0 -UNDEBUG' -DCMAKE_C_FLAGS_RELEASE='-O1 -g0 -UNDEBUG'
-          cmake --build run/mqtts-build --target mqtts --parallel 3
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Create disposable secrets and database prerequisites
         run: |
           python3 - <<'PY'
@@ -90,9 +125,11 @@ jobs:
           source = source.replace('port: 1883', 'port: 1886').replace('http://backend:8080', 'http://127.0.0.1:18081')
           pathlib.Path('run/mqtts-ci.yaml').write_text(source)
           PY
-          run/mqtts-build/mqtts -c run/mqtts-ci.yaml > run/broker.log 2>&1 &
-          broker_pid=$!
+          docker run -d --name mqtts-access --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -e BROKER_SECURITY_CALLBACK_TOKEN -e NO_PROXY=localhost,127.0.0.1 \
+            -v "$PWD/run/mqtts-ci.yaml:/app/config/mqtts.yaml:ro" "$MQTTS_TEST_IMAGE"
           (cd backend && exec ../run/backend) > run/backend.log 2>&1 &
           backend_pid=$!
-          trap 'kill "$backend_pid" "$broker_pid" 2>/dev/null || true' EXIT
+          trap 'kill "$backend_pid" 2>/dev/null || true; docker logs mqtts-access; docker rm -f mqtts-access' EXIT
           MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" node scripts/test-environment/mqtts-permissions.mjs

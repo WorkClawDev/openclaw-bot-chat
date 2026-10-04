@@ -31,10 +31,8 @@ services:
       retries: 12
 
   mqtts:
+    profiles: [broker]
     image: ${MQTTS_IMAGE:-mqtts:local}
-    build:
-      context: ${MQTTS_SOURCE_DIR:-../mqtts}
-      secrets: [proxy_ca]
     restart: unless-stopped
     environment:
       BROKER_SECURITY_CALLBACK_TOKEN: ${BROKER_SECURITY_CALLBACK_TOKEN}
@@ -112,7 +110,6 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-      mqtts: { condition: service_healthy }
       storage: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -187,7 +184,3 @@ volumes:
   postgres_data:
   redis_data:
   seaweed_data:
-
-secrets:
-  proxy_ca:
-    file: ./run/test-env/proxy-ca.pem

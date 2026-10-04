@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
@@ -152,5 +153,56 @@ func TestBrokerPublishIdentityCannotImpersonateAnotherActor(t *testing.T) {
 	message.ConversationID = "chat/group/other"
 	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
 		t.Fatal("contradicting conversation accepted")
+	}
+}
+
+func TestBrokerOpaquePayloadIsInterpretedOnlyByApplication(t *testing.T) {
+	s, _ := brokerFixture()
+	s.settings.RequireMessageIdentity = true
+	ctx := context.Background()
+	actor := uuid.New()
+	name, _, _, err := s.Mint(ctx, BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic := "chat/group/" + uuid.NewString()
+	body := func(id, destination string) string {
+		raw, _ := json.Marshal(map[string]any{
+			"from":            map[string]string{"type": "user", "id": id},
+			"conversation_id": destination,
+			"content":         strings.Repeat("non-identity content ", 1000),
+		})
+		return base64.StdEncoding.EncodeToString(raw)
+	}
+	valid := body(actor.String(), topic)
+	for _, tc := range []struct {
+		name, encoding, data string
+		allowed              bool
+	}{
+		{"valid large message", "base64", valid, true},
+		{"forged sender", "base64", body(uuid.NewString(), topic), false},
+		{"forged conversation", "base64", body(actor.String(), "chat/group/other"), false},
+		{"wrong encoding", "utf8", valid, false},
+		{"malformed base64", "base64", "%%%", false},
+		{"binary chat payload", "base64", base64.StdEncoding.EncodeToString([]byte{0, 255}), false},
+		{"null identity", "base64", base64.StdEncoding.EncodeToString([]byte("null")), false},
+		{"array identity", "base64", base64.StdEncoding.EncodeToString([]byte("[]")), false},
+		{"missing identity", "base64", base64.StdEncoding.EncodeToString([]byte("{}")), false},
+		{"oversized payload", "base64", base64.StdEncoding.EncodeToString(make([]byte, MaxBrokerPayloadBytes+1)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.AuthorizePublish(ctx, name, "client", topic, tc.encoding, &tc.data); got != tc.allowed {
+				t.Fatalf("allowed=%v, want %v", got, tc.allowed)
+			}
+		})
+	}
+	if s.AuthorizePublish(ctx, name, "client", topic, "", nil) {
+		t.Fatal("strict mode accepted callback without actual publish payload")
+	}
+	// The compatibility setting is explicit; MQTT topic authorization still runs
+	// separately before this method is called.
+	s.settings.RequireMessageIdentity = false
+	if !s.AuthorizePublish(ctx, name, "client", topic, "", nil) {
+		t.Fatal("explicit topic-only compatibility mode failed")
 	}
 }

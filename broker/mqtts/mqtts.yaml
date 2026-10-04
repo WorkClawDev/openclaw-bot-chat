@@ -23,4 +23,6 @@ auth:
         authorization_url: http://backend:8080/internal/broker/authorization
         token_env: BROKER_SECURITY_CALLBACK_TOKEN
         timeout_ms: 2000
-        message_identity_prefix: "chat/"
+        # Opaque payload forwarding; only the backend interprets chat fields.
+        publish_payload: base64
+        max_payload_bytes: 1048576

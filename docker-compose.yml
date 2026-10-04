@@ -27,9 +27,8 @@ services:
       retries: 5
 
   mqtts:
+    profiles: [broker]
     image: ${MQTTS_IMAGE:-mqtts:local}
-    build:
-      context: ${MQTTS_SOURCE_DIR:-../mqtts}
     ports:
       - "${MQTT_TCP_PORT_MAPPING:-127.0.0.1:1883:1883}"
       - "${MQTT_WS_PORT_MAPPING:-127.0.0.1:8083:1883}"
@@ -86,8 +85,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      mqtts:
         condition: service_healthy
     volumes:
       - ./backend/config.yaml:/app/config.yaml
