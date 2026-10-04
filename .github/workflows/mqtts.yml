@@ -7,9 +7,9 @@ on:
         required: false
         type: string
   push:
-    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', '.github/workflows/mqtts.yml']
   pull_request:
-    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+    paths: ['docker-compose.yml', 'deploy/**', 'scripts/test-environment/check-broker-deployment.py', 'backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', 'scripts/test-environment/mqtts-cache-outage.mjs', '.github/workflows/mqtts.yml']
 permissions:
   contents: read
   actions: read
@@ -131,7 +131,15 @@ jobs:
             --security-opt no-new-privileges \
             -e BROKER_SECURITY_CALLBACK_TOKEN -e NO_PROXY=localhost,127.0.0.1 \
             -v "$PWD/run/mqtts-ci.yaml:/app/config/mqtts.yaml:ro" "$MQTTS_TEST_IMAGE"
-          (cd backend && exec ../run/backend) > run/backend.log 2>&1 &
+          backend_executable="$PWD/run/backend"
+          (cd backend && exec "$backend_executable") > run/backend.log 2>&1 &
           backend_pid=$!
-          trap 'kill "$backend_pid" 2>/dev/null || true; docker logs mqtts-access; docker rm -f mqtts-access' EXIT
+          trap 'kill -CONT "$backend_pid" 2>/dev/null || true; kill "$backend_pid" 2>/dev/null || true; docker logs mqtts-access; docker rm -f mqtts-access' EXIT
+          export MQTTS_TEST_STATE_DIR="$PWD/run/mqtts-permissions"
           MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" node scripts/test-environment/mqtts-permissions.mjs
+          MQTTS_TEST_BACKEND_PID="$backend_pid" MQTTS_TEST_BACKEND_EXECUTABLE="$backend_executable" \
+            node scripts/test-environment/mqtts-cache-outage.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mqtts-cache-outage
+          path: run/mqtts-permissions/cache-outage-results.json

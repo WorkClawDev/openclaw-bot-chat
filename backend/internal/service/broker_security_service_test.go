@@ -32,7 +32,7 @@ func (s *brokerFixtureStore) Get(ctx context.Context, key string) ([]byte, error
 }
 func brokerFixture() (*BrokerSecurityService, *brokerFixtureStore) {
 	store := &brokerFixtureStore{values: map[string][]byte{}}
-	s := &BrokerSecurityService{store: store, settings: config.BrokerSecurityConfig{CallbackToken: strings.Repeat("c", 40), SessionTTLSeconds: 300}, server: config.MQTTConfig{Username: "server", ClientID: "server-id", Password: strings.Repeat("p", 40)}, validate: func(context.Context, *BrokerSession) bool { return true }, topicAllowed: func(context.Context, *BrokerSession, string) bool { return true }}
+	s := &BrokerSecurityService{store: store, settings: config.BrokerSecurityConfig{CallbackToken: strings.Repeat("c", 40), SessionTTLSeconds: 300}, server: config.MQTTConfig{Username: "server", ClientID: "server-id", Password: strings.Repeat("p", 40)}, validate: func(context.Context, *BrokerSession) (bool, error) { return true, nil }, topicAllowed: func(context.Context, *BrokerSession, string) (bool, error) { return true, nil }}
 	return s, store
 }
 func TestBrokerCredentialsBoundScopedAndRevoked(t *testing.T) {
@@ -63,7 +63,7 @@ func TestBrokerCredentialsBoundScopedAndRevoked(t *testing.T) {
 			t.Fatal("scope enlarged", bad)
 		}
 	}
-	s.validate = func(context.Context, *BrokerSession) bool { return false }
+	s.validate = func(context.Context, *BrokerSession) (bool, error) { return false, nil }
 	if ok, _ := s.Authenticate(ctx, name, password, "client"); ok {
 		t.Fatal("revoked accepted")
 	}

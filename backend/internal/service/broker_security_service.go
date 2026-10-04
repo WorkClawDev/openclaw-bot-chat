@@ -57,91 +57,108 @@ type BrokerMessageIdentity struct {
 const MaxBrokerPayloadBytes = 1024 * 1024
 
 func (s *BrokerSecurityService) AuthorizePublish(ctx context.Context, username, clientID, topic, encoding string, payload *string) bool {
+	allowed, _ := s.AuthorizePublishDecision(ctx, username, clientID, topic, encoding, payload)
+	return allowed
+}
+func (s *BrokerSecurityService) AuthorizePublishDecision(ctx context.Context, username, clientID, topic, encoding string, payload *string) (bool, error) {
 	if payload == nil {
-		return encoding == "" && s.AuthorizeMessage(ctx, username, clientID, topic, nil)
+		if encoding != "" {
+			return false, nil
+		}
+		return s.authorizeMessage(ctx, username, clientID, topic, nil)
 	}
 	if encoding != "base64" || len(*payload) > base64.StdEncoding.EncodedLen(MaxBrokerPayloadBytes) {
-		return false
+		return false, nil
 	}
 	raw, err := base64.StdEncoding.Strict().DecodeString(*payload)
 	if err != nil || len(raw) > MaxBrokerPayloadBytes {
-		return false
+		return false, nil
 	}
 	if !strings.HasPrefix(topic, "chat/") {
-		return true
+		return true, nil
 	}
 	var message *BrokerMessageIdentity
 	if json.Unmarshal(raw, &message) != nil || message == nil {
-		return false
+		return false, nil
 	}
-	return s.AuthorizeMessage(ctx, username, clientID, topic, message)
+	return s.authorizeMessage(ctx, username, clientID, topic, message)
 }
 
 // Claimed identity comes from the actual publish packet forwarded by the broker.
 // The frontend cannot impersonate another group member or Agent by changing JSON.
 func (s *BrokerSecurityService) AuthorizeMessage(ctx context.Context, username, clientID, topic string, message *BrokerMessageIdentity) bool {
+	allowed, _ := s.authorizeMessage(ctx, username, clientID, topic, message)
+	return allowed
+}
+func (s *BrokerSecurityService) authorizeMessage(ctx context.Context, username, clientID, topic string, message *BrokerMessageIdentity) (bool, error) {
 	if !strings.HasPrefix(topic, "chat/") {
-		return true
+		return true, nil
 	}
 	if message == nil {
-		return !s.settings.RequireMessageIdentity
+		return !s.settings.RequireMessageIdentity, nil
 	}
 	if username == s.server.Username && clientID == s.server.ClientID {
-		return true
+		return true, nil
 	}
-	row, ok := s.session(ctx, username, clientID)
+	row, ok, err := s.session(ctx, username, clientID)
 	if !ok {
-		return false
+		return false, err
 	}
 	if (message.ConversationID != "" && message.ConversationID != topic) || (message.Topic != "" && message.Topic != topic) {
-		return false
+		return false, nil
 	}
 	kind, id := message.SenderType, message.SenderID
 	if message.From != nil {
 		if (kind != "" && kind != message.From.Type) || (id != "" && id != message.From.ID) {
-			return false
+			return false, nil
 		}
 		kind, id = message.From.Type, message.From.ID
 	}
-	return kind == row.ActorType && id == row.ActorID.String()
+	return kind == row.ActorType && id == row.ActorID.String(), nil
 }
 
 type BrokerSecurityService struct {
 	store        BrokerSessionStore
 	settings     config.BrokerSecurityConfig
 	server       config.MQTTConfig
-	validate     func(context.Context, *BrokerSession) bool
-	topicAllowed func(context.Context, *BrokerSession, string) bool
+	validate     func(context.Context, *BrokerSession) (bool, error)
+	topicAllowed func(context.Context, *BrokerSession, string) (bool, error)
 }
 
 func NewBrokerSecurityService(store BrokerSessionStore, settings config.BrokerSecurityConfig, server config.MQTTConfig, db *gorm.DB, messages *MessageService) *BrokerSecurityService {
 	s := &BrokerSecurityService{store: store, settings: settings, server: server}
-	s.validate = func(ctx context.Context, row *BrokerSession) bool {
+	s.validate = func(ctx context.Context, row *BrokerSession) (bool, error) {
 		var count int64
-		if db.WithContext(ctx).Model(&model.User{}).Where("id = ? AND status = ? AND is_deleted = false", row.OwnerID, model.UserStatusActive).Count(&count).Error != nil || count != 1 {
-			return false
+		if err := db.WithContext(ctx).Model(&model.User{}).Where("id = ? AND status = ? AND is_deleted = false", row.OwnerID, model.UserStatusActive).Count(&count).Error; err != nil || count != 1 {
+			return false, err
 		}
 		if row.ActorType == "bot" {
-			if db.WithContext(ctx).Model(&model.Bot{}).Where("id = ? AND owner_id = ? AND status = ?", row.ActorID, row.OwnerID, model.BotStatusEnabled).Count(&count).Error != nil || count != 1 {
-				return false
+			if err := db.WithContext(ctx).Model(&model.Bot{}).Where("id = ? AND owner_id = ? AND status = ?", row.ActorID, row.OwnerID, model.BotStatusEnabled).Count(&count).Error; err != nil || count != 1 {
+				return false, err
 			}
-			if db.WithContext(ctx).Model(&model.BotKey{}).Where("bot_id = ? AND key_prefix = ? AND is_active = ? AND (expires_at IS NULL OR expires_at > ?)", row.ActorID, row.KeyPrefix, true, time.Now().UTC()).Count(&count).Error != nil || count != 1 {
-				return false
+			if err := db.WithContext(ctx).Model(&model.BotKey{}).Where("bot_id = ? AND key_prefix = ? AND is_active = ? AND (expires_at IS NULL OR expires_at > ?)", row.ActorID, row.KeyPrefix, true, time.Now().UTC()).Count(&count).Error; err != nil || count != 1 {
+				return false, err
 			}
 		}
-		return true
+		return true, nil
 	}
-	s.topicAllowed = func(ctx context.Context, row *BrokerSession, topic string) bool {
+	s.topicAllowed = func(ctx context.Context, row *BrokerSession, topic string) (bool, error) {
 		if !strings.HasPrefix(topic, "chat/") {
-			return true
+			return true, nil
 		}
 		if strings.ContainsAny(topic, "+#") {
-			return true
+			return true, nil
 		}
+		var err error
 		if row.ActorType == "user" {
-			return messages.CanUserAccessConversation(ctx, row.ActorID, topic) == nil
+			err = messages.CanUserAccessConversation(ctx, row.ActorID, topic)
+		} else {
+			err = messages.CanBotAccessConversation(ctx, row.ActorID, topic)
 		}
-		return messages.CanBotAccessConversation(ctx, row.ActorID, topic) == nil
+		if errors.Is(err, ErrConversationAccessDenied) || errors.Is(err, ErrInvalidMessageRoute) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return err == nil, err
 	}
 	return s
 }
@@ -156,7 +173,10 @@ func hashBrokerPassword(password string) string {
 	return hex.EncodeToString(sum[:])
 }
 func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (string, string, int64, error) {
-	if !s.Configured() || scope.ClientID == "" || scope.ActorID == uuid.Nil || scope.OwnerID == uuid.Nil || !s.validate(ctx, &scope) {
+	if !s.Configured() || scope.ClientID == "" || scope.ActorID == uuid.Nil || scope.OwnerID == uuid.Nil {
+		return "", "", 0, errors.New("broker security unavailable")
+	}
+	if valid, err := s.validate(ctx, &scope); !valid || err != nil {
 		return "", "", 0, errors.New("broker security unavailable")
 	}
 	if (scope.ActorType != "user" && scope.ActorType != "bot") || (scope.ActorType == "user" && scope.ActorID != scope.OwnerID) {
@@ -183,57 +203,71 @@ func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (
 	}
 	return scope.Username, password, scope.ExpiresAt, nil
 }
-func (s *BrokerSecurityService) session(ctx context.Context, username, clientID string) (*BrokerSession, bool) {
+func (s *BrokerSecurityService) session(ctx context.Context, username, clientID string) (*BrokerSession, bool, error) {
 	if !s.Configured() {
-		return nil, false
+		return nil, false, nil
 	}
 	data, err := s.store.Get(ctx, "personal-agent:broker:"+username)
 	if err != nil {
-		return nil, false
+		if errors.Is(err, redis.Nil) {
+			return nil, false, nil
+		}
+		return nil, false, err
 	}
 	var row BrokerSession
-	if json.Unmarshal(data, &row) != nil || row.Username != username || row.ClientID != clientID || row.ExpiresAt <= time.Now().Unix() || !s.validate(ctx, &row) {
-		return nil, false
+	if json.Unmarshal(data, &row) != nil || row.Username != username || row.ClientID != clientID || row.ExpiresAt <= time.Now().Unix() {
+		return nil, false, nil
 	}
-	return &row, true
+	if valid, err := s.validate(ctx, &row); !valid || err != nil {
+		return nil, false, err
+	}
+	return &row, true, nil
 }
 func (s *BrokerSecurityService) Authenticate(ctx context.Context, username, password, clientID string) (bool, int64) {
+	allowed, expiry, _ := s.AuthenticateDecision(ctx, username, password, clientID)
+	return allowed, expiry
+}
+func (s *BrokerSecurityService) AuthenticateDecision(ctx context.Context, username, password, clientID string) (bool, int64, error) {
 	if s.Configured() && username == s.server.Username && clientID == s.server.ClientID && subtle.ConstantTimeCompare([]byte(password), []byte(s.server.Password)) == 1 {
-		return true, 0
+		return true, 0, nil
 	}
-	row, ok := s.session(ctx, username, clientID)
+	row, ok, err := s.session(ctx, username, clientID)
 	if !ok {
-		return false, 0
+		return false, 0, err
 	}
-	return subtle.ConstantTimeCompare([]byte(hashBrokerPassword(password)), []byte(row.PasswordHash)) == 1, row.ExpiresAt
+	return subtle.ConstantTimeCompare([]byte(hashBrokerPassword(password)), []byte(row.PasswordHash)) == 1, row.ExpiresAt, nil
 }
 func (s *BrokerSecurityService) Authorize(ctx context.Context, username, clientID, action, topic string) bool {
+	allowed, _ := s.AuthorizeDecision(ctx, username, clientID, action, topic)
+	return allowed
+}
+func (s *BrokerSecurityService) AuthorizeDecision(ctx context.Context, username, clientID, action, topic string) (bool, error) {
 	if !s.Configured() || (action != "publish" && action != "subscribe") || topic == "" {
-		return false
+		return false, nil
 	}
 	if action == "publish" && strings.ContainsAny(topic, "+#") {
-		return false
+		return false, nil
 	}
 	if username == s.server.Username && clientID == s.server.ClientID {
 		if action == "subscribe" {
-			return brokerFilterCovers("chat/#", topic)
+			return brokerFilterCovers("chat/#", topic), nil
 		}
-		return brokerFilterCovers("agent/user/+/events", topic) || brokerFilterCovers("chat/#", topic)
+		return brokerFilterCovers("agent/user/+/events", topic) || brokerFilterCovers("chat/#", topic), nil
 	}
-	row, ok := s.session(ctx, username, clientID)
+	row, ok, err := s.session(ctx, username, clientID)
 	if !ok {
-		return false
+		return false, err
 	}
 	allowed := row.Subscribe
 	if action == "publish" {
 		allowed = row.Publish
 	}
 	for _, filter := range allowed {
-		if brokerFilterCovers(filter, topic) && s.topicAllowed(ctx, row, topic) {
-			return true
+		if brokerFilterCovers(filter, topic) {
+			return s.topicAllowed(ctx, row, topic)
 		}
 	}
-	return false
+	return false, nil
 }
 
 // A requested subscription must be a subset of an issued filter. Exact user

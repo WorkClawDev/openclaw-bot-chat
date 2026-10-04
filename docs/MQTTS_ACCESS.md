@@ -12,10 +12,10 @@ MQTTS 是独立的通用 Broker：独立源码、构建、测试和版本发布�
 [HTTP 授权契约 v1](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/docs/http-auth.md)
 接入；所有业务权限、发送者识别与适配代码由本项目维护。
 
-启用本项目的 HTTP 授权配置后，客户端操作仍需后端返回授权结果。这个运行时
-调用是可配置的接口依赖；无需共享源码、数据库或发布流程。后端不可用时，使用
-此策略的客户端请求被拒绝，但 Broker 本身可先启动。不要通过关闭认证规避业务
-权限检查。
+首次连接和新权限仍需后端授权；已有授权由 Broker 的本地有界缓存处理，消息
+热路径不查询 HTTP、Redis 或聊天数据库。两个项目无需共享源码、数据库或发布
+流程。后端故障时，缓存授权可以用到原会话到期，且从上次成功授权起不超过
+5 分钟；故障不会续期。新连接、新权限或过期授权仍被拒绝。
 
 ## 使用独立构建的镜像
 
@@ -31,7 +31,7 @@ docker load --input mqtts-image.tar.gz
 # 使用 metadata.json 的 image 值，也可自行 retag/push 到私有 registry。
 ```
 
-镜像需要支持 HTTP 契约 v1 的 `publish_payload: base64`。当前 PR 验收版本记录
+镜像需要支持 HTTP 契约 v1 的 `publish_payload: base64` 及可选缓存扩展。当前 PR 验收版本记录
 在 `broker/mqtts/compatibility.json`，CI 直接下载那次独立构建的镜像工件，不编译
 C++。工件保留90天；长期部署使用独立 Release 下载或固定 registry digest。
 `MQTTS_TEST_IMAGE` 仓库变量/手动工作流输入可以指定要测试的已发布镜像。
@@ -106,28 +106,50 @@ docker compose -f deploy/personal-agent/compose.yaml exec backend \
 `PUT /api/v1/admin/users/:id/access`（`role: user|admin`、`status: 0|1|2`，
 分别为停用/活跃/封禁）。每次请求都读取当前账号角色和状态；不依赖旧 JWT 的角色。
 
-## MQTT 权限与即时撤权
+## MQTT 权限、缓存与撤权
 
 Broker 的 HTTP provider 使用同一个私密 token 访问
-`/internal/broker/authentication`、`/internal/broker/authorization`。
+`/internal/broker/authentication`、`/internal/broker/authorization`、
+`/internal/broker/cache-version`。
 回调不应暴露到公网入口；不能在日志中输出请求体/密码。连接绑定 username、
 client ID、owner、Agent Key、到期时间以及订阅/发布范围。
 
-MQTTS 在发布、订阅、**每次投递**时检查权限。移出群聊、禁用 Agent、撤销 Key
-或封禁账号后，既有连接也不能继续越权收发。已交付到客户端的数据不会被追回。
+MQTTS 在发布、订阅、**每次投递**时检查本地授权。缓存绑定每次 CONNECT 产生的
+独立会话、username/client ID、操作和 Topic。移出群聊、禁用 Agent、撤销 Key
+或封禁账号后，成功的权限变更接口更新应用 Redis 内的随机权限版本。Broker
+通过 HTTP 每250 ms轮询该版本，变化后清除缓存；在途旧响应不能恢复旧授权。
+撤权传播需要轮询间隔加网络/服务处理时间，并非跨进程的原子操作；隔离集成测试
+要求2秒内收敛。已交付到客户端的数据不会被追回。
 密码过期后连接可能仍然存在，但读写被拒绝；Web/worker 应续期并重新连接。
-后端、Redis 或授权回调不可用时拒绝访问；没有匿名降级或 HTTP ACL 缓存。
+
+本项目配置10秒新鲜期、最长300秒授权租约、16384条分片 LRU。新鲜命中不访问
+HTTP；过新鲜期的命中立即返回，同时合并为一个后台刷新。显式拒绝清除旧授权；
+后端/Redis/数据库故障返回503，保留原租约，不推迟到期时间。拒绝最多缓存1秒。
+CONNECT 始终验证密码；跨连接不复用登录结果。4个独立 HTTP 工作者复用连接，
+队列最多64个请求、16 MiB请求体，500 ms超时，熔断与重试冷却1秒；慢回调不会
+阻塞 MQTT 事件线程。权限版本轮询使用单独工作者。
+
+权限变更通知失败会在 Redis 恢复后重试。它不是事务性 outbox；手工改数据库、
+进程在提交后通知前退出等情况依靠下一次后台授权刷新发现，服务故障时仍受5分钟
+上限约束。新增权限变更路由需接入失效中间件。缓存维持的是已授权 MQTT 传输，
+不代表后端故障时历史查询、API 或消息持久化仍然可用。
 
 保持后端 `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true`，接入配置启用通用
 `publish_payload: base64`，`max_payload_bytes: 1048576`。MQTTS 将原始 MQTT payload
-编码为 Base64 放入回调的 `payload`，并标注 `payload_encoding: "base64"`；它不
-解析任何业务字段。后端解码、识别 `chat/` 消息，并检查发送者与 CONNECT 身份
+编码为 Base64 放入回调的 `payload`，并标注 `payload_encoding: "base64"`。Broker
+不理解业务字段；后端解码、识别 `chat/` 消息，并检查发送者与 CONNECT 身份
 一致，拒绝冲突的 topic/conversation/sender 字段。普通用户不能借群聊发布权限
 冒充别人。业务事件消息也由后端决定处理方式。
 
 解码前后都有长度限制，缺少 payload、非法编码/JSON、超限内容在严格模式下
 被拒绝。回调会携带完整消息内容，必须走受保护的私网或 HTTPS，且不记录请求体。
-Base64 增加约1/3体积；这是启用内容授权时的开销，消息仍由 Broker 直接投递。
+Base64 增加约1/3体积；只在未命中或刷新时构造回调，消息仍由 Broker 直接投递。
+消费方配置 `publish_cache_ignored_fields: '["id","timestamp","content"]'`：这些字段
+不参与当前权限判断。其他字段（包括 from、sender、topic/conversation、未知字段
+和大小写别名）全部保留在摘要中，避免同一 Topic 下改写发送者命中旧授权。
+重复 JSON 键、非法 JSON 和深层嵌套退回完整字节摘要。将来权限若依赖内容、ID
+或时间，必须同步移除对应的忽略项。通用 Broker 默认按完整 payload 取摘要，
+没有硬编码任何聊天字段。
 旧 `message_identity_prefix`/`message` 投影契约已移除，应先在隔离环境同步升级
 消费方适配和接入配置。MQTTS 会拒绝不认识的 provider 配置，避免静默降级。
 
@@ -168,6 +190,7 @@ npm --prefix frontend run build
 CHAT_UI_START=1 npm --prefix frontend run test:chat
 # 独立栈，环境中的 DB/Redis 配置必须指向验收库。
 MQTTS_TEST_API_URL=http://127.0.0.1:18081 \
+MQTTS_TEST_STATE_DIR=run/mqtts-permissions \
 MQTTS_TEST_ADMIN_CLI=/absolute/path/to/admin-user \
 node scripts/test-environment/mqtts-permissions.mjs
 ```
@@ -177,3 +200,9 @@ node scripts/test-environment/mqtts-permissions.mjs
 管理员降权。不要针对生产库运行。Broker 自带的 Python 集成测试另外覆盖
 MQTT 3.1.1/5、错误密码/client ID、异常回调、过期身份和不完整配置启动失败。
 截图和实际账号仅保存在忽略的 `run/`，不提交 Git。
+
+CI 还运行 `scripts/test-environment/mqtts-cache-outage.mjs`：显式指定隔离后端的
+`MQTTS_TEST_BACKEND_PID` 和 `MQTTS_TEST_BACKEND_EXECUTABLE`，校验进程身份后
+短暂暂停它，等待超过10秒新鲜期，验证200条 WebSocket/TCP 双向消息完整送达，
+同时拒绝新连接。脚本在退出时恢复后端，并有额外恢复看门狗。该测试使用上一步
+生成的临时账号，故障报告仅包含通过状态与延迟，不上传账号/秘密。

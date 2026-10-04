@@ -22,7 +22,19 @@ auth:
         authentication_url: http://backend:8080/internal/broker/authentication
         authorization_url: http://backend:8080/internal/broker/authorization
         token_env: BROKER_SECURITY_CALLBACK_TOKEN
-        timeout_ms: 2000
+        timeout_ms: 500
+        http_workers: 4
+        http_queue_capacity: 64
+        http_queue_bytes: 16777216
+        failure_cooldown_ms: 1000
+        cache_ttl_ms: 10000
+        cache_max_age_ms: 300000
+        cache_max_entries: 16384
+        cache_version_url: http://backend:8080/internal/broker/cache-version
+        cache_version_interval_ms: 250
+        # Only these fields are irrelevant to AuthorizeMessage. Identity,
+        # topic/conversation, unknown fields and aliases remain in the cache key.
+        publish_cache_ignored_fields: '["id","timestamp","content"]'
         # Opaque payload forwarding; only the backend interprets chat fields.
         publish_payload: base64
         max_payload_bytes: 1048576

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
+	"gorm.io/gorm"
 )
 
 var (
@@ -188,7 +189,10 @@ func (s *MessageService) userMatchesDirectRoute(ctx context.Context, userID uuid
 func (s *MessageService) userOwnsBot(ctx context.Context, userID, botID uuid.UUID) (bool, error) {
 	bot, err := s.botRepo.GetByID(ctx, botID)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	return bot.OwnerID == userID, nil
 }
@@ -196,7 +200,10 @@ func (s *MessageService) userOwnsBot(ctx context.Context, userID, botID uuid.UUI
 func (s *MessageService) isUserGroupMember(ctx context.Context, userID, groupID uuid.UUID) (bool, error) {
 	group, err := s.groupRepo.GetByID(ctx, groupID)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	if !group.IsActive || group.OwnerID == userID {
 		return group.IsActive, nil
@@ -207,7 +214,10 @@ func (s *MessageService) isUserGroupMember(ctx context.Context, userID, groupID 
 func (s *MessageService) isBotGroupMember(ctx context.Context, groupID, botID uuid.UUID) (bool, error) {
 	group, err := s.groupRepo.GetByID(ctx, groupID)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	if !group.IsActive {
 		return false, nil

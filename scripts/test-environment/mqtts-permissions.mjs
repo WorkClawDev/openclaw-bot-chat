@@ -52,6 +52,17 @@ async function eventually(check, message) {
   for (let attempt = 0; attempt < 100; attempt++) { if (await check()) return; await sleep(100); }
   throw new Error(message);
 }
+async function brokerRevoked(connection, topic) {
+  const started = Date.now();
+  while (Date.now() - started < 2000) {
+    try {
+      const grants = await connection.client.subscribeAsync(topic, { qos: 1 });
+      if (grants.some(grant => grant.qos >= 128)) return;
+    } catch { return; }
+    await sleep(50);
+  }
+  throw new Error('Permission revision did not reach the broker within 2 seconds');
+}
 try {
   await eventually(async () => { try { return (await api(base, 'GET', '/health/ready')).status === 'ready'; } catch { return false; } }, 'Backend not ready');
   const [admin, owner, member, stranger, groupAdmin] = await Promise.all(['admin', 'owner', 'member', 'stranger', 'manager'].map(account));
@@ -115,6 +126,7 @@ try {
   pass('real WebSocket ↔ TCP Agent messages, direct/group persistence, wildcard denial, sender forgery rejection');
 
   await call(owner, 'DELETE', `${groupPath}/members/${member.user.id}`);
+  await brokerRevoked(memberConnection, topic);
   for (const path of [groupPath, `${groupPath}/members`, `/messages/${topic}`]) await denied(() => call(member, 'GET', path), 403);
   assert(!(await call(member, 'GET', '/conversations')).some(row => row.conversation_id === topic), 'Removed group leaked in conversation previews');
   const afterRemoval = payload(owner, topic, 'After removal', bot);
@@ -129,13 +141,17 @@ try {
 
   const temporaryKey = await call(owner, 'POST', `/bots/${bot.id}/keys`, { name: 'revocation acceptance' });
   const revokedBot = await connect(owner, temporaryKey.key, false);
+  await subscribe(revokedBot, topic);
+  await send(revokedBot, payload(owner, topic, 'Warm temporary key grant', bot));
   await call(owner, 'DELETE', `/bots/${bot.id}/keys/${temporaryKey.id}`);
+  await brokerRevoked(revokedBot, topic);
   await denied(() => api(base, 'GET', '/api/v1/bot-runtime/bootstrap', { botKey: temporaryKey.key }), 401);
   const revokedMessage = payload(owner, topic, 'Revoked key publishing', bot);
   await send(revokedBot, revokedMessage).catch(() => {});
   await sleep(250);
   assert(!userConnection.received.some(row => row.id === revokedMessage.id), 'Revoked Agent key still publishes');
   await call(owner, 'PUT', `/bots/${bot.id}`, { status: 0 });
+  await brokerRevoked(botConnection, topic);
   await denied(() => api(base, 'GET', '/api/v1/bot-runtime/bootstrap', { botKey: key.key }), 401);
   const disabledMessage = payload(owner, topic, 'Disabled Agent publishing', bot);
   await send(botConnection, disabledMessage).catch(() => {});
@@ -145,6 +161,7 @@ try {
   pass('Agent disable and key revocation invalidate bootstrap and existing MQTT publishing');
 
   await call(admin, 'PUT', `/admin/users/${owner.user.id}/access`, { status: 2 });
+  await brokerRevoked(botConnection, dm);
   await denied(() => call(owner, 'GET', '/auth/me'), 401);
   await denied(() => call(null, 'POST', '/auth/refresh', { refresh_token: owner.tokens.refresh_token }), 401);
   await denied(() => api(base, 'GET', '/api/v1/bot-runtime/bootstrap', { botKey: key.key }), 401);

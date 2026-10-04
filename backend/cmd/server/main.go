@@ -169,6 +169,9 @@ func main() {
 	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
+	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
+	brokerSecurityHandler := &handler.BrokerSecurityHandler{Service: security, Revision: &service.BrokerRevision{Store: service.RedisBrokerRevisionStore{Client: rdb}}}
+	router.Use(brokerSecurityHandler.InvalidatePermissions())
 	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
 	adminRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	(&handler.UserAdminHandler{Users: userRepo}).Register(adminRoutes)
@@ -181,7 +184,6 @@ func main() {
 	runUserRoutes.Use(middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	runHandler.RegisterUser(runUserRoutes)
 	journalHandler.RegisterUser(runUserRoutes)
-	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
 	if !security.Configured() {
 		if cfg.App.Mode == "release" {
 			log.Fatal().Msg("broker security requires callback token and server password of at least 32 characters")
@@ -190,7 +192,7 @@ func main() {
 	}
 	realtimeHandler.SetBrokerSecurity(security)
 	botRuntimeHandler.SetBrokerSecurity(security)
-	(&handler.BrokerSecurityHandler{Service: security}).Register(router)
+	brokerSecurityHandler.Register(router)
 	router.GET("/health/ready", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()
