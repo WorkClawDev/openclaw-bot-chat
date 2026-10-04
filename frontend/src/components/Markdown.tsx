@@ -1,6 +1,7 @@
 'use client'
 
 import ReactMarkdown from 'react-markdown'
+import { memo } from 'react'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism'
@@ -11,7 +12,7 @@ interface MarkdownProps {
   isOwn?: boolean
 }
 
-export const Markdown = ({ content, className = '', isOwn = false }: MarkdownProps) => {
+export const Markdown = memo(function Markdown({ content, className = '', isOwn = false }: MarkdownProps) {
   return (
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
@@ -23,6 +24,8 @@ export const Markdown = ({ content, className = '', isOwn = false }: MarkdownPro
               <SyntaxHighlighter
                 {...props}
                 style={vscDarkPlus}
+                useInlineStyles={false}
+                customStyle={vscDarkPlus['pre[class*="language-"]']}
                 language={match[1]}
                 PreTag="div"
               >
@@ -116,4 +119,4 @@ export const Markdown = ({ content, className = '', isOwn = false }: MarkdownPro
       </ReactMarkdown>
     </div>
   )
-}
+})

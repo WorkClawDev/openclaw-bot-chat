@@ -4,11 +4,10 @@ import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { Avatar } from './Avatar'
 import { BrandLogo } from './BrandLogo'
 
 const navItems = [
-  { href: '/bots', label: 'Bots', icon: 'bot' },
+  { href: '/bots', label: 'Agents', icon: 'bot' },
   { href: '/groups', label: 'Groups', icon: 'users' },
   { href: '/documents', label: 'Documents', icon: 'documents' },
   { href: '/assistant', label: 'Assistant', icon: 'tasks' },
@@ -60,13 +59,13 @@ export function PrimaryNav() {
   const { user, logout } = useAuth()
 
   return (
-    <aside className="w-full h-[60px] md:w-[72px] md:h-screen bg-white/90 md:bg-white/70 backdrop-blur-2xl flex flex-row md:flex-col items-center justify-around md:justify-start py-0 md:py-5 px-4 md:px-0 gap-0 md:gap-7 border-t md:border-t-0 md:border-r border-slate-200/70 z-50 flex-shrink-0">
+    <aside className="primary-nav w-full md:w-[72px] flex flex-row md:flex-col items-center md:py-5 border-t md:border-t-0 md:border-r border-slate-200/70 z-40 shrink-0">
       <Link href="/bots" className="hidden md:block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2" aria-label="ClawChat home">
         <BrandLogo showText={false} size="sm" />
       </Link>
 
       {/* Navigation */}
-      <nav className="flex-1 flex flex-row md:flex-col gap-6 md:gap-4 items-center justify-center md:justify-start">
+      <nav aria-label="Workspace navigation" className="flex min-w-0 flex-1 flex-row md:flex-col items-center justify-around md:justify-start">
         {navItems.map((item) => {
           const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
           return (
@@ -75,28 +74,26 @@ export function PrimaryNav() {
               href={item.href}
               title={item.label}
               aria-label={item.label}
-              className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2 ${
+              aria-current={isActive ? 'page' : undefined}
+              className={`primary-nav-link flex flex-col items-center justify-center rounded-xl transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
                 isActive
-                  ? 'bg-sky-500 text-white shadow-md shadow-sky-100 ring-1 ring-sky-200'
+                  ? 'is-active'
                   : 'text-slate-500 hover:bg-slate-100 hover:text-sky-600'
               }`}
             >
               <NavIcon type={item.icon} />
+              <span className="mt-1 text-[9px] font-medium">{item.label}</span>
             </Link>
           )
         })}
       </nav>
 
       {/* User / Bottom */}
-      <div className="flex flex-row md:flex-col gap-4 items-center">
-        <div className="hidden md:block">
-          <Avatar
-            name={user?.username || 'User'}
-            src={user?.avatar || user?.avatar_url || undefined}
-            size="sm"
-            className="ring-2 ring-white/50"
-          />
-        </div>
+      <div className="hidden md:flex flex-col gap-4 items-center">
+        <Link href="/settings" className="primary-nav-account" title={user?.username || 'Account'} aria-label={`Account settings for ${user?.username || 'your account'}`}>
+          <span>Account</span>
+          <strong>{user?.username || 'Settings'}</strong>
+        </Link>
         <button
           onClick={logout}
           className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2"
@@ -116,7 +113,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col-reverse md:flex-row h-[100dvh] w-full overflow-hidden bg-slate-100">
       <PrimaryNav />
-      <main className="flex flex-1 overflow-hidden relative">
+      <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden relative">
         {children}
       </main>
     </div>
