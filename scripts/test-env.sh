@@ -54,7 +54,7 @@ prepare() {
 up() {
   prepare
   compose up -d --wait --wait-timeout 120 postgres redis
-  compose up -d --force-recreate --wait --wait-timeout 120 emqx
+  compose up --build -d --force-recreate --wait --wait-timeout 120 mqtts
   compose up -d --force-recreate --wait --wait-timeout 120 storage
   compose up -d --force-recreate --wait --wait-timeout 240 backend frontend proxy
   node "$TOOLS_DIR/seed.mjs"

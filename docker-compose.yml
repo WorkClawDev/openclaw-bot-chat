@@ -26,32 +26,27 @@ services:
       timeout: 5s
       retries: 5
 
-  emqx:
-    image: emqx/emqx:5.8.5
+  mqtts:
+    image: ${MQTTS_IMAGE:-mqtts:local}
+    build:
+      context: ${MQTTS_SOURCE_DIR:-../mqtts}
     ports:
-      - "${MQTT_TCP_PORT_MAPPING:-1883:1883}"
-      - "${MQTT_WS_PORT_MAPPING:-8083:8083}"
-      - "${EMQX_DASHBOARD_PORT_MAPPING:-18083:18083}"
+      - "${MQTT_TCP_PORT_MAPPING:-127.0.0.1:1883:1883}"
+      - "${MQTT_WS_PORT_MAPPING:-127.0.0.1:8083:1883}"
     environment:
-      EMQX_NODE__NAME: emqx@127.0.0.1
-      EMQX_LOG__CONSOLE_HANDLER__LEVEL: warning
-      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USERNAME:-admin}
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
-      MQTT_USERNAME: ${MQTT_USERNAME:-openclaw_backend}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me-in-production}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        printf 'user_id,password,is_superuser\n%s,%s,false\n' "$$MQTT_USERNAME" "$$MQTT_PASSWORD" > /opt/emqx/etc/auth-built-in-db-bootstrap.csv
-        exec /opt/emqx/bin/emqx foreground
+      BROKER_SECURITY_CALLBACK_TOKEN: ${BROKER_SECURITY_CALLBACK_TOKEN:?Set a random callback token of at least 32 characters}
+      NO_PROXY: localhost,127.0.0.1,backend
+      no_proxy: localhost,127.0.0.1,backend
     volumes:
-      - ./broker/emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
+      - ./broker/mqtts/mqtts.yaml:/app/config/mqtts.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD-SHELL", "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1883"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   minio:
     image: minio/minio:latest
@@ -92,7 +87,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      emqx:
+      mqtts:
         condition: service_healthy
     volumes:
       - ./backend/config.yaml:/app/config.yaml
@@ -105,13 +100,16 @@ services:
       - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - MQTT_BROKER=tcp://emqx:1883
+      - MQTT_BROKER=${MQTT_BROKER:-tcp://mqtts:1883}
+      - MQTT_CLIENT_ID=${MQTT_CLIENT_ID:-openclaw-backend}
+      - BROKER_SECURITY_CALLBACK_TOKEN=${BROKER_SECURITY_CALLBACK_TOKEN}
+      - BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true
       - MQTT_USERNAME=${MQTT_USERNAME:-openclaw_backend}
-      - MQTT_PASSWORD=${MQTT_PASSWORD:-change-me-in-production}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:?Set a random server password of at least 32 characters}
       - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-chat}
       - MQTT_TCP_PUBLIC_URL=${MQTT_TCP_PUBLIC_URL:-mqtt://127.0.0.1:1883}
       - MQTT_WS_PUBLIC_URL=${MQTT_WS_PUBLIC_URL:-ws://127.0.0.1:8083/mqtt}
-      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_SECRET=${JWT_SECRET:?Set an independent random JWT secret of at least 32 characters}
       - APP_MODE=${APP_MODE:-release}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - STORAGE_PROVIDER=${STORAGE_PROVIDER:-s3}
@@ -138,7 +136,7 @@ services:
       - STORAGE_S3_SSL=${STORAGE_S3_SSL:-false}
       - ASSET_MAX_IMAGE_SIZE_MB=${ASSET_MAX_IMAGE_SIZE_MB:-10}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health | grep -q '\"status\":\"ok\"'"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health/ready | grep -q '\"status\":\"ready\"'"]
       interval: 10s
       timeout: 5s
       retries: 5

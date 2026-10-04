@@ -184,5 +184,5 @@ canonical topic：
 
 ## Broker ACL TODO
 
-- compose 默认 EMQX 示例已开启用户名密码认证。
+- compose 默认使用自有 MQTTS，经后端 HTTP 回调认证并逐次校验消息投递权限，详见 [MQTTS 与权限管理](MQTTS_ACCESS.md)。
 - `TODO(broker-acl)`: 后续接入自有 broker 时应实现动态 topic ACL 下发。

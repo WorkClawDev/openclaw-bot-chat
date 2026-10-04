@@ -17,11 +17,12 @@ func (h *BrokerSecurityHandler) Register(router *gin.Engine) {
 func (h *BrokerSecurityHandler) call(c *gin.Context, auth bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 8192)
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		ClientID string `json:"clientid"`
-		Action   string `json:"action"`
-		Topic    string `json:"topic"`
+		Username string                         `json:"username"`
+		Password string                         `json:"password"`
+		ClientID string                         `json:"clientid"`
+		Action   string                         `json:"action"`
+		Topic    string                         `json:"topic"`
+		Message  *service.BrokerMessageIdentity `json:"message"`
 	}
 	allowed := false
 	var expiry int64
@@ -30,6 +31,9 @@ func (h *BrokerSecurityHandler) call(c *gin.Context, auth bool) {
 			allowed, expiry = h.Service.Authenticate(c.Request.Context(), req.Username, req.Password, req.ClientID)
 		} else {
 			allowed = h.Service.Authorize(c.Request.Context(), req.Username, req.ClientID, req.Action, req.Topic)
+			if allowed && req.Action == "publish" {
+				allowed = h.Service.AuthorizeMessage(c.Request.Context(), req.Username, req.ClientID, req.Topic, req.Message)
+			}
 		}
 	}
 	result := "deny"

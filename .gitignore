@@ -41,6 +41,7 @@ clawchat-ios/build/
 # Frontend (Next.js)
 /frontend/node_modules/
 /frontend/.next/
+/frontend/.next-*/
 /frontend/out/
 /frontend/.turbo/
 /frontend/tsconfig.tsbuildinfo

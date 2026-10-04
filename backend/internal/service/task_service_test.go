@@ -430,6 +430,7 @@ func createTaskServiceTestSchema(db *gorm.DB) error {
 			nickname TEXT,
 			avatar_url TEXT,
 			status INTEGER NOT NULL DEFAULT 1,
+			role text NOT NULL DEFAULT 'user',
 			is_deleted INTEGER NOT NULL DEFAULT 0,
 			last_login_at DATETIME,
 			last_login_ip TEXT,

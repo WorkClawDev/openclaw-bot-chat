@@ -140,7 +140,7 @@ func (s *PhoneAuthService) LoginOrRegister(ctx context.Context, req PhoneLoginRe
 	if err != nil {
 		return nil, nil, false, err
 	}
-	if user.Status == model.UserStatusBanned {
+	if !user.IsActive() {
 		return nil, nil, false, ErrUserBanned
 	}
 

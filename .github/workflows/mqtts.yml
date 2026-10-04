@@ -1,0 +1,94 @@
+name: MQTTS access integration
+on:
+  push:
+    paths: ['backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+  pull_request:
+    paths: ['backend/**', 'broker/mqtts/**', 'scripts/test-environment/mqtts-permissions.mjs', '.github/workflows/mqtts.yml']
+jobs:
+  permissions:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: isolated-ci-password
+          POSTGRES_DB: mqtts_acceptance
+        ports: ['5432:5432']
+        options: --health-cmd='pg_isready -U postgres' --health-interval=5s --health-retries=15
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd='redis-cli ping' --health-interval=5s --health-retries=15
+    env:
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: '5432'
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: isolated-ci-password
+      DATABASE_DBNAME: mqtts_acceptance
+      DATABASE_SSLMODE: disable
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      APP_HOST: 127.0.0.1
+      APP_PORT: '18081'
+      APP_MODE: test
+      AUTH_PHONE_ENABLED: 'false'
+      LOG_LEVEL: warn
+      MQTT_BROKER: tcp://127.0.0.1:1886
+      MQTT_TCP_PUBLIC_URL: mqtt://127.0.0.1:1886
+      MQTT_WS_PUBLIC_URL: ws://127.0.0.1:1886/mqtt
+      MQTT_CLIENT_ID: acceptance-backend
+      MQTT_USERNAME: acceptance-backend
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ChangerR/mqtts
+          ref: 5f878e4769706f88649a3edf1094dc6fcf0221c2
+          path: run/mqtts-source
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config g++ libssl-dev libyaml-cpp-dev libsqlite3-dev libhiredis-dev protobuf-compiler libprotobuf-dev libcurl4-openssl-dev nlohmann-json3-dev python3 postgresql-client
+      - name: Install pinned llhttp
+        run: |
+          bash run/mqtts-source/bin/install-llhttp.sh "$RUNNER_TEMP/mqtts-llhttp"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/mqtts-llhttp/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mqtts-llhttp/lib" >> "$GITHUB_ENV"
+      - name: Build companion broker
+        run: |
+          cmake -S run/mqtts-source -B run/mqtts-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE='-O1 -g0 -UNDEBUG' -DCMAKE_C_FLAGS_RELEASE='-O1 -g0 -UNDEBUG'
+          cmake --build run/mqtts-build --target mqtts --parallel 3
+      - name: Create disposable secrets and database prerequisites
+        run: |
+          python3 - <<'PY'
+          import os, secrets
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              for name in ['JWT_SECRET', 'MQTT_PASSWORD', 'BROKER_SECURITY_CALLBACK_TOKEN']:
+                  value = secrets.token_hex(32)
+                  print('::add-mask::' + value)
+                  output.write(name + '=' + value + '\n')
+          PY
+          PGPASSWORD="$DATABASE_PASSWORD" psql -h 127.0.0.1 -U postgres -d mqtts_acceptance -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
+      - run: go -C backend build -o ../run/backend ./cmd/server && go -C backend build -o ../run/admin-user ./cmd/admin-user
+      - run: npm --prefix scripts/test-environment ci
+      - name: Run real PostgreSQL, Redis, MQTT and permission acceptance
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          source = pathlib.Path('broker/mqtts/mqtts.yaml').read_text()
+          source = source.replace('port: 1883', 'port: 1886').replace('http://backend:8080', 'http://127.0.0.1:18081')
+          pathlib.Path('run/mqtts-ci.yaml').write_text(source)
+          PY
+          run/mqtts-build/mqtts -c run/mqtts-ci.yaml > run/broker.log 2>&1 &
+          broker_pid=$!
+          (cd backend && exec ../run/backend) > run/backend.log 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" "$broker_pid" 2>/dev/null || true' EXIT
+          MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" node scripts/test-environment/mqtts-permissions.mjs

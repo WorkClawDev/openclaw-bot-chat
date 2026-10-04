@@ -29,7 +29,7 @@ func TestUserRealtimeTopicsIncludeOwnedBotsBeforeFirstMessage(t *testing.T) {
 	for _, statement := range []string{
 		`CREATE TABLE messages (conversation_id TEXT, sender_id TEXT, bot_id TEXT, is_deleted BOOLEAN, created_at DATETIME)`,
 		`CREATE TABLE groups (id TEXT, owner_id TEXT, is_active BOOLEAN, created_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE group_members (group_id TEXT, user_id TEXT)`,
+		`CREATE TABLE group_members (group_id TEXT, user_id TEXT, is_active BOOLEAN)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)

@@ -2,6 +2,8 @@ package mqtt
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -11,10 +13,12 @@ import (
 
 // Client wraps the MQTT consumer used by the backend persistence service.
 type Client struct {
-	client  mqtt.Client
-	log     zerolog.Logger
-	cfg     MQTTConfig
-	ingress MessageIngress
+	client     mqtt.Client
+	log        zerolog.Logger
+	cfg        MQTTConfig
+	ingress    MessageIngress
+	subscribed atomic.Bool
+	mu         sync.RWMutex
 }
 
 // MQTTConfig holds MQTT client configuration.
@@ -27,6 +31,10 @@ type MQTTConfig struct {
 	QOS            byte
 	AutoReconnect  bool
 	ReconnectDelay int
+	TLSCAFile      string
+	TLSCertFile    string
+	TLSKeyFile     string
+	TLSServerName  string
 }
 
 // NewClient creates a new MQTT consumer.
@@ -51,12 +59,16 @@ func NewClient(cfg MQTTConfig, log zerolog.Logger, ingress MessageIngress) *Clie
 // Connect establishes connection to the MQTT broker and subscribes to all chat topics.
 func (c *Client) Connect() error {
 	const initialConnectTimeout = 5 * time.Second
+	broker, tlsConfig, err := brokerTLS(c.cfg)
+	if err != nil {
+		return err
+	}
 
 	opts := mqtt.NewClientOptions().
-		AddBroker(c.cfg.Broker).
+		AddBroker(broker).
 		SetClientID(c.cfg.ClientID).
 		SetAutoReconnect(c.cfg.AutoReconnect).
-		SetConnectRetry(true).
+		SetConnectRetry(false).
 		SetConnectRetryInterval(time.Duration(c.cfg.ReconnectDelay) * time.Second).
 		SetKeepAlive(30 * time.Second).
 		SetCleanSession(false).
@@ -64,17 +76,22 @@ func (c *Client) Connect() error {
 		SetOnConnectHandler(c.onConnect).
 		SetConnectionLostHandler(c.onConnectionLost).
 		SetReconnectingHandler(c.onReconnecting)
+	if tlsConfig != nil {
+		opts.SetTLSConfig(tlsConfig)
+	}
 
 	if c.cfg.Username != "" {
 		opts.SetUsername(c.cfg.Username)
 		opts.SetPassword(c.cfg.Password)
 	}
 
-	c.client = mqtt.NewClient(opts)
-
-	token := c.client.Connect()
+	client := mqtt.NewClient(opts)
+	c.mu.Lock()
+	c.client = client
+	c.mu.Unlock()
+	token := client.Connect()
 	if !token.WaitTimeout(initialConnectTimeout) {
-		c.client.Disconnect(250)
+		client.Disconnect(250)
 		return fmt.Errorf("timed out connecting to MQTT broker after %s", initialConnectTimeout)
 	}
 	if token.Error() != nil {
@@ -90,18 +107,31 @@ func (c *Client) defaultHandler(client mqtt.Client, msg mqtt.Message) {
 }
 
 func (c *Client) onConnect(client mqtt.Client) {
+	c.subscribed.Store(false)
 	topic := fmt.Sprintf("%s/#", c.cfg.TopicPrefix)
 	c.log.Info().Str("topic", topic).Msg("MQTT connected, subscribing to persistence topics")
 
-	if token := client.Subscribe(topic, c.cfg.QOS, c.handleMessage); token.Wait() && token.Error() != nil {
+	token := client.Subscribe(topic, c.cfg.QOS, c.handleMessage)
+	if !token.WaitTimeout(5 * time.Second) {
+		c.log.Error().Str("topic", topic).Msg("subscription timed out")
+		client.Disconnect(250)
+		return
+	}
+	if token.Error() != nil {
 		c.log.Error().Err(token.Error()).Str("topic", topic).Msg("failed to subscribe")
+		return
+	}
+	if subscription, ok := token.(*mqtt.SubscribeToken); ok && subscription.Result()[topic] == 0x80 {
+		c.log.Error().Str("topic", topic).Msg("broker denied persistence subscription")
 		return
 	}
 
 	c.log.Info().Str("topic", topic).Msg("subscribed to MQTT topic")
+	c.subscribed.Store(true)
 }
 
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
+	c.subscribed.Store(false)
 	c.log.Warn().Err(err).Msg("MQTT connection lost")
 }
 
@@ -120,15 +150,16 @@ func (c *Client) handleMessage(client mqtt.Client, msg mqtt.Message) {
 
 // Disconnect gracefully disconnects from the MQTT broker.
 func (c *Client) Disconnect() {
-	if c.client != nil {
-		c.client.Disconnect(3000)
+	if client := c.getClient(); client != nil {
+		client.Disconnect(3000)
 	}
 	c.log.Info().Msg("MQTT client disconnected")
 }
 
 // IsConnected returns whether the client is connected.
 func (c *Client) IsConnected() bool {
-	return c.client != nil && c.client.IsConnected()
+	client := c.getClient()
+	return client != nil && client.IsConnected() && c.subscribed.Load()
 }
 
 // BuildTopic is a helper to build a full MQTT topic path.
@@ -142,12 +173,19 @@ func BuildTopic(prefix string, topicParts ...string) string {
 }
 
 func (c *Client) PublishAgentNotice(topic string, payload []byte) error {
-	if c.client == nil || !c.client.IsConnectionOpen() {
+	client := c.getClient()
+	if client == nil || !client.IsConnectionOpen() {
 		return fmt.Errorf("broker unavailable")
 	}
-	token := c.client.Publish(topic, 1, false, payload)
+	token := client.Publish(topic, 1, false, payload)
 	if !token.WaitTimeout(3 * time.Second) {
 		return fmt.Errorf("broker publish timeout")
 	}
 	return token.Error()
+}
+
+func (c *Client) getClient() mqtt.Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.client
 }

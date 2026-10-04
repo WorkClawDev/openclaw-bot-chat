@@ -129,13 +129,30 @@ func main() {
 		QOS:            cfg.MQTT.QOS,
 		AutoReconnect:  cfg.MQTT.AutoReconnect,
 		ReconnectDelay: cfg.MQTT.ReconnectDelay,
+		TLSCAFile:      cfg.MQTT.TLSCAFile,
+		TLSCertFile:    cfg.MQTT.TLSCertFile,
+		TLSKeyFile:     cfg.MQTT.TLSKeyFile,
+		TLSServerName:  cfg.MQTT.TLSServerName,
 	}, log, msgService)
 
-	if err := mqttClient.Connect(); err != nil {
-		log.Warn().Err(err).Msg("MQTT connection failed, continuing without MQTT")
-	} else {
-		defer mqttClient.Disconnect()
-	}
+	// HTTP must be available before a broker can call back to authenticate the
+	// persistence client. Retry startup connections while readiness stays false.
+	mqttContext, mqttCancel := context.WithCancel(context.Background())
+	defer func() { mqttCancel(); mqttClient.Disconnect() }()
+	go func() {
+		for mqttContext.Err() == nil {
+			if err := mqttClient.Connect(); err == nil {
+				return
+			} else {
+				log.Warn().Err(err).Msg("MQTT startup connection failed; retrying")
+			}
+			select {
+			case <-mqttContext.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
+	}()
 
 	// --- Handlers ---
 	authHandler := handler.NewAuthHandler(authService, phoneAuthService)
@@ -153,13 +170,15 @@ func main() {
 
 	// --- Routes ---
 	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
+	adminRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
+	(&handler.UserAdminHandler{Users: userRepo}).Register(adminRoutes)
 
 	journalRoutes := router.Group("/api/v1/bot-runtime/agent")
 	journalRoutes.Use(middleware.BotKeyAuth(botService))
 	journalHandler.Register(journalRoutes, runHandler)
 	runHandler.RegisterRuntime(journalRoutes)
 	runUserRoutes := router.Group("/api/v1/agent")
-	runUserRoutes.Use(middleware.JWTAuth(jwtManager))
+	runUserRoutes.Use(middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	runHandler.RegisterUser(runUserRoutes)
 	journalHandler.RegisterUser(runUserRoutes)
 	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
@@ -369,7 +388,7 @@ func setupRoutes(
 
 	// Protected routes
 	protected := api.Group("")
-	protected.Use(middleware.JWTAuth(jwtManager))
+	protected.Use(middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	{
 		if len(approvalHandlers) > 0 {
 			protected.GET("/agent/approvals", approvalHandlers[0].List)

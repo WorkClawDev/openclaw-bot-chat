@@ -43,6 +43,44 @@ type BrokerSession struct {
 	Publish      []string  `json:"publish"`
 	ExpiresAt    int64     `json:"expires_at"`
 }
+
+type BrokerMessageIdentity struct {
+	From           *MessagePeerPayload `json:"from"`
+	SenderType     string              `json:"sender_type"`
+	SenderID       string              `json:"sender_id"`
+	ConversationID string              `json:"conversation_id"`
+	Topic          string              `json:"topic"`
+}
+
+// The broker extracts identity from the actual publish packet. The frontend
+// cannot claim to be another group member or an Agent merely by changing JSON.
+func (s *BrokerSecurityService) AuthorizeMessage(ctx context.Context, username, clientID, topic string, message *BrokerMessageIdentity) bool {
+	if !strings.HasPrefix(topic, "chat/") {
+		return true
+	}
+	if message == nil {
+		return !s.settings.RequireMessageIdentity
+	}
+	if username == s.server.Username && clientID == s.server.ClientID {
+		return true
+	}
+	row, ok := s.session(ctx, username, clientID)
+	if !ok {
+		return false
+	}
+	if (message.ConversationID != "" && message.ConversationID != topic) || (message.Topic != "" && message.Topic != topic) {
+		return false
+	}
+	kind, id := message.SenderType, message.SenderID
+	if message.From != nil {
+		if (kind != "" && kind != message.From.Type) || (id != "" && id != message.From.ID) {
+			return false
+		}
+		kind, id = message.From.Type, message.From.ID
+	}
+	return kind == row.ActorType && id == row.ActorID.String()
+}
+
 type BrokerSecurityService struct {
 	store        BrokerSessionStore
 	settings     config.BrokerSecurityConfig
@@ -55,7 +93,7 @@ func NewBrokerSecurityService(store BrokerSessionStore, settings config.BrokerSe
 	s := &BrokerSecurityService{store: store, settings: settings, server: server}
 	s.validate = func(ctx context.Context, row *BrokerSession) bool {
 		var count int64
-		if db.WithContext(ctx).Model(&model.User{}).Where("id = ? AND status = ?", row.OwnerID, model.UserStatusActive).Count(&count).Error != nil || count != 1 {
+		if db.WithContext(ctx).Model(&model.User{}).Where("id = ? AND status = ? AND is_deleted = false", row.OwnerID, model.UserStatusActive).Count(&count).Error != nil || count != 1 {
 			return false
 		}
 		if row.ActorType == "bot" {

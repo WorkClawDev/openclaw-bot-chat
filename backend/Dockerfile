@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o backend ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o backend ./cmd/server && CGO_ENABLED=0 GOOS=linux go build -o admin-user ./cmd/admin-user
 
 # Runtime stage
 FROM alpine:3.19
@@ -24,6 +24,7 @@ RUN apk add --no-cache ca-certificates tzdata
 
 # Copy binary from builder
 COPY --from=builder /app/backend .
+COPY --from=builder /app/admin-user .
 COPY --from=builder /app/config.yaml .
 
 EXPOSE 8080

@@ -1,5 +1,6 @@
 import type {
   User,
+  AdminUser,
   Bot,
   BotKey,
   ConversationApiResponse,
@@ -23,6 +24,7 @@ const AUTH_SESSION_EXPIRED_EVENT = 'openclaw-auth-session-expired'
 
 type ApiRequestOptions = RequestInit & {
   authRetry?: boolean
+  includePagination?: boolean
 }
 
 let refreshPromise: Promise<AuthTokens | null> | null = null
@@ -135,7 +137,7 @@ async function request<T>(
   endpoint: string,
   options: ApiRequestOptions = {}
 ): Promise<T> {
-  const { authRetry = true, ...fetchOptions } = options
+  const { authRetry = true, includePagination = false, ...fetchOptions } = options
   const token = getToken()
   const apiBase = getApiBase()
   const headers: HeadersInit = {
@@ -152,7 +154,7 @@ async function request<T>(
   if (response.status === 401 && authRetry) {
     const refreshed = await refreshStoredTokens()
     if (refreshed?.access_token) {
-      return request<T>(endpoint, { ...fetchOptions, authRetry: false })
+      return request<T>(endpoint, { ...fetchOptions, authRetry: false, includePagination })
     }
   }
 
@@ -171,10 +173,18 @@ async function request<T>(
   }
 
   if (payload && typeof payload === 'object' && 'code' in payload) {
+    if (includePagination) return payload as T
     return (payload as ApiResponse<T>).data as T
   }
 
   return payload as T
+}
+
+export const adminApi = {
+  users: (page: number, search: string, signal?: AbortSignal) =>
+    request<{ data: AdminUser[]; total: number; has_more: boolean }>(`/api/v1/admin/users?${new URLSearchParams({ page: String(page), page_size: '20', search })}`, { includePagination: true, signal }),
+  updateAccess: (id: string, data: Pick<AdminUser, 'role' | 'status'>) =>
+    request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(id)}/access`, { method: 'PUT', body: JSON.stringify(data) }),
 }
 
 // Auth API

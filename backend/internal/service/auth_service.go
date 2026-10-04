@@ -151,7 +151,7 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent
 		}
 		return nil, nil, err
 	}
-	if user.Status == model.UserStatusBanned {
+	if !user.IsActive() {
 		return nil, nil, ErrUserBanned
 	}
 	if user.PasswordHash == nil || !password.Check(req.Password, *user.PasswordHash) {
@@ -197,6 +197,9 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenStr string) 
 	user, err := s.userRepo.GetByID(ctx, claims.UserID)
 	if err != nil {
 		return nil, ErrUserNotFound
+	}
+	if !user.IsActive() {
+		return nil, ErrUserBanned
 	}
 	accessToken, newRefreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username)
 	if err != nil {

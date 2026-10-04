@@ -22,21 +22,24 @@ services:
       interval: 5s
       timeout: 3s
       retries: 15
-  emqx:
-    image: emqx/emqx:5.8.5
-    command: ["/bin/sh", "/opt/emqx/etc/personal-agent-start.sh"]
-    secrets: [broker-token, dashboard-key, node-cookie, backend-password]
+  mqtts:
+    image: ${MQTTS_IMAGE:-mqtts:local}
+    build:
+      context: ${MQTTS_SOURCE_DIR:-../../../mqtts}
+    secrets: [broker-token]
     volumes:
-      - ./emqx.conf.template:/opt/emqx/etc/personal-agent.conf.template:ro
-      - ./emqx-start.sh:/opt/emqx/etc/personal-agent-start.sh:ro
-      - emqx:/opt/emqx/data
-    ports: ["127.0.0.1:1885:1883", "127.0.0.1:8085:8083"]
+      - ./mqtts.yaml:/app/config/mqtts.yaml:ro
+    ports: ["127.0.0.1:1885:1883", "127.0.0.1:8085:1883"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     environment:
-      EMQX_NODE__NAME: emqx@127.0.0.1
+      NO_PROXY: localhost,127.0.0.1,backend
+      no_proxy: localhost,127.0.0.1,backend
     healthcheck:
-      test: [CMD-SHELL, "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
-      interval: 15s
-      timeout: 5s
+      test: [CMD-SHELL, "nc -z 127.0.0.1 1883"]
+      interval: 5s
+      timeout: 3s
       retries: 15
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
@@ -67,7 +70,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-      emqx: {condition: service_healthy}
+      mqtts: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
     ports: ["127.0.0.1:18080:8080"]
     environment:
@@ -77,12 +80,13 @@ services:
       DATABASE_USER: agent
       DATABASE_DBNAME: personal_agent
       REDIS_HOST: redis
-      MQTT_BROKER: tcp://emqx:1883
+      MQTT_BROKER: tcp://mqtts:1883
       MQTT_CLIENT_ID: personal-agent-backend
       MQTT_USERNAME: personal-agent-backend
       MQTT_TCP_PUBLIC_URL: mqtt://127.0.0.1:1885
       MQTT_WS_PUBLIC_URL: ws://127.0.0.1:8085/mqtt
       BROKER_SECURITY_SESSION_TTL_SECONDS: 300
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
       AUTH_PHONE_ENABLED: "false"
       STORAGE_PROVIDER: s3
       STORAGE_PRIVATE_READ: "true"
@@ -140,7 +144,7 @@ services:
     environment:
       PERSONAL_AGENT_SECRET_BINDINGS: BOT_CHAT_BOT_KEY:bot-key OPENAI_COMPAT_API_KEY:model-key
       BOT_CHAT_BACKEND_URL: http://backend:8080
-      BOT_CHAT_MQTT_TCP_URL: mqtt://emqx:1883
+      BOT_CHAT_MQTT_TCP_URL: mqtt://mqtts:1883
       OPENAI_COMPAT_WORKSPACE_ID: personal-agent-workspace
       OPENCLAW_STATE_DIR: /state
       OPENCLAW_AGENT_HANDLER: /app/examples/openai-compatible-handler.cjs
@@ -160,8 +164,6 @@ services:
       worker-init: {condition: service_completed_successfully}
     restart: unless-stopped
 secrets:
-  dashboard-key: {file: ./.runtime/dashboard-key}
-  node-cookie: {file: ./.runtime/node-cookie}
   db-password: {file: ./.runtime/db-password}
   jwt-key: {file: ./.runtime/jwt-key}
   backend-password: {file: ./.runtime/backend-password}
@@ -173,6 +175,5 @@ volumes:
   postgres: {}
   redis: {}
   assets: {}
-  emqx: {}
   state: {}
   output: {}

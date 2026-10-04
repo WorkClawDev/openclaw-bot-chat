@@ -1,7 +1,8 @@
 # Local test environment
 
 Run on Linux x86_64 from the repository root with Docker Compose v2, Node.js 22+,
-npm, Go 1.25+, curl, and tar:
+npm, Go 1.25+, curl, and tar. Clone `ChangerR/mqtts` recursively beside this
+repository, or set `MQTTS_SOURCE_DIR` to its absolute path:
 
 ```bash
 ./scripts/test-env.sh up
@@ -16,7 +17,8 @@ npm, Go 1.25+, curl, and tar:
 The default browser URL is `http://127.0.0.1:3000`. The gateway serves the Next.js UI,
 API, MQTT WebSocket, and signed media URLs from this one origin. Forward port 3000
 when using a remote workspace. The backend is also available at port 8080; MQTT
-TCP is at 1883, MQTT WebSocket at 8083, and the EMQX dashboard at 18083.
+TCP is at 1883 and MQTT WebSocket at 8083. Both forward to the MQTTS listener;
+there is no EMQX dashboard.
 
 `up` generates the ignored `.env.test` with random credentials, installs locked
 Node dependencies, builds the backend, waits for healthy services, and creates a
@@ -30,10 +32,12 @@ provides S3-compatible test object storage with generated keys and signature
 verification. The startup script downloads its official release binary, verifies
 the pinned SHA-256 digest, and caches it in `run/test-env/seaweedfs`.
 The broker validates browser and Bot sessions with the backend's scoped identity
-protocol. A separate private persistence identity can connect while the API starts.
+protocol. A separate private persistence identity connects after HTTP callbacks are ready.
+The backend reports ready only after its persistence subscription is accepted.
 Use the production broker and storage provider separately for deployment testing.
 
-The PostgreSQL, Redis, broker, and storage data use named Docker volumes.
+The PostgreSQL, Redis, and storage data use named Docker volumes. MQTTS is
+stateless in this configuration; PostgreSQL stores chat history.
 `down` stops this test project and preserves its data. `up` can be repeated;
 it reuses account and fixture IDs and restarts the app with the current code.
 `check` runs Go tests, extension tests/build, frontend type checks, test-agent
@@ -89,3 +93,11 @@ and bind port. To change them later, update `.env.test`, including
 `MQTT_WS_PUBLIC_URL` and `STORAGE_S3_PUBLIC_ENDPOINT`, then restart the test stack.
 `GO_BIN`, `GOCACHE`, and `GOMODCACHE` can select an installed Go toolchain and caches.
 Image locations can be overridden using the `TEST_*_IMAGE` entries in `.env.test`.
+
+The dedicated `mqtts-permissions.mjs` acceptance script requires a fresh isolated
+backend/PostgreSQL/Redis stack configured with MQTTS and strict message identity.
+Set `MQTTS_TEST_API_URL` and `MQTTS_TEST_ADMIN_CLI` to that backend and its built
+`cmd/admin-user` binary; run with the same database environment as the backend.
+It creates disposable accounts and checks role escalation, concurrent admin
+changes, private resources, live group/account revocation, MQTT sender forgery,
+and real WebSocket/TCP message persistence. See [setup instructions](../../docs/MQTTS_ACCESS.md).

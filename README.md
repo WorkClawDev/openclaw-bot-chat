@@ -28,21 +28,22 @@ The backend is responsible for:
 
 ## Broker Requirements
 
-The default Docker Compose setup uses EMQX, but the application is not tied to EMQX. Any MQTT broker can be used if it supports:
+The default Docker Compose and isolated test stacks use your
+[ChangerR/mqtts](https://github.com/ChangerR/mqtts) broker. It authenticates each
+client through protected backend callbacks and checks publish, subscribe, and
+outbound delivery against current account, Agent, and group permissions.
+Browsers and Agents receive individual short-lived credentials from bootstrap.
 
-- MQTT TCP and MQTT over WebSocket.
-- Connection authentication, such as username/password or an equivalent mechanism.
-- Topic publish/subscribe ACLs.
-
-Business message payloads do not include an `auth` field. In production, authentication and ACL enforcement should be handled by the broker.
-
-Current broker integration TODO:
-
-- `TODO(broker-acl)`: integrate dynamic authentication and dynamic ACL provisioning for your own broker. The current Compose setup is intended to make the broker-first flow runnable locally.
+See [MQTTS setup, roles, migration, and verification](docs/MQTTS_ACCESS.md).
+Other brokers must implement the same scoped authentication/authorization
+contract; the strict sender-identity setting also requires payload-aware checks.
 
 ## Quick Start With Docker Compose
 
-Start the core stack:
+Clone `ChangerR/mqtts` recursively beside this repository (or set an absolute
+`MQTTS_SOURCE_DIR`). Configure `BROKER_SECURITY_CALLBACK_TOKEN`, `MQTT_PASSWORD`,
+and `JWT_SECRET` in an ignored `.env` with independent random secrets of at least
+32 characters, then start the core stack:
 
 ```bash
 docker compose up --build -d
@@ -53,7 +54,7 @@ This starts:
 
 - PostgreSQL
 - Redis
-- EMQX
+- MQTTS (TCP and WebSocket on the same native listener)
 - Backend
 - Frontend
 
@@ -69,7 +70,6 @@ Common local ports:
 - Backend: `8080`
 - MQTT TCP: `1883`
 - MQTT WebSocket: `8083` with path `/mqtt`
-- EMQX Dashboard: `18083`
 
 ## Local Test Environment
 
@@ -88,7 +88,9 @@ See [test environment commands and configuration](scripts/test-environment/READM
 Important environment variables:
 
 - `NEXT_PUBLIC_API_URL`: backend URL used by the frontend.
-- `MQTT_USERNAME` / `MQTT_PASSWORD`: broker credentials returned by backend bootstrap endpoints.
+- `MQTT_USERNAME` / `MQTT_PASSWORD`: private backend persistence identity; never returned to clients.
+- `BROKER_SECURITY_CALLBACK_TOKEN`: secret shared only by the backend and broker.
+- `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true`: enforce the MQTT payload author.
 - `MQTT_TCP_PUBLIC_URL`: broker TCP URL returned to the plugin / test agent.
 - `MQTT_WS_PUBLIC_URL`: broker WebSocket URL returned to the frontend.
 - `JWT_SECRET`: JWT signing secret. Replace it in production.

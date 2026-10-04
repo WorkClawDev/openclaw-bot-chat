@@ -80,7 +80,11 @@ func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid
 	if err != nil {
 		return nil, err
 	}
-	topics = append(topics, conversations...)
+	for _, topic := range conversations {
+		if s.CanUserAccessConversation(ctx, userID, topic) == nil {
+			topics = append(topics, topic)
+		}
+	}
 
 	// A new bot has no message history yet, but its owner must be able to
 	// subscribe and publish the first DM using scoped broker credentials.
@@ -131,7 +135,9 @@ func (s *MessageService) ListBotRealtimeTopics(ctx context.Context, botID uuid.U
 		if parseMessageRoute(conversation).isDirect() {
 			continue
 		}
-		topics = append(topics, conversation)
+		if s.CanBotAccessConversation(ctx, botID, conversation) == nil {
+			topics = append(topics, conversation)
+		}
 	}
 
 	groups, err := s.ListGroupsForBot(ctx, botID)

@@ -8,11 +8,17 @@ export interface User {
   id: string
   username: string
   email: string
+  role?: 'user' | 'admin'
   nickname?: string
   avatar?: string | null
   avatar_url?: string | null
   created_at?: string
   updated_at?: string
+}
+
+export interface AdminUser extends User {
+  role: 'user' | 'admin'
+  status: 0 | 1 | 2
 }
 
 export interface Bot {

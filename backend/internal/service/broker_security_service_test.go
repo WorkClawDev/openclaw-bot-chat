@@ -116,3 +116,41 @@ func TestBrokerServerIdentityHasNoClientCredentialShortcut(t *testing.T) {
 		t.Fatal("server scope broken")
 	}
 }
+
+func TestBrokerPublishIdentityCannotImpersonateAnotherActor(t *testing.T) {
+	s, _ := brokerFixture()
+	s.settings.RequireMessageIdentity = true
+	ctx := context.Background()
+	actor := uuid.New()
+	name, _, _, err := s.Mint(ctx, BrokerSession{ClientID: "client", ActorType: "user", ActorID: actor, OwnerID: actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic := "chat/group/" + uuid.NewString()
+	message := &BrokerMessageIdentity{From: &MessagePeerPayload{Type: "user", ID: actor.String()}, ConversationID: topic}
+	if !s.AuthorizeMessage(ctx, name, "client", topic, message) {
+		t.Fatal("own identity denied")
+	}
+	if s.AuthorizeMessage(ctx, name, "client", topic, nil) {
+		t.Fatal("identity missing")
+	}
+	message.From.ID = uuid.NewString()
+	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
+		t.Fatal("forged actor accepted")
+	}
+	message.From.ID = actor.String()
+	message.From.Type = "bot"
+	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
+		t.Fatal("forged actor type accepted")
+	}
+	message.From.Type = "user"
+	message.SenderID = uuid.NewString()
+	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
+		t.Fatal("contradicting sender fields accepted")
+	}
+	message.SenderID = ""
+	message.ConversationID = "chat/group/other"
+	if s.AuthorizeMessage(ctx, name, "client", topic, message) {
+		t.Fatal("contradicting conversation accepted")
+	}
+}

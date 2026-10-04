@@ -1,0 +1,26 @@
+server:
+  bind_address: "0.0.0.0"
+  port: 1883
+  thread_count: 2
+  max_connections: 1000
+mqtt:
+  allow_mqtt3x: true
+  max_packet_size: 1048576
+memory:
+  client_max_size: 4194304
+monitoring:
+  enabled: false
+log:
+  level: warn
+auth:
+  enabled: true
+  allow_anonymous: false
+  cache_enabled: false
+  providers:
+    - type: http
+      settings:
+        authentication_url: http://backend:8080/internal/broker/authentication
+        authorization_url: http://backend:8080/internal/broker/authorization
+        token_file: /run/secrets/broker-token
+        timeout_ms: 2000
+        message_identity_prefix: "chat/"

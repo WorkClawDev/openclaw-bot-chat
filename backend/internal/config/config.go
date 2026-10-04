@@ -25,8 +25,9 @@ type Config struct {
 }
 
 type BrokerSecurityConfig struct {
-	CallbackToken     string `mapstructure:"callback_token"`
-	SessionTTLSeconds int    `mapstructure:"session_ttl_seconds"`
+	RequireMessageIdentity bool   `mapstructure:"require_message_identity"`
+	CallbackToken          string `mapstructure:"callback_token"`
+	SessionTTLSeconds      int    `mapstructure:"session_ttl_seconds"`
 }
 
 // AppConfig holds application-level settings
@@ -70,6 +71,10 @@ type MQTTConfig struct {
 	ReconnectDelay int    `mapstructure:"reconnect_delay"`
 	TCPPublicURL   string `mapstructure:"tcp_public_url"`
 	WSPublicURL    string `mapstructure:"ws_public_url"`
+	TLSCAFile      string `mapstructure:"tls_ca_file"`
+	TLSCertFile    string `mapstructure:"tls_cert_file"`
+	TLSKeyFile     string `mapstructure:"tls_key_file"`
+	TLSServerName  string `mapstructure:"tls_server_name"`
 }
 
 type BrokerClientConfig struct {
@@ -215,6 +220,7 @@ func Load(configPath string) (*Config, error) {
 	bindEnvKeys(v,
 		"broker_security.callback_token",
 		"broker_security.session_ttl_seconds",
+		"broker_security.require_message_identity",
 		"app.host",
 		"app.port",
 		"app.mode",
@@ -242,6 +248,10 @@ func Load(configPath string) (*Config, error) {
 		"mqtt.reconnect_delay",
 		"mqtt.tcp_public_url",
 		"mqtt.ws_public_url",
+		"mqtt.tls_ca_file",
+		"mqtt.tls_cert_file",
+		"mqtt.tls_key_file",
+		"mqtt.tls_server_name",
 		"jwt.secret",
 		"jwt.access_token_ttl",
 		"jwt.refresh_token_ttl",

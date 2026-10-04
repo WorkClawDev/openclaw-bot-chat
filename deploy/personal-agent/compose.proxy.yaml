@@ -1,6 +1,9 @@
 # Optional trust configuration for an HTTPS-intercepting development proxy.
 # Supply a readable combined CA bundle; keep the existing Docker proxy settings.
 services:
+  mqtts:
+    build:
+      secrets: [proxy_ca]
   backend:
     build:
       secrets: [proxy_ca]

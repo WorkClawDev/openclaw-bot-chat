@@ -8,9 +8,11 @@
 
 数据库备份恢复、6 个迁移重放和独立对象存储恢复已实际校验。正式 40 场景 live runner 仍未逐项验收；72 小时采集尚未达到要求时长。当前 Linux 无法复验最新 iOS 代码；2026-10-03 的模拟器记录属于历史证据，见 [实施进度](PERSONAL_AGENT_PROGRESS.md)。
 
+最新默认部署已切换到自有 MQTTS，并增加账号管理员和实时撤权。此前 EMQX 验收记录保留为历史证据；新配置、配套版本与权限规则见 [MQTTS 与权限管理](MQTTS_ACCESS.md)。
+
 ## 隔离启动
 
-所有命令在仓库根目录执行。使用 Node ≥22，本次主机和 worker 验证为 Node 24，前端使用 Node 22 镜像。
+先递归克隆 `ChangerR/mqtts` 到本项目的同级目录，或设置绝对路径 `MQTTS_SOURCE_DIR`。所有命令在仓库根目录执行。使用 Node ≥22，本次主机和 worker 验证为 Node 24，前端使用 Node 22 镜像。
 
 ```sh
 node --version
@@ -33,7 +35,7 @@ docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/co
 
 本地 CPU 模型可通过 `host.docker.internal` 访问主机服务，并在 `.env` 调整 `OPENAI_COMPAT_TIMEOUT_MS`、`OPENAI_COMPAT_MCP_TOTAL_BUDGET_MS`、`OPENAI_COMPAT_MAX_TOKENS`、`OPENAI_COMPAT_STREAM_USAGE` 和 `OPENAI_COMPAT_SYSTEM_PROMPT`。本次分别使用 240000、600000、512、true 及逐次调用工具的提示；默认 45 秒工具预算可能在 CPU 模型首轮推理期间耗尽。
 
-专用 project 固定为 `personal-agent`。端口仅绑定主机 loopback：Web13000、API18080、MQTT1885、WS8085、对象存储19000；数据库、Redis、broker dashboard 不向主机发布。不得将同名数据库或卷指向生产。旧根目录 Compose 使用不同 broker 配置，本分支新短期凭据必须配套 HTTP 认证/授权，不能混用旧共享账户的 broker。
+专用 project 固定为 `personal-agent`。端口仅绑定主机 loopback：Web13000、API18080、MQTT1885、WS8085、对象存储19000；数据库、Redis 不向主机发布，MQTTS 没有 EMQX dashboard。不得将同名数据库或卷指向生产。根目录和专用 Compose 均使用 MQTTS HTTP 认证/授权配置，不能混用旧共享账户的 broker。
 
 这个 Compose 是单机隔离验收配置，`APP_MODE=debug` 且手机号认证关闭。远端日常部署还需配置 HTTPS/WSS、外部可解析的 storage public endpoint、模型和存储服务、备份及真实验收。iOS 真机无法使用主机127.0.0.1；需要明确设置可达服务地址及对应 JWT、broker WS 和 storage public URL。
 
@@ -41,9 +43,9 @@ docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/co
 
 客户端 bootstrap 不再收到后端的共享 MQTT 账户，而是与 owner/bot/clientID/订阅和发布范围绑定的随机密码。Redis只保存密码 hash 和短期会话，业务 run/记忆/消息仍在 PostgreSQL。HTTP callbacks 检查身份、bot key 活跃/过期、主题范围及实际会话权限；回调 token 缺失、Redis故障、身份撤销或请求异常均显式 deny。只有已认证的 broker 能调用 callbacks。后端持久消费者只获准订阅 `chat/#`，通知只能发布指定命名空间。
 
-会话有效期默认300秒，限制为60–300秒，EMQX `expire_at` 到期断开。worker 提前续期，Web 定时刷新，iOS断开后重新 bootstrap。authz cache关闭。撤销立即阻止新的认证/发布/订阅；**已建立订阅的读权限需要等待短期会话断开，最长5分钟**，并未实现 dashboard API 的即时踢连接。个人执行入口另外绑定真实 MQTT transport topic，仅 owner 私聊可以发起工具，不能依赖 payload 自称 owner。
+会话有效期默认300秒，限制为60–300秒。MQTTS 在每次发布、订阅和投递时重新校验权限及过期时间，已建立订阅在移出群聊、封禁账号或撤销 Agent Key 后也不能继续接收新消息；已经交付给客户端的历史内容不可能追回。worker 提前续期，Web 定时刷新，iOS 断开后重新 bootstrap。过期连接可能保持 TCP，但不能继续读写。个人执行入口另外绑定真实 MQTT transport topic，仅 owner 私聊可以发起工具。
 
-配置新增 `BROKER_SECURITY_CALLBACK_TOKEN`（≥32字符）和 `BROKER_SECURITY_SESSION_TTL_SECONDS`；后端 `MQTT_PASSWORD` 同样≥32字符，release 配置缺失会拒绝启动。emqx-start 从独立 secrets 注入 callback、dashboard密码和 node cookie，并为私有持久消费者初始化独立身份，解除 HTTP 回调与后端启动的循环依赖。HTTP authn 的 `expire_at` 使用 EMQX5.8.5，[官方 HTTP 认证说明](https://docs.emqx.com/en/emqx/latest/guides/access-control/authn/http.html)；主题认证返回格式参照[官方 HTTP 授权说明](https://docs.emqx.com/en/emqx/latest/guides/access-control/authz/http.html)。本次实际验证身份绑定、跨用户拒绝、撤销、300 秒到期断连和扩展续期后的收发。
+配置 `BROKER_SECURITY_CALLBACK_TOKEN`（≥32字符）和 `BROKER_SECURITY_SESSION_TTL_SECONDS`；后端 `MQTT_PASSWORD` 同样≥32字符，release 配置缺失会拒绝启动。MQTTS 从独立 secret 读取 callback token，backend 先启动 HTTP 再异步连接 broker，持久订阅成功后才返回 ready。`BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true` 配合 broker `message_identity_prefix: "chat/"` 阻止伪造消息发送者。
 
 ## 工具、文件与不确定结果
 
@@ -70,7 +72,7 @@ docker compose --env-file deploy/personal-agent/.env -f deploy/personal-agent/co
 
 ## 迁移、备份、恢复和回滚
 
-新增6个增量SQL：approvals → journal → runs → artifacts → memory_schedules → event_outbox。依赖顺序不能按文件名排序。复用Task状态、Document与assets，未替换现有业务表。backend现有启动AutoMigrate仍会建表；发布前必须在PostgreSQL副本核对列、索引、FK和增量SQL。SQLite自动测试不能替代这个验证。
+Agent 原有6个增量SQL：approvals → journal → runs → artifacts → memory_schedules → event_outbox。依赖顺序不能按文件名排序。其后追加 `20261004_user_roles.sql`；现有账号默认普通用户，首个管理员由运维命令显式提升。复用Task状态、Document与assets，未替换现有业务表。backend现有启动AutoMigrate仍会建表；发布前必须在PostgreSQL副本核对列、索引、FK和增量SQL。SQLite自动测试不能替代这个验证。
 
 ```sh
 sh scripts/personal-agent-backup.sh backup /private/tmp/personal-agent-before-change.dump
@@ -107,4 +109,4 @@ node scripts/personal-agent-stability.cjs --analyze
 
 尚待生产模型质量和付费服务账单核对、远端MCP、真实外部副作用的不确定结果核对、多 worker 生产并发、隔离 Shell runner、p95 性能、iOS真机及72小时验收。本地 CPU 模型可以完成受约束任务，但自由任务中出现过计算和文件内容错误；任务成功状态不能代替成果审核。当前验收不包含生产凭据轮换、Git历史治理或发布。
 
-与其他工作区的改动集成时，应逐项比较路由、bootstrap、MQTT配置、assets、Task保护、iOS项目与前端package锁，不直接整体覆盖目录。broker ACL应选定统一协议并合并撤销语义；不能并列启用旧共享身份与新HTTP身份后宣称完成权限验证。已知读订阅撤销最多5分钟窗口、文件解析OS隔离及孤立blob清理限制需在发布决策中保留。
+与其他工作区的改动集成时，应逐项比较路由、bootstrap、MQTT配置、assets、Task保护、iOS项目与前端package锁，不直接整体覆盖目录。broker ACL应选定统一协议并合并撤销语义；不能并列启用旧共享身份与新HTTP身份后宣称完成权限验证。旧 EMQX 部署的读订阅撤销最多5分钟窗口不适用于新 MQTTS 逐次投递校验；文件解析OS隔离及孤立blob清理限制仍需保留。

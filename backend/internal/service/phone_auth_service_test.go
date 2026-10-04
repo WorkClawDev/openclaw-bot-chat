@@ -157,6 +157,7 @@ func newPhoneAuthServiceTestEnv(t *testing.T) phoneAuthServiceTestEnv {
 			nickname text,
 			avatar_url text,
 			status integer NOT NULL DEFAULT 1,
+			role text NOT NULL DEFAULT 'user',
 			is_deleted boolean NOT NULL DEFAULT false,
 			last_login_at datetime,
 			last_login_ip text,

@@ -137,6 +137,9 @@ func (s *MessageService) GetConversationListForBot(ctx context.Context, botID uu
 
 	result := make([]ConversationInfo, 0, len(ids))
 	for _, id := range ids {
+		if s.CanBotAccessConversation(ctx, botID, id) != nil {
+			continue
+		}
 		msgs, queryErr := s.msgRepo.GetByConversationID(ctx, id, 1, 0)
 		if queryErr != nil || len(msgs) == 0 {
 			continue
@@ -167,6 +170,9 @@ func (s *MessageService) GetConversationList(ctx context.Context, userID uuid.UU
 	}
 	result := make([]ConversationInfo, 0, len(ids))
 	for _, id := range ids {
+		if s.CanUserAccessConversation(ctx, userID, id) != nil {
+			continue
+		}
 		msgs, err := s.msgRepo.GetByConversationID(ctx, id, 1, 0)
 		if err != nil || len(msgs) == 0 {
 			continue

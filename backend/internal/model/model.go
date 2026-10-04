@@ -12,6 +12,12 @@ import (
 // --- User ---
 
 type UserStatus int
+type UserRole string
+
+const (
+	UserRoleUser  UserRole = "user"
+	UserRoleAdmin UserRole = "admin"
+)
 
 const (
 	UserStatusInactive UserStatus = 0
@@ -31,6 +37,7 @@ type User struct {
 	Nickname         *string    `gorm:"type:varchar(128)"`
 	AvatarURL        *string    `gorm:"type:varchar(512)"`
 	Status           UserStatus `gorm:"type:smallint;not null;default:1"`
+	Role             UserRole   `gorm:"type:varchar(16);not null;default:'user'"`
 	IsDeleted        bool       `gorm:"not null;default:false"`
 	LastLoginAt      *time.Time
 	LastLoginIP      *string        `gorm:"type:varchar(45)"`
@@ -40,6 +47,10 @@ type User struct {
 }
 
 func (User) TableName() string { return "users" }
+
+func (u *User) IsActive() bool {
+	return u != nil && u.Status == UserStatusActive && !u.IsDeleted && !u.DeletedAt.Valid
+}
 
 // --- Bot ---
 
