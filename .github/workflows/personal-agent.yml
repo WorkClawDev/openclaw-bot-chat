@@ -30,6 +30,9 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           CHAT_UI_START=1 npm run test:chat
+      - name: Stress 10000-message scrolling and streaming
+        working-directory: frontend
+        run: CHAT_UI_START=1 npm run test:chat:performance -- --grep 'desktop-10000|streaming-10000-cpu1'
       - run: npm --prefix frontend audit --omit=dev && npm --prefix test/openclaw-bot-chat audit --omit=dev
       - run: OPENAI_COMPAT_BASE_URL=https://fixture.invalid/v1 OPENAI_COMPAT_MODEL=fixture docker compose -f deploy/personal-agent/compose.yaml -p personal-agent config --quiet
       - uses: actions/upload-artifact@v4
@@ -40,3 +43,4 @@ jobs:
             test/personal-agent-evals/results/
             run/agent-chat-ui/playwright/
             run/agent-chat-ui/browser-results.json
+            run/agent-chat-performance/

@@ -59,6 +59,28 @@ frontend run test:chat` can start its own production server on port 13002.
 Screenshots, traces, and the JSON report are written to `run/agent-chat-ui/` and
 are excluded from Git. CI also runs this suite and uploads its evidence.
 
+`CHAT_UI_URL=http://127.0.0.1:13002 npm --prefix frontend run test:chat:performance`
+runs the larger rendering benchmark against an existing production build. Use
+`CHAT_UI_START=1` instead to start the frontend's own production server after
+`npm --prefix frontend run build`. The suite covers 1,000 / 5,000 / 10,000-message
+histories with prose, code, tables, and delayed images; desktop native wheel
+input; 390px mobile touch gestures with 4x CPU throttling; group conversations;
+100 incoming MQTT messages while reading history; and growing streaming output.
+Touch input uses CDP touch-start/move/end sequences and checks actual scroll
+distance so a browser that ignores a gesture cannot silently pass the benchmark.
+
+Frame p50/p95/p99, maximum frame intervals, tasks over 50ms, rendered message
+counts, empty viewport samples, and reading-anchor movement are saved under
+`run/agent-chat-performance/`. Playwright trace recording is disabled during
+timing measurements. CI repeats the desktop 10,000-message and streaming cases;
+timing values are reported rather than assigned a universal device-independent
+FPS threshold. The functional gates require real scroll movement, bounded DOM,
+no empty viewport samples, and less than 4px anchor movement during incoming
+messages. These headless Chromium measurements do not benchmark server-side
+history pagination or replace physical-device Safari/Android testing.
+For diagnosis, `CHAT_PERF_PROFILE=1` also saves a Chromium CPU profile for the
+native scrolling cases; keep profiled timings separate from normal measurements.
+
 The independent production-container and real-model acceptance results are in
 [the project acceptance report](../../docs/PROJECT_ACCEPTANCE.md).
 

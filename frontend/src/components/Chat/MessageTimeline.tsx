@@ -29,11 +29,13 @@ export const MessageTimeline = memo(forwardRef<MessageTimelineHandle, Props>(fun
   ), [userId, mentions, agent])
   return (
     <div className="relative min-h-0 flex-1" data-testid="message-timeline">
-      <Virtuoso ref={scroll.listRef} data-testid={testId} aria-label="Conversation messages" tabIndex={0}
+      {/* A threshold below one text line keeps small streaming resizes following. */}
+      <Virtuoso ref={scroll.listRef} scrollerRef={scroll.scrollerRef} totalListHeightChanged={scroll.followResize}
+        data-testid={testId} aria-label="Conversation messages" tabIndex={0}
         className="chat-message-scroll scrollbar-thin" style={{ height: '100%', overflowAnchor: 'none' }}
         data={messages} computeItemKey={itemKey} itemContent={renderMessage}
         initialTopMostItemIndex={{ index: messages.length - 1, align: 'end' }} alignToBottom
-        atBottomThreshold={64} atBottomStateChange={scroll.atBottomStateChange} followOutput={scroll.followOutput}
+        atBottomThreshold={4} atBottomStateChange={scroll.atBottomStateChange} followOutput={scroll.followOutput}
         increaseViewportBy={{ top: 400, bottom: 250 }} />
       {!scroll.isAtBottom && <button type="button" onClick={scroll.scrollToBottom} className="chat-jump-latest">
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 4v16m-6-6 6 6 6-6" /></svg>

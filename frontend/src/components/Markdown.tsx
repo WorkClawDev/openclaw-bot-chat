@@ -24,6 +24,8 @@ export const Markdown = memo(function Markdown({ content, className = '', isOwn 
               <SyntaxHighlighter
                 {...props}
                 style={vscDarkPlus}
+                useInlineStyles={false}
+                customStyle={vscDarkPlus['pre[class*="language-"]']}
                 language={match[1]}
                 PreTag="div"
               >
