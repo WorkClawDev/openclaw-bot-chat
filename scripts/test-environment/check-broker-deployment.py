@@ -11,7 +11,7 @@ env.update(BROKER_SECURITY_CALLBACK_TOKEN='c' * 40, MQTT_PASSWORD='p' * 40,
            JWT_SECRET='j' * 40, OPENAI_COMPAT_BASE_URL='https://model.example/v1',
            OPENAI_COMPAT_MODEL='fixture', DATABASE_USER='postgres',
            DATABASE_PASSWORD='fixture', DATABASE_DBNAME='fixture',
-           MQTTS_IMAGE='mqtts:independent-fixture')
+           MQTTS_IMAGE='mqtts:independent-fixture', STORAGE_S3_BUCKET='fixture')
 variants = [
     (root, ['docker-compose.yml']),
     (root, ['deploy/docker-compose.test.yml']),
@@ -26,7 +26,8 @@ for directory, files in variants:
     for name in files:
         command += ['-f', str(root / name)]
     for profile in [[], ['--profile', 'broker']]:
-        result = subprocess.run(command + profile + ['config', '--format', 'json'],
+        # Verify structure without reading ignored runtime .env/secret files.
+        result = subprocess.run(command + profile + ['config', '--no-env-resolution', '--format', 'json'],
                                 env=env, text=True, capture_output=True)
         if result.returncode:
             raise RuntimeError('Compose validation failed: ' + result.stderr)
