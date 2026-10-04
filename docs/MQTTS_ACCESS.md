@@ -81,6 +81,11 @@ MQTTS 在发布、订阅、**每次投递**时检查权限。移出群聊、禁�
 后端检查其与 CONNECT 身份一致，并拒绝冲突的 topic/conversation/sender 字段。
 普通用户不能借群聊发布权限冒充另一个用户或 Agent。
 
+私有存储下，旧 `/assets/image/:id`、`/assets/audio/:id` 公开重定向不能再替消息
+附件续签。下载地址通过已授权的消息历史获取。仅附件所有者主动选作自己、
+自己 Agent 或群聊头像的图片可以公开重定向；其他账号复制附件 URL 到头像
+字段不能使它公开。已签发链接在其过期前仍然有效。
+
 ## 公网 TLS 与已有 Broker
 
 用 TLS 代理将公网 `mqtts://broker.example:8883` 与
