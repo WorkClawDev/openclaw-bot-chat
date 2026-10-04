@@ -15,11 +15,15 @@ jobs:
           POSTGRES_PASSWORD: isolated-ci-password
           POSTGRES_DB: mqtts_acceptance
         ports: ['5432:5432']
-        options: --health-cmd='pg_isready -U postgres' --health-interval=5s --health-retries=15
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval=5s --health-retries=15
       redis:
         image: redis:7-alpine
         ports: ['6379:6379']
-        options: --health-cmd='redis-cli ping' --health-interval=5s --health-retries=15
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval=5s --health-retries=15
     env:
       DATABASE_HOST: 127.0.0.1
       DATABASE_PORT: '5432'

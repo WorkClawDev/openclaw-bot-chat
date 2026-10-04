@@ -102,6 +102,9 @@ MQTTS 在发布、订阅、**每次投递**时检查权限。移出群聊、禁�
 不保证跨 Broker 复用，应重新 bootstrap。MQTTS 不迁移 EMQX 内存中的 retained
 消息/离线队列；应用的持久聊天历史仍从 PostgreSQL catch-up 获取。
 新旧消费者不能同时处理同一条实时流。保留旧 Broker/数据库快照作为回滚依据。
+从旧 Compose 切换时，先用旧配置停止该 project 的 EMQX 容器，再启动新配置，
+避免它继续占用同一 TCP/WS 端口；不要使用 `down -v` 删除数据卷。测试栈从旧版
+重新执行 `scripts/test-env.sh up` 前也需先停止其旧 EMQX 容器。
 
 ```sh
 cd backend && go test ./...
