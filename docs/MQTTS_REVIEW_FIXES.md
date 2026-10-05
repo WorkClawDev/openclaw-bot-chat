@@ -43,6 +43,7 @@ Broker PR：[ChangerR/mqtts#17](https://github.com/ChangerR/mqtts/pull/17)。聊
 
 - 本机原生全量 62/62 CTest 通过；授权模块 `go test -race ./...` 通过；独立 CI 同时验证镜像启动、授权压力、并发和 fan-in。
 - 聊天后端 `go test ./...`、前端生产构建通过。真实 Paho 连接在首次 SUBACK 被拒绝后自动重连，新的订阅成功后才报告就绪，并在持久接收后发 PUBACK。
+- 撤权回归测试重复 20 次通过。CI 发现测试用 SQLite 连接与异步审计写入的锁冲突，已在测试夹具中使用单连接；真实 PostgreSQL 的并发管理员更新验收仍单独执行。
 - 12 种 Compose 配置组合通过独立部署检查；锁定镜像的 SHA-256、源码版本、存储契约和 Protobuf 摘要均已核验。
 - 真实 PostgreSQL/Redis、独立 authz、Broker、API、message-ingest 环境升级后：浏览器协议与 Agent 双向消息、用户/管理员权限、群成员撤权、Agent 密钥撤销、账号停用恢复、旧 JWT/refresh 永久失效、新登录均通过。
 - 200 条消息在消费者及 Broker SIGKILL 后按序落库；API 暂停时仍落库 101 条并跨过消费者策略续租；数据库阻塞及消费者 SIGKILL 后恢复 200 条；重复投递不新增行、不复活已删历史，坏业务消息进入死信队列。
