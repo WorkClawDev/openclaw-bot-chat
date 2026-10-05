@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
+	"github.com/openclaw-bot-chat/backend/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -74,10 +75,45 @@ func (s *MessageService) CanBotAccessConversation(ctx context.Context, botID uui
 	}
 }
 
+func (s *MessageService) accessibleUserConversations(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
+	const pageSize = 200
+	topics := make([]string, 0)
+	seen := make(map[string]bool)
+	var cursor *repository.ConversationCandidate
+	for {
+		candidates, err := s.msgRepo.GetConversationCandidates(ctx, userID, nil, pageSize, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range candidates {
+			topic := candidate.ConversationID
+			if seen[topic] {
+				continue
+			}
+			seen[topic] = true
+			err := s.CanUserAccessConversation(ctx, userID, topic)
+			if errors.Is(err, ErrConversationAccessDenied) || errors.Is(err, ErrInvalidMessageRoute) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			topics = append(topics, topic)
+			if limit > 0 && len(topics) == limit {
+				return topics, nil
+			}
+		}
+		if len(candidates) < pageSize {
+			return topics, nil
+		}
+		cursor = &candidates[len(candidates)-1]
+	}
+}
+
 func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	topics := make([]string, 0, 32)
 
-	conversations, err := s.GetConversations(ctx, userID, 200)
+	conversations, err := s.accessibleUserConversations(ctx, userID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -105,15 +141,19 @@ func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid
 		}
 	}
 
-	groups, _, err := s.groupRepo.ListByUser(ctx, userID, 1, 500)
-	if err != nil {
-		return nil, err
-	}
-	for _, group := range groups {
-		if !group.IsActive {
-			continue
+	for page := 1; ; page++ {
+		groups, total, err := s.groupRepo.ListByUser(ctx, userID, page, pageSize)
+		if err != nil {
+			return nil, err
 		}
-		topics = append(topics, fmt.Sprintf("%s/group/%s", messageTopicPrefix, group.ID.String()))
+		for _, group := range groups {
+			if group.IsActive {
+				topics = append(topics, fmt.Sprintf("%s/group/%s", messageTopicPrefix, group.ID.String()))
+			}
+		}
+		if len(groups) == 0 || int64(page*pageSize) >= total {
+			break
+		}
 	}
 
 	return uniqueSortedTopics(topics), nil

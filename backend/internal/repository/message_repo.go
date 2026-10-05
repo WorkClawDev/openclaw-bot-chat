@@ -112,24 +112,40 @@ func (r *MessageRepository) CreateWithNextSeq(ctx context.Context, msg *model.Me
 	})
 }
 
-func (r *MessageRepository) GetConversations(ctx context.Context, userID uuid.UUID, botID *uuid.UUID, limit int) ([]string, error) {
-	var conversationIDs []string
-	query := r.db.WithContext(ctx).Model(&model.Message{}).
-		Select("conversation_id").
-		Where("is_deleted = false")
+// ConversationCandidate carries an activity cursor before applying the current ACL.
+type ConversationCandidate struct {
+	ConversationID string
+	LastActivity   string
+}
 
+func (r *MessageRepository) GetConversations(ctx context.Context, userID uuid.UUID, botID *uuid.UUID, limit int) ([]string, error) {
+	candidates, err := r.GetConversationCandidates(ctx, userID, botID, limit, nil)
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.ConversationID)
+	}
+	return ids, err
+}
+
+// Keyset pagination prevents removed/inaccessible recent conversations from
+// consuming the authorized page. The database renders its own timestamp cursor
+// so neither time precision nor the driver-specific timestamp format is lost.
+func (r *MessageRepository) GetConversationCandidates(ctx context.Context, userID uuid.UUID, botID *uuid.UUID, limit int, after *ConversationCandidate) ([]ConversationCandidate, error) {
+	var candidates []ConversationCandidate
+	query := r.db.WithContext(ctx).Model(&model.Message{}).
+		Select("conversation_id, CAST(MAX(created_at) AS TEXT) AS last_activity").
+		Where("is_deleted = false")
 	if botID != nil {
 		query = query.Where("(sender_id = ? OR bot_id = ?)", userID, *botID)
 	} else {
 		query = query.Where("sender_id = ? OR bot_id IN (SELECT id FROM bots WHERE owner_id = ?)", userID, userID)
 	}
-
-	err := query.
-		Group("conversation_id").
-		Order("MAX(created_at) DESC").
-		Limit(limit).
-		Pluck("conversation_id", &conversationIDs).Error
-	return conversationIDs, err
+	query = query.Group("conversation_id")
+	if after != nil {
+		query = query.Having("MAX(created_at) < ? OR (MAX(created_at) = ? AND conversation_id > ?)", after.LastActivity, after.LastActivity, after.ConversationID)
+	}
+	err := query.Order("MAX(created_at) DESC, conversation_id ASC").Limit(limit).Scan(&candidates).Error
+	return candidates, err
 }
 
 func (r *MessageRepository) GetConversationsForBot(ctx context.Context, botID uuid.UUID, limit int) ([]string, error) {

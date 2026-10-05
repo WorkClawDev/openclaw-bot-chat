@@ -153,7 +153,7 @@ func (s *MessageService) GetConversations(ctx context.Context, userID uuid.UUID,
 	if limit <= 0 {
 		limit = 50
 	}
-	return s.msgRepo.GetConversations(ctx, userID, nil, limit)
+	return s.accessibleUserConversations(ctx, userID, limit)
 }
 
 func (s *MessageService) GetConversationsForBot(ctx context.Context, botID uuid.UUID, limit int) ([]string, error) {
@@ -201,7 +201,7 @@ type ConversationInfo struct {
 
 // GetConversationList returns conversation summaries for a user
 func (s *MessageService) GetConversationList(ctx context.Context, userID uuid.UUID, limit int) ([]ConversationInfo, error) {
-	ids, err := s.msgRepo.GetConversations(ctx, userID, nil, limit)
+	ids, err := s.GetConversations(ctx, userID, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -40,7 +40,7 @@ func (r *GroupRepository) ListByUser(ctx context.Context, userID uuid.UUID, page
 		return nil, 0, err
 	}
 	offset := (page - 1) * pageSize
-	if err := query.Preload("Owner").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&groups).Error; err != nil {
+	if err := query.Preload("Owner").Order("created_at DESC, id ASC").Offset(offset).Limit(pageSize).Find(&groups).Error; err != nil {
 		return nil, 0, err
 	}
 	return groups, total, nil
