@@ -183,7 +183,7 @@ async function request<T>(
 export const adminApi = {
   users: (page: number, search: string, signal?: AbortSignal) =>
     request<{ data: AdminUser[]; total: number; has_more: boolean }>(`/api/v1/admin/users?${new URLSearchParams({ page: String(page), page_size: '20', search })}`, { includePagination: true, signal }),
-  updateAccess: (id: string, data: Pick<AdminUser, 'role' | 'status'>) =>
+  updateAccess: (id: string, data: Partial<Pick<AdminUser, 'role' | 'status'>>) =>
     request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(id)}/access`, { method: 'PUT', body: JSON.stringify(data) }),
 }
 

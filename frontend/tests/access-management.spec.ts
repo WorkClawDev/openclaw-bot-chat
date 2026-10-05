@@ -20,7 +20,7 @@ async function adminFixture(page: Page) {
       await route.fulfill({ json: { code: 0, data, total: data.length, page: 1, per_page: 20, has_more: false } })
     }
   })
-  return { ...context, changes }
+  return { ...context, changes, accounts }
 }
 
 test('administrator can suspend an account, search, and cannot edit their own access', async ({ page }) => {
@@ -32,7 +32,7 @@ test('administrator can suspend an account, search, and cannot edit their own ac
   await page.getByLabel('Status for Jordan').selectOption('2')
   await page.getByRole('button', { name: 'Save access for Jordan' }).click()
   await expect(page.getByRole('status')).toHaveText('Access updated')
-  expect(context.changes).toEqual([{ role: 'user', status: 2 }])
+  expect(context.changes).toEqual([{ status: 2 }])
   await page.screenshot({ path: '../run/mqtts-permissions/access-desktop.png', fullPage: true })
   await page.getByLabel('Search accounts').fill('Jordan')
   await page.getByRole('button', { name: 'Search', exact: true }).click()
@@ -63,5 +63,28 @@ test('failed updates stay editable on a small screen', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Save access for Jordan' })).toBeEnabled()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: '../run/mqtts-permissions/access-mobile.png', fullPage: true })
+  expect(context.errors).toEqual([])
+})
+
+test('role edits preserve a suspension made by another administrator', async ({ page }) => {
+  const context = await adminFixture(page)
+  await page.goto('/admin/users')
+  await expect(page.getByLabel('Status for Jordan')).toHaveValue('1')
+  // Another administrator suspends the account after this page loaded.
+  context.accounts[1].status = 2
+  await page.getByLabel('Role for Jordan').selectOption('admin')
+  await page.getByRole('button', { name: 'Save access for Jordan' }).click()
+  await expect(page.getByRole('status')).toHaveText('Access updated')
+  expect(context.changes).toEqual([{ role: 'admin' }])
+  await expect(page.getByLabel('Status for Jordan')).toHaveValue('2')
+  await expect(page.getByRole('button', { name: 'Save access for Jordan' })).toBeDisabled()
+  // A later explicit status edit must not restore a concurrently changed role.
+  context.accounts[1].role = 'user'
+  await page.getByLabel('Status for Jordan').selectOption('1')
+  await page.getByRole('button', { name: 'Save access for Jordan' }).click()
+  await expect(page.getByRole('status')).toHaveText('Access updated')
+  expect(context.changes).toEqual([{ role: 'admin' }, { status: 1 }])
+  await expect(page.getByLabel('Role for Jordan')).toHaveValue('user')
+  await expect(page.getByRole('button', { name: 'Save access for Jordan' })).toBeDisabled()
   expect(context.errors).toEqual([])
 })

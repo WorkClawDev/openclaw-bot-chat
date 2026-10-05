@@ -17,7 +17,14 @@ function AccountRow({ account, ownAccount, onSaved }: { account: AdminUser; ownA
   const changed = role !== account.role || status !== account.status
   async function save() {
     setSaving(true); setError(''); setSaved(false)
-    try { onSaved(await adminApi.updateAccess(account.id, { role, status })); setSaved(true) }
+    try {
+      const changes: Partial<Pick<AdminUser, 'role' | 'status'>> = {}
+      if (role !== account.role) changes.role = role
+      if (status !== account.status) changes.status = status
+      const updated = await adminApi.updateAccess(account.id, changes)
+      setRole(updated.role); setStatus(updated.status)
+      onSaved(updated); setSaved(true)
+    }
     catch (error) { setError(error instanceof Error ? error.message : 'Could not update access') }
     finally { setSaving(false) }
   }
