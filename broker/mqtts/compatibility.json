@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "repository": "ChangerR/mqtts",
-  "source_revision": "cb7282e23eb3c46bb6e52e6066601e3464a0d3f6",
-  "workflow_run_id": 37267259594,
-  "artifact_name": "mqtts-image-cb7282e23eb3c46bb6e52e6066601e3464a0d3f6-linux-amd64",
+  "source_revision": "2c3e159028b2a115bb335b271beae98026353b6e",
+  "workflow_run_id": 37305258747,
+  "artifact_name": "mqtts-image-2c3e159028b2a115bb335b271beae98026353b6e-linux-amd64",
   "grpc_auth_contract": 1,
-  "authz_proto_sha256": "bea4a53877bc8fd26761db116e2d1a1bf3a271bc131848ea54559b73137863fb",
-  "durable_sessions_contract": 2
+  "authz_proto_sha256": "154bf9f257cab91982819291227aa59abd63511e26c52d2b4d2cf3c59e8421af",
+  "durable_sessions_contract": 4
 }

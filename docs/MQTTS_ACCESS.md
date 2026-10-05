@@ -5,6 +5,8 @@ Broker 和授权服务都由 [ChangerR/mqtts](https://github.com/ChangerR/mqtts)
 聊天项目只包含管理 RPC 客户端、业务权限投影和接入配置，不编译 Broker 或服务源码。
 聊天数据在 PostgreSQL；Redis 继续承担应用自身用途，不再保存 MQTT 授权会话。
 
+本轮逐项修复、升级边界及实测数据见 [Review 修复与验证记录](MQTTS_REVIEW_FIXES.md)。
+
 ## 服务边界
 
 ```mermaid

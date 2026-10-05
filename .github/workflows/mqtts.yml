@@ -93,7 +93,7 @@ jobs:
           lock = json.loads(pathlib.Path('broker/mqtts/compatibility.json').read_text())
           metadata = json.loads(pathlib.Path('run/broker-runtime/metadata.json').read_text())
           assert metadata['schema_version'] == 1 and metadata['grpc_auth_contract'] == 1
-          assert metadata['durable_sessions_contract'] == lock['durable_sessions_contract'] == 2
+          assert metadata['durable_sessions_contract'] == lock['durable_sessions_contract'] == 4
           assert metadata['source_revision'] == lock['source_revision']
           assert metadata['authz_proto_sha256'] == lock['authz_proto_sha256'] == hashlib.sha256(pathlib.Path('backend/internal/brokerrpc/authorization.proto').read_bytes()).hexdigest()
           assert metadata['authz_image'] == 'mqtts-authz:sha-' + lock['source_revision']

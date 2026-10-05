@@ -1,0 +1,174 @@
+{
+  "storage": "native partition log v2",
+  "message_partitions": 4,
+  "state_partitions": 4,
+  "io_workers": 8,
+  "event_threads": 2,
+  "payload_bytes": 4096,
+  "seconds_per_rate": 30,
+  "measurements": [
+    {
+      "filesystem": "overlayfs",
+      "scenario": "one publisher and one persistent consumer",
+      "connections": 2,
+      "offered_messages_per_second": null,
+      "delivered": 256,
+      "elapsed_s": 0.717,
+      "delivered_per_second": 357,
+      "publish_to_receive_ms": {
+        "p50": 2.84,
+        "p95": 3.702,
+        "p99": 6.009,
+        "max": 12.464
+      },
+      "publish_to_puback_ms": {
+        "p50": 1.776,
+        "p95": 2.585,
+        "p99": 5.937,
+        "max": 12.514
+      },
+      "client_event_loop_lag_ms": {
+        "p50": 0.519,
+        "p95": 1.118,
+        "p99": 5.168,
+        "max": 5.168
+      },
+      "broker_thread_cpu_percent": [
+        7.0,
+        2.8,
+        2.8,
+        0.0,
+        0.0
+      ],
+      "remote_authorization_calls": 0
+    },
+    {
+      "filesystem": "overlayfs",
+      "scenario": "1000 connections at 1000 messages/s",
+      "connections": 1000,
+      "offered_messages_per_second": 1000,
+      "delivered": 30000,
+      "elapsed_s": 30.001,
+      "delivered_per_second": 1000,
+      "publish_to_receive_ms": {
+        "p50": 2.114,
+        "p95": 4.135,
+        "p99": 6.482,
+        "max": 42.327
+      },
+      "publish_to_puback_ms": {
+        "p50": 2.146,
+        "p95": 3.99,
+        "p99": 6.396,
+        "max": 42.926
+      },
+      "client_event_loop_lag_ms": {
+        "p50": 0.401,
+        "p95": 1.108,
+        "p99": 1.562,
+        "max": 7.294
+      },
+      "broker_thread_cpu_percent": [
+        16.7,
+        15.0,
+        2.7,
+        2.7,
+        2.7
+      ],
+      "remote_authorization_calls": 0,
+      "schedule_lag_ms": {
+        "p50": 0.392,
+        "p95": 1.103,
+        "p99": 1.587,
+        "max": 14.395
+      },
+      "peak_active_tasks": 38
+    },
+    {
+      "filesystem": "overlayfs",
+      "scenario": "1000 connections at 3000 messages/s",
+      "connections": 1000,
+      "offered_messages_per_second": 3000,
+      "delivered": 90000,
+      "elapsed_s": 30.005,
+      "delivered_per_second": 2999,
+      "publish_to_receive_ms": {
+        "p50": 4.539,
+        "p95": 363.159,
+        "p99": 466.517,
+        "max": 558.205
+      },
+      "publish_to_puback_ms": {
+        "p50": 4.404,
+        "p95": 449.8,
+        "p99": 531.966,
+        "max": 627.878
+      },
+      "client_event_loop_lag_ms": {
+        "p50": 0.445,
+        "p95": 9.337,
+        "p99": 217.625,
+        "max": 551.327
+      },
+      "broker_thread_cpu_percent": [
+        34.6,
+        34.1,
+        4.5,
+        4.4,
+        4.3
+      ],
+      "remote_authorization_calls": 0,
+      "schedule_lag_ms": {
+        "p50": 0.951,
+        "p95": 405.309,
+        "p99": 492.558,
+        "max": 582.135
+      },
+      "peak_active_tasks": 2000
+    },
+    {
+      "filesystem": "overlayfs",
+      "scenario": "1000 connections, saturated window 4",
+      "connections": 1000,
+      "offered_messages_per_second": null,
+      "delivered": 64000,
+      "elapsed_s": 8.573,
+      "delivered_per_second": 7465,
+      "publish_to_receive_ms": {
+        "p50": 108.209,
+        "p95": 217.31,
+        "p99": 280.188,
+        "max": 448.242
+      },
+      "publish_to_puback_ms": {
+        "p50": 135.948,
+        "p95": 245.685,
+        "p99": 311.032,
+        "max": 477.455
+      },
+      "client_event_loop_lag_ms": {
+        "p50": 68.869,
+        "p95": 158.803,
+        "p99": 217.812,
+        "max": 227.937
+      },
+      "broker_thread_cpu_percent": [
+        66.5,
+        64.5,
+        7.1,
+        7.0,
+        7.0
+      ],
+      "remote_authorization_calls": 0
+    }
+  ],
+  "broker_source_revision": "2c3e159028b2a115bb335b271beae98026353b6e",
+  "measurement_date": "2026-10-05",
+  "environment": {
+    "cpu_quota": 4,
+    "memory_limit_bytes": 17179869184,
+    "shared_host": true,
+    "transport": "loopback TCP, no TLS",
+    "notes": "Other resident services were present. Both runs are retained; client scheduling and storage/host variation are not separated from end-to-end latency."
+  }
+}
