@@ -7,7 +7,7 @@ MQTTS 与 `mqtts/modules/authz` 仍是独立项目，不包含消息业务模型
 flowchart LR
   C[Web / Agent] <-->|实时消息| B[MQTTS]
   C -->|登录、历史、资源管理| A[聊天 API]
-  B -->|提交后向发布者确认| BQ[(独立 Broker 磁盘队列)]
+  B -->|提交后向发布者确认| BQ[(独立 Broker 分区日志)]
   BQ -->|持久订阅 chat/#| I[message-ingest]
   I -->|同步写盘后确认接收| Q[(本地 bbolt 队列)]
   Q --> W[固定数量工作协程]
@@ -30,7 +30,7 @@ flowchart LR
 - 结构错误、无效数据或拒绝访问的附件进入持久死信，避免阻塞后续消息；暂时未就绪的附件、数据库/网络错误继续重试。原有附件解析、群成员信息和远程资源导入保持在业务服务层，消费者仍需相应存储配置。
 
 消息链路现在有两级持久接收：发布端收到 PUBACK 前，MQTTS 已将匹配的 QoS 1
-消息同步到 Broker 自己的磁盘队列；消费者收到后，先提交本地 bbolt，再向 Broker
+消息批量同步到 Broker 自己的分区追加日志；消费者收到后，先提交本地 bbolt，再向 Broker
 发送 PUBACK，最后异步幂等写入 PostgreSQL。消费者离线、进程 SIGKILL 或 Broker
 重启后，保持相同身份与持久卷即可补发。发布端 PUBACK 仍不表示 PostgreSQL 已提交。
 
@@ -73,10 +73,19 @@ Client ID，只有 `chat/#` 订阅权限。消费者自行每 10 秒续期最多
 | `DATABASE_*` / `STORAGE_*` | 共享业务数据库；附件解析需要的存储配置 |
 
 部署中的 `mqtts_data` 与 `message_ingest_data`（测试栈和个人助手为 `message_ingest`）是独立卷。
-Broker `/data/sessions.db` 使用 SQLite WAL 和独立磁盘线程，不访问应用数据库。
+Broker 的消息持久化使用内置 Topic 分区日志，默认 4 个消息写入线程和 4 个会话日志线程；
+消息缓存有容量限制，刷盘成功后确认并唤醒消费者，不访问应用数据库，也不引入 Kafka。
+`/data/sessions.db` 在新格式中是目录，包含日志段和检查点。既有路径名保持不变，
+因此旧版本留下的 SQLite 文件会明确阻止启动，避免升级时忽略原有积压。
 消费者使用固定 Client ID、CleanSession=false；重启或升级必须保留两个卷。
 外部 MQTTS 需独立启用 `persistence` 并使用本次兼容锁定的镜像版本；应用配置不会
-替远端 Broker 开启持久化。完整参数参见 MQTTS 仓库 `docs/persistence.md`。
+替远端 Broker 开启持久化。兼容契约已升为 `durable_sessions_contract: 2`。
+
+从旧 SQLite 版本升级前，停止 Broker，使用 MQTTS 的 `bin/migrate-sqlite-journal.py`
+和 `mqtts-store-import` 将源文件只读迁移到新目录，检查成功后再显式修改
+`persistence.path`。保留旧文件和原持久卷；不要通过删除数据来绕过启动检查。
+迁移保留身份、订阅、有效期和未确认 Packet ID。完整命令、容量及中断恢复规则见
+[MQTTS 持久化与迁移说明](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/docs/persistence.md)。
 
 字节预算是逻辑数据大小，bbolt 页、空闲页和事务存在额外空间，应为持久卷设置
 容量余量/磁盘告警。队列存储敏感消息，目录 0700、文件 0600；不要用 tmpfs。

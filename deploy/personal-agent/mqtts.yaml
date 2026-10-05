@@ -44,7 +44,11 @@ auth:
 # Independent broker spool: preserve this volume across restarts and upgrades.
 persistence:
   enabled: true
-  path: /data/sessions.db
+  path: /data/sessions.db # Directory; migrate legacy SQLite before upgrade.
+  partitions: 4
+  segment_bytes: 16777216
+  max_disk_bytes: 4294967296
+  checkpoint_interval_ms: 30000
   max_session_expiry_seconds: 86400
   max_sessions: 10000
   max_subscriptions_per_session: 128

@@ -218,6 +218,7 @@ CI 分别暂停聊天后端和授权服务，使用 `scripts/test-environment/mq
 实测均等待超过10秒缓存新鲜期，各200条 WebSocket ↔ TCP 消息送达，P95 约46 ms。
 暂停聊天后端时，已签发的冷身份仍可建立 MQTT 连接；暂停授权服务时新连接拒绝。
 实际 Chromium 登录、发送、PostgreSQL 落库、刷新历史和管理员搜索通过。
-Broker 仓库另有1000连接、500发布者、4 KiB 的实际收发测试：正常/授权服务暂停
-各32000条送达，吞吐约9535/9779条每秒，P95约184/180 ms。这是共享开发机测量值。
+Broker 的当前持久化实现为内置分区追加日志，最新的千连接、4 KiB、刷盘后确认
+及固定速率延迟数据见[持久化压测报告](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/docs/performance/durable-concurrency.md)。
+该报告测量 Broker 投递，不代表 PostgreSQL 落库吞吐；历史非持久化测试不作为当前容量承诺。
 报告不包含账号或秘密，截图及凭据仅保存在忽略的 `run/`。
