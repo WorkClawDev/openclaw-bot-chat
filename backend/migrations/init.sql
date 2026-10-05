@@ -8,6 +8,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Table: users
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
+    token_version   BIGINT      NOT NULL DEFAULT 0,
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     username        VARCHAR(64) NOT NULL UNIQUE,
     email           VARCHAR(255) UNIQUE,

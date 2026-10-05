@@ -117,7 +117,7 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest, ip, use
 		return nil, nil, err
 	}
 	// Generate tokens
-	accessToken, refreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username)
+	accessToken, refreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username, user.TokenVersion)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -160,7 +160,7 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent
 	// Update last login
 	_ = s.userRepo.UpdateLastLogin(ctx, user.ID, ip)
 	// Generate tokens
-	accessToken, refreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username)
+	accessToken, refreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username, user.TokenVersion)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -201,7 +201,10 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenStr string) 
 	if !user.IsActive() {
 		return nil, ErrUserBanned
 	}
-	accessToken, newRefreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username)
+	if claims.TokenVersion != user.TokenVersion {
+		return nil, jwt.ErrInvalidToken
+	}
+	accessToken, newRefreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username, user.TokenVersion)
 	if err != nil {
 		return nil, err
 	}

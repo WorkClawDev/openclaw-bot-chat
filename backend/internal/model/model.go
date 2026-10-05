@@ -37,6 +37,7 @@ type User struct {
 	Nickname         *string    `gorm:"type:varchar(128)"`
 	AvatarURL        *string    `gorm:"type:varchar(512)"`
 	Status           UserStatus `gorm:"type:smallint;not null;default:1"`
+	TokenVersion     int64      `gorm:"not null;default:0" json:"-"`
 	Role             UserRole   `gorm:"type:varchar(16);not null;default:'user'"`
 	IsDeleted        bool       `gorm:"not null;default:false"`
 	LastLoginAt      *time.Time

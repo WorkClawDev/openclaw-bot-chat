@@ -19,7 +19,8 @@ func TestAccountAdministrationRejectsEscalationAndAuditsChanges(t *testing.T) {
 	sql, _ := db.DB()
 	t.Cleanup(func() { sql.Close() })
 	for _, statement := range []string{
-		`CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, email TEXT, role TEXT, status INTEGER, is_deleted BOOLEAN DEFAULT false, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE users (
+            token_version BIGINT NOT NULL DEFAULT 0,id TEXT PRIMARY KEY, username TEXT, email TEXT, role TEXT, status INTEGER, is_deleted BOOLEAN DEFAULT false, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT, user_id TEXT, bot_id TEXT, group_id TEXT, action TEXT, resource_type TEXT, resource_id TEXT, ip_address TEXT, user_agent TEXT, request_method TEXT, request_path TEXT, request_body TEXT, response_code INTEGER, error_message TEXT, metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {

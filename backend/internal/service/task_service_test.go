@@ -419,6 +419,7 @@ func newTaskServiceTestEnv(t *testing.T) *taskServiceTestEnv {
 func createTaskServiceTestSchema(db *gorm.DB) error {
 	statements := []string{
 		`CREATE TABLE users (
+            token_version BIGINT NOT NULL DEFAULT 0,
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
 			email TEXT UNIQUE,

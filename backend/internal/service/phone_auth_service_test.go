@@ -146,6 +146,7 @@ func newPhoneAuthServiceTestEnv(t *testing.T) phoneAuthServiceTestEnv {
 	}
 	if err := db.Exec(`
 		CREATE TABLE users (
+            token_version BIGINT NOT NULL DEFAULT 0,
 			id text PRIMARY KEY,
 			username text NOT NULL UNIQUE,
 			email text UNIQUE,

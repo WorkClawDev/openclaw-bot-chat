@@ -222,3 +222,9 @@ Broker 的当前持久化实现为内置分区追加日志，最新的千连接�
 及固定速率延迟数据见[持久化压测报告](https://github.com/ChangerR/mqtts/blob/codex/openclaw-auth/docs/performance/durable-concurrency.md)。
 该报告测量 Broker 投递，不代表 PostgreSQL 落库吞吐；历史非持久化测试不作为当前容量承诺。
 报告不包含账号或秘密，截图及凭据仅保存在忽略的 `run/`。
+
+账号状态变更现在会在同一事务中递增 `users.token_version`，访问和刷新 JWT 都校验
+该版本。封禁后再启用账号，封禁前的 token 仍然无效，需要重新登录。未发生状态
+变更的旧 token 按版本 0 兼容。升级前应用可重复执行的
+`backend/migrations/20261005_user_token_version.sql`；其中的 PostgreSQL 触发器也覆盖
+维护 SQL 和旧服务实例发起的状态变更。AutoMigrate 会补列，正式发布仍需执行迁移。

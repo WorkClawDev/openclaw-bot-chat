@@ -72,7 +72,12 @@ func (r *UserRepository) UpdateAccountAccess(ctx context.Context, actorID, targe
 		if beforeRole == model.UserRoleAdmin && beforeStatus == model.UserStatusActive && (user.Role != model.UserRoleAdmin || !user.IsActive()) && len(admins) <= 1 {
 			return ErrLastAdmin
 		}
-		if err := tx.Model(&user).Updates(map[string]interface{}{"role": user.Role, "status": user.Status}).Error; err != nil {
+		// Bump on both suspension and reactivation under the row lock. A token
+		// minted before either transition can never become valid again.
+		if user.Status != beforeStatus {
+			user.TokenVersion++
+		}
+		if err := tx.Model(&user).Updates(map[string]interface{}{"role": user.Role, "status": user.Status, "token_version": user.TokenVersion}).Error; err != nil {
 			return err
 		}
 		resource := "user"

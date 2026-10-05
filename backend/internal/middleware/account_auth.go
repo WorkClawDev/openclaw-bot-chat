@@ -24,7 +24,8 @@ func ActiveAccount(users UserLookup) gin.HandlerFunc {
 			return
 		}
 		user, err := users.GetByID(c.Request.Context(), id)
-		if err != nil || !user.IsActive() {
+		version, validVersion := c.Get("tokenVersion")
+		if err != nil || !user.IsActive() || !validVersion || version != user.TokenVersion {
 			response.Unauthorized(c, "active account required")
 			c.Abort()
 			return
