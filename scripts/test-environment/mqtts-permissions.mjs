@@ -170,7 +170,15 @@ try {
   await sleep(250);
   assert(!userConnection.received.some(row => row.id === bannedPublish.id), 'Suspended owner Agent still publishes');
   await call(admin, 'PUT', `/admin/users/${owner.user.id}/access`, { status: 1 });
-  pass('account suspension revokes existing JWT, refresh token, Agent keys, and live MQTT publishing');
+  await denied(() => call(owner, 'GET', '/auth/me'), 401);
+  await denied(() => call(null, 'POST', '/auth/refresh', { refresh_token: owner.tokens.refresh_token }), 401);
+  // Reactivation never resurrects old JWTs. Later acceptance stages need a new
+  // authenticated session, just as a real user does after account recovery.
+  const renewed = await call(null, 'POST', '/auth/login', { username: owner.username, password: owner.password });
+  owner.tokens = renewed.tokens;
+  owner.user = renewed.user;
+  assert((await call(owner, 'GET', '/auth/me')).id === owner.user.id, 'Fresh login failed after reactivation');
+  pass('account suspension revokes JWT, refresh, Agent keys and MQTT; reactivation requires a fresh login');
 
   // Concurrent administrators may not demote each other and leave no admin.
   await call(admin, 'PUT', `/admin/users/${stranger.user.id}/access`, { role: 'admin' });
