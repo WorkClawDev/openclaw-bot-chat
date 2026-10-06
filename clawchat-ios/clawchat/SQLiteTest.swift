@@ -2,15 +2,28 @@ import Foundation
 import SQLite3
 
 final class LocalMessageStore {
-    static let shared = LocalMessageStore()
+    private static let sharedLock = NSLock()
+    private static var currentStore: LocalMessageStore?
+    static var shared: LocalMessageStore {
+        let scope = AccountSession.shared.snapshot
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        if let currentStore, currentStore.scope == scope { return currentStore }
+        let store = LocalMessageStore(scope: scope)
+        currentStore = store
+        return store
+    }
     static let conversationsDidChangeNotification = Notification.Name("LocalMessageStoreConversationsDidChange")
 
     private let queue = DispatchQueue(label: "site.changer.clawchat.local-message-store")
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var database: OpaquePointer?
+    let scope: AccountSession.Snapshot
+    private let rootDirectory: URL?
 
-    private init() {
+    init(scope: AccountSession.Snapshot, rootDirectory: URL? = nil) {
+        self.scope = scope
+        self.rootDirectory = rootDirectory
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
 
@@ -178,6 +191,22 @@ final class LocalMessageStore {
         }
     }
 
+    func removeGroup(groupID: String, conversationID: String) {
+        queue.async {
+            for (sql, value) in [
+                ("DELETE FROM cached_groups WHERE id = ?", groupID.lowercased()),
+                ("DELETE FROM cached_conversations WHERE id = ?", conversationID),
+                ("DELETE FROM cached_messages WHERE conversation_id = ?", conversationID)
+            ] {
+                guard let statement = self.prepareStatement(sql: sql) else { continue }
+                self.bind(text: value, to: 1, in: statement)
+                sqlite3_step(statement)
+                sqlite3_finalize(statement)
+            }
+            self.notifyConversationChanges()
+        }
+    }
+
     func syncConversationPreview(for message: Message, currentUserID: String?, isActiveConversation: Bool) {
         queue.async {
             self.applyRealtimeConversationUpdateLocked(
@@ -200,23 +229,12 @@ final class LocalMessageStore {
         }
     }
 
-    func resetForCurrentServiceEndpoint() {
-        queue.sync {
-            if let database {
-                sqlite3_close(database)
-                self.database = nil
-            }
-            openDatabaseIfNeeded()
-            createTablesIfNeeded()
-            notifyConversationChanges()
-        }
-    }
-
     private func openDatabaseIfNeeded() {
         guard database == nil else { return }
 
-        let databaseURL = databaseFileURL()
-        if sqlite3_open(databaseURL.path, &database) != SQLITE_OK {
+        // Signed-out launches must never hydrate another account's disk cache.
+        let path = scope.userID == nil ? ":memory:" : databaseFileURL().path
+        if sqlite3_open(path, &database) != SQLITE_OK {
             let message = database.flatMap { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
             print("Failed to open local message database: \(message)")
             if let database {
@@ -1014,18 +1032,17 @@ final class LocalMessageStore {
 
     private func databaseFileURL() -> URL {
         let fileManager = FileManager.default
-        let baseURL = (try? fileManager.url(
+        let baseURL = rootDirectory ?? (try? fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )) ?? fileManager.temporaryDirectory
 
-        let endpointIdentifier = ServiceEndpointConfiguration.storageIdentifier(for: APIClient.shared.baseURL)
         let directoryURL = baseURL
             .appendingPathComponent("clawchat", isDirectory: true)
             .appendingPathComponent("endpoints", isDirectory: true)
-            .appendingPathComponent(endpointIdentifier, isDirectory: true)
+            .appendingPathComponent(scope.cacheIdentifier, isDirectory: true)
         if !fileManager.fileExists(atPath: directoryURL.path) {
             try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         }

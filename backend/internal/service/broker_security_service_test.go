@@ -21,6 +21,7 @@ import (
 type projectionRPC struct {
 	rows      []*pb.Session
 	calls     []*pb.ApplyRequest
+	clockSkew time.Duration
 	broken    bool
 	conflict  bool
 	queryRead func()
@@ -45,6 +46,14 @@ func (f *projectionRPC) ListSessions(ctx context.Context, req *pb.ListSessionsRe
 	return &pb.ListSessionsResponse{Version: "before-policy-read", Sessions: rows}, nil
 }
 func (f *projectionRPC) Apply(ctx context.Context, req *pb.ApplyRequest, _ ...grpc.CallOption) (*pb.ApplyResponse, error) {
+	if f.clockSkew > 0 {
+		receiverLimit := uint64(time.Now().Add(5*time.Minute - f.clockSkew).UnixMilli())
+		for _, row := range req.Upserts {
+			if row.PolicyValidUntilMs > receiverLimit || row.ExpiresAtMs > receiverLimit {
+				return nil, status.Error(codes.InvalidArgument, "policy exceeds receiver five-minute limit")
+			}
+		}
+	}
 	if f.broken {
 		return nil, errors.New("RPC offline")
 	}
@@ -147,5 +156,18 @@ func TestProjectionCASRetryAndCoalescedNotifications(t *testing.T) {
 	server := s.serverPolicy()
 	if server.ExpiresAtMs != 0 || server.PolicyValidUntilMs > uint64(time.Now().Add(5*time.Minute).UnixMilli()) || len(server.Permissions) != 1 || server.Permissions[0].Action != pb.Action_PUBLISH || server.Permissions[0].TopicFilter != "agent/user/+/events" {
 		t.Fatal("server lease or scope unbounded")
+	}
+}
+
+func TestPublisherPoliciesTolerateSmallReceiverClockSkew(t *testing.T) {
+	s, f := publisherFixture()
+	f.clockSkew = 2 * time.Second
+	actor := uuid.New()
+	_, _, _, err := s.Mint(context.Background(), BrokerSession{ClientID: "skew", ActorType: "user", ActorID: actor, OwnerID: actor, Publish: []string{"chat/group/fixture"}})
+	if err != nil {
+		t.Fatalf("new bounded credentials rejected: %v", err)
+	}
+	if _, err = f.Apply(context.Background(), &pb.ApplyRequest{Upserts: []*pb.Session{s.serverPolicy()}}); err != nil {
+		t.Fatalf("publisher lease rejected: %v", err)
 	}
 }

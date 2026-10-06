@@ -108,7 +108,7 @@ func run(log zerolog.Logger) error {
 		return err
 	}
 	// Preserve existing attachment resolution and legacy remote asset imports.
-	messages := service.NewMessageService(repository.NewMessageRepository(db), repository.NewBotRepository(db), repository.NewGroupRepository(db), assets, repository.NewAuditLogRepository(db), service.NewAssetService(assets, provider, cfg.Storage, cfg.Asset))
+	messages := service.NewMessageService(messageRepository(db, cfg.Push.Enabled), repository.NewBotRepository(db), repository.NewGroupRepository(db), assets, repository.NewAuditLogRepository(db), service.NewAssetService(assets, provider, cfg.Storage, cfg.Asset))
 	consumer, err := ingest.NewConsumer(spool, cfg.Ingest.Workers, func(ctx context.Context, record ingest.Record) error {
 		return messages.HandleQueuedMessage(ctx, record.Topic, record.Payload, record.ID, record.ReceivedAt)
 	}, func(err error) bool { var invalid *service.PermanentMessageError; return errors.As(err, &invalid) }, log)
@@ -146,7 +146,11 @@ func run(log zerolog.Logger) error {
 		stats, spoolErr := spool.Stats()
 		// to_regclass also catches an unprovisioned schema without running DDL.
 		var schemaReady bool
-		dbErr := raw.QueryRowContext(check, "SELECT to_regclass('messages') IS NOT NULL AND to_regclass('assets') IS NOT NULL AND to_regclass('bot_group_members') IS NOT NULL").Scan(&schemaReady)
+		schemaQuery := "SELECT to_regclass('messages') IS NOT NULL AND to_regclass('assets') IS NOT NULL AND to_regclass('bot_group_members') IS NOT NULL"
+		if cfg.Push.Enabled {
+			schemaQuery += " AND to_regclass('push_devices') IS NOT NULL AND to_regclass('push_deliveries') IS NOT NULL"
+		}
+		dbErr := raw.QueryRowContext(check, schemaQuery).Scan(&schemaReady)
 		w.Header().Set("Content-Type", "application/json")
 		state := "ready"
 		if spoolErr != nil || dbErr != nil || !schemaReady || !client.IsConnected() || !spool.HasCapacity(stats) || consumer.IntakeFailed.Load() {
@@ -167,4 +171,15 @@ func run(log zerolog.Logger) error {
 		return fmt.Errorf("ingest health server: %w", err)
 	}
 	return nil
+}
+
+// Only the persistence owner enqueues notifications. No provider key or API
+// connection is required; an outbox failure rolls the message transaction back
+// so the durable consumer retries instead of acknowledging an incomplete write.
+func messageRepository(db *gorm.DB, pushEnabled bool) *repository.MessageRepository {
+	repo := repository.NewMessageRepository(db)
+	if pushEnabled {
+		repo.SetMessageCreatedHook(repository.EnqueueChatPush)
+	}
+	return repo
 }

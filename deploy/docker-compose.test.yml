@@ -113,6 +113,7 @@ services:
       DATABASE_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
       MQTT_BROKER: tcp://mqtts:1883
       BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
       BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
@@ -147,6 +148,7 @@ services:
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
       MQTT_BROKER: tcp://mqtts:1883
       MQTT_CLIENT_ID: openclaw-test-message-ingest
       MQTT_USERNAME: openclaw-test-message-ingest

@@ -3,6 +3,7 @@ import Foundation
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
+    private let accountScope = AccountSession.shared.snapshot
     @Published var currentUser: User?
     @Published var isLoading = false
     @Published var isSavingProfile = false
@@ -14,13 +15,14 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func fetchProfile() async {
-        guard !isLoading else { return }
+        guard AccountSession.shared.isCurrent(accountScope), !isLoading else { return }
 
         isLoading = true
         defer { isLoading = false }
 
         do {
             let user = try await APIClient.shared.fetchCurrentUserValue()
+            guard AccountSession.shared.isCurrent(accountScope) else { return }
             currentUser = user
             AuthManager.shared.currentUser = user
             loadErrorMessage = nil
@@ -30,10 +32,12 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func updateProfile(nickname: String, avatarURL: String) async throws -> User {
+        guard AccountSession.shared.isCurrent(accountScope) else { throw CancellationError() }
         isSavingProfile = true
         defer { isSavingProfile = false }
 
         let user = try await APIClient.shared.updateProfile(nickname: nickname, avatarURL: avatarURL)
+        guard AccountSession.shared.isCurrent(accountScope) else { throw CancellationError() }
 
         currentUser = user
         AuthManager.shared.currentUser = user
@@ -42,6 +46,10 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func changePassword(currentPassword: String, newPassword: String) async throws {
+        guard AccountSession.shared.isCurrent(accountScope) else { throw CancellationError() }
+        guard currentUser?.canChangePassword == true else {
+            throw APIClient.APIError.serverError(L10n.t("此账号未设置密码，请使用原登录方式。", "This account has no password. Use its existing sign-in method."))
+        }
         isChangingPassword = true
         defer { isChangingPassword = false }
 

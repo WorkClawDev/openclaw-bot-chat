@@ -19,6 +19,7 @@ import (
 	"github.com/openclaw-bot-chat/backend/internal/repository"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	"github.com/openclaw-bot-chat/backend/internal/storage"
+	"github.com/openclaw-bot-chat/backend/pkg/apns"
 	"github.com/openclaw-bot-chat/backend/pkg/jwt"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -55,6 +56,21 @@ func main() {
 	db, err := setupDatabase(cfg, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to setup database")
+	}
+
+	// --- Optional APNs delivery ---
+	pushRepo := repository.NewPushRepository(db)
+	var pushService *service.PushService
+	if cfg.Push.Enabled {
+		key, err := os.ReadFile(cfg.Push.PrivateKeyPath)
+		if err != nil {
+			log.Fatal().Msg("failed to read configured APNs private key")
+		}
+		client, err := apns.New(apns.Config{TeamID: cfg.Push.TeamID, KeyID: cfg.Push.KeyID, Topic: cfg.Push.Topic, PrivateKey: key})
+		if err != nil {
+			log.Fatal().Err(err).Msg("invalid APNs configuration")
+		}
+		pushService = &service.PushService{Repo: pushRepo, Sender: client}
 	}
 
 	// --- Redis ---
@@ -142,6 +158,7 @@ func main() {
 
 	// --- Handlers ---
 	authHandler := handler.NewAuthHandler(authService, phoneAuthService)
+	authHandler.ConfigurePhonePresentation(cfg.Auth.Phone.Enabled, cfg.Captcha, cfg.App.Mode)
 	botHandler := handler.NewBotHandler(botService)
 	msgHandler := handler.NewMessageHandler(msgService)
 	realtimeHandler := handler.NewRealtimeHandler(msgService, cfg.MQTT)
@@ -164,6 +181,8 @@ func main() {
 	brokerSecurityHandler := &handler.BrokerSecurityHandler{Service: security}
 	router.Use(brokerSecurityHandler.InvalidatePermissions())
 	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
+	pushRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
+	(&handler.PushHandler{Repo: pushRepo, Enabled: pushService != nil}).Register(pushRoutes)
 	adminRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	(&handler.UserAdminHandler{Users: userRepo}).Register(adminRoutes)
 
@@ -201,6 +220,9 @@ func main() {
 	memoryScheduleHandler.RegisterRuntime(journalRoutes, runHandler)
 	schedulerContext, schedulerCancel := context.WithCancel(context.Background())
 	defer schedulerCancel()
+	if pushService != nil {
+		pushService.Start(schedulerContext, func(err error) { log.Error().Err(err).Msg("push outbox failed") })
+	}
 	service.StartAgentEventPublisher(schedulerContext, runHandler.Repo, mqttClient.PublishAgentNotice)
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
@@ -233,6 +255,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Info().Msg("shutting down server...")
+		schedulerCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
@@ -273,6 +296,8 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.BotKey{},
 		&model.BotBindingToken{},
 		&model.Message{},
+		&model.PushDevice{},
+		&model.PushDelivery{},
 		&model.Asset{},
 		&model.Document{},
 		&model.Group{},
@@ -346,6 +371,8 @@ func setupRoutes(
 		auth.POST("/register", authHandler.Register)
 		auth.POST("/login", authHandler.Login)
 		auth.POST("/phone/code", authHandler.RequestPhoneCode)
+		auth.GET("/phone/config", authHandler.PhoneConfiguration)
+		auth.GET("/phone/challenge", authHandler.PhoneChallenge)
 		auth.POST("/phone/login", authHandler.PhoneLogin)
 		auth.POST("/refresh", authHandler.Refresh)
 	}

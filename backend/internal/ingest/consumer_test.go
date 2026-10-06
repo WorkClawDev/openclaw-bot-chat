@@ -25,9 +25,13 @@ func openTest(t *testing.T, path string, limits Limits) *Spool {
 	}
 	return s
 }
-func eventually(t *testing.T, fn func() bool) {
+func eventually(t *testing.T, fn func() bool, budgets ...time.Duration) {
 	t.Helper()
-	until := time.Now().Add(5 * time.Second)
+	budget := 5 * time.Second
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
+	until := time.Now().Add(budget)
 	for time.Now().Before(until) {
 		if fn() {
 			return
@@ -180,7 +184,9 @@ func TestWorkerCountBoundsParallelismAndCanChangeAfterRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { c.Run(ctx); close(done) }()
-	eventually(t, func() bool { stats, _ := s.Stats(); return stats.Pending == 0 })
+	// Correctness wait includes 128 durable fsyncs under the race detector;
+	// worker count and exact replay assertions below remain unchanged.
+	eventually(t, func() bool { stats, _ := s.Stats(); return stats.Pending == 0 }, 30*time.Second)
 	cancel()
 	<-done
 	if max.Load() < 2 || max.Load() > 3 || c.Processed.Load() != 128 {

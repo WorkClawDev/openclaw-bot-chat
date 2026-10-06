@@ -8,73 +8,27 @@ extension Color {
         })
     }
 
-    static let rcmsSurface = rcmsDynamic(
-        light: UIColor(white: 1, alpha: 0.78),
-        dark: UIColor(red: 15/255, green: 23/255, blue: 42/255, alpha: 0.84)
-    )
-    static let rcmsSurfaceSolid = rcmsDynamic(
-        light: UIColor.white,
-        dark: UIColor(red: 15/255, green: 23/255, blue: 42/255, alpha: 1)
-    )
-    static let rcmsSurfaceElevated = rcmsDynamic(
-        light: UIColor(white: 1, alpha: 0.95),
-        dark: UIColor(red: 30/255, green: 41/255, blue: 59/255, alpha: 0.96)
-    )
-    static let rcmsSurfaceMuted = rcmsDynamic(
-        light: UIColor(red: 241/255, green: 245/255, blue: 249/255, alpha: 1),
-        dark: UIColor(red: 30/255, green: 41/255, blue: 59/255, alpha: 1)
-    )
-    static let rcmsControlSurface = rcmsDynamic(
-        light: UIColor(white: 1, alpha: 0.72),
-        dark: UIColor(red: 30/255, green: 41/255, blue: 59/255, alpha: 0.82)
-    )
-    static let rcmsFieldSurface = rcmsDynamic(
-        light: UIColor(white: 1, alpha: 0.86),
-        dark: UIColor(red: 15/255, green: 23/255, blue: 42/255, alpha: 0.9)
-    )
-    static let rcmsSubtleFill = rcmsDynamic(
-        light: UIColor(white: 0, alpha: 0.02),
-        dark: UIColor(white: 1, alpha: 0.08)
-    )
-    static let rcmsAccentSoft = rcmsDynamic(
-        light: UIColor(red: 224/255, green: 242/255, blue: 254/255, alpha: 1),
-        dark: UIColor(red: 8/255, green: 47/255, blue: 73/255, alpha: 1)
-    )
-    static let rcmsAccentSofter = rcmsDynamic(
-        light: UIColor(red: 186/255, green: 230/255, blue: 253/255, alpha: 1),
-        dark: UIColor(red: 12/255, green: 74/255, blue: 110/255, alpha: 1)
-    )
-    static let rcmsWarning = Color(red: 245/255, green: 158/255, blue: 11/255)
+    static let rcmsSurface = rcmsDynamic(light: .white, dark: UIColor(white: 0.11, alpha: 1))
+    static let rcmsSurfaceSolid = rcmsSurface
+    static let rcmsSurfaceElevated = rcmsDynamic(light: .white, dark: UIColor(white: 0.15, alpha: 1))
+    static let rcmsSurfaceMuted = rcmsDynamic(light: UIColor(white: 0.95, alpha: 1), dark: UIColor(white: 0.16, alpha: 1))
+    static let rcmsControlSurface = rcmsSurfaceMuted
+    static let rcmsFieldSurface = rcmsSurfaceMuted
+    static let rcmsSubtleFill = rcmsDynamic(light: UIColor(white: 0, alpha: 0.025), dark: UIColor(white: 1, alpha: 0.06))
+    static let rcmsAccentSoft = rcmsSurfaceMuted
+    static let rcmsAccentSofter = rcmsDynamic(light: UIColor(white: 0.9, alpha: 1), dark: UIColor(white: 0.22, alpha: 1))
+    static let rcmsWarning = Color.orange
+    static let rcmsAccent = Color(UIColor.chatOutgoing)
+    static let rcmsOnline = Color(red: 0.19, green: 0.63, blue: 0.42)
+    static let rcmsOffline = Color.secondary
+    static let rcmsDanger = Color.red
+    static let rcmsBackground = rcmsDynamic(light: .white, dark: UIColor(white: 0.07, alpha: 1))
+    static let rcmsTextPrimary = Color.primary
+    static let rcmsTextStrong = Color.primary
+    static let rcmsTextSecondary = Color.secondary
+    static let rcmsDivider = rcmsDynamic(light: UIColor(white: 0, alpha: 0.06), dark: UIColor(white: 1, alpha: 0.1))
+    static let rcmsToolbarSurface = rcmsBackground
 
-    static let rcmsAccent = Color(red: 14/255, green: 165/255, blue: 233/255)
-    static let rcmsOnline = Color(red: 16/255, green: 185/255, blue: 129/255)
-    static let rcmsOffline = Color(red: 148/255, green: 163/255, blue: 184/255)
-    static let rcmsDanger = Color(red: 239/255, green: 68/255, blue: 68/255)
-
-    static let rcmsBackground = rcmsDynamic(
-        light: UIColor(red: 248/255, green: 250/255, blue: 252/255, alpha: 1),
-        dark: UIColor(red: 2/255, green: 6/255, blue: 23/255, alpha: 1)
-    )
-    static let rcmsTextPrimary = rcmsDynamic(
-        light: UIColor(red: 30/255, green: 41/255, blue: 59/255, alpha: 1),
-        dark: UIColor(red: 226/255, green: 232/255, blue: 240/255, alpha: 1)
-    )
-    static let rcmsTextStrong = rcmsDynamic(
-        light: UIColor(red: 15/255, green: 23/255, blue: 42/255, alpha: 1),
-        dark: UIColor(red: 248/255, green: 250/255, blue: 252/255, alpha: 1)
-    )
-    static let rcmsTextSecondary = rcmsDynamic(
-        light: UIColor(red: 100/255, green: 116/255, blue: 139/255, alpha: 1),
-        dark: UIColor(red: 203/255, green: 213/255, blue: 225/255, alpha: 1)
-    )
-    static let rcmsDivider = rcmsDynamic(
-        light: UIColor(white: 0, alpha: 0.05),
-        dark: UIColor(white: 1, alpha: 0.12)
-    )
-    static let rcmsToolbarSurface = rcmsDynamic(
-        light: UIColor(white: 1, alpha: 0.82),
-        dark: UIColor(red: 2/255, green: 6/255, blue: 23/255, alpha: 0.86)
-    )
     static let rcmsHairline = rcmsDynamic(
         light: UIColor(white: 0, alpha: 0.06),
         dark: UIColor(white: 1, alpha: 0.12)
@@ -202,11 +156,7 @@ enum UITheme {
 
 struct FrostedBackground: View {
     var body: some View {
-        LinearGradient(
-            colors: [Color.rcmsBackground, Color.rcmsSurfaceMuted],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        Color.rcmsBackground
         .ignoresSafeArea()
     }
 }
@@ -215,18 +165,35 @@ struct GlassCard: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(Color.rcmsSurface)
-            .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: UITheme.Radius.large, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: UITheme.Radius.large, style: .continuous)
                     .stroke(UITheme.cardStroke, lineWidth: 1)
             )
-            .shadow(color: UITheme.Shadow.cardColor, radius: UITheme.Shadow.cardRadius, x: 0, y: UITheme.Shadow.cardYOffset)
     }
 }
 
 extension View {
     func glassCardStyle() -> some View {
         modifier(GlassCard())
+    }
+}
+
+// Shared by SwiftUI chrome and UIKit cells so appearance changes do not alter geometry.
+extension UIColor {
+    static let chatOutgoing = UIColor { traits in
+        UIColor(white: traits.userInterfaceStyle == .dark ? 0.23 : 0.16, alpha: 1)
+    }
+    static let chatIncoming = UIColor { traits in
+        UIColor(white: traits.userInterfaceStyle == .dark ? 0.14 : 0.95, alpha: 1)
+    }
+}
+
+enum ChatLayoutMetrics {
+    static let horizontalInset: CGFloat = 16
+    static let verticalInset: CGFloat = 5
+    static let blockSpacing: CGFloat = 8
+    static func bubbleWidth(in width: CGFloat) -> CGFloat {
+        min(520, floor((width - horizontalInset * 2) * 0.86))
     }
 }

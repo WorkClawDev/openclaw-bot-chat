@@ -70,7 +70,7 @@ func (s *SubscriberLease) Renew(ctx context.Context) error {
 		}
 		// This namespace owns exactly one service identity. CreateOnly prevents
 		// accidentally overwriting an API/user credential from another namespace.
-		s.row.PolicyValidUntilMs = uint64(time.Now().Add(5 * time.Minute).UnixMilli())
+		s.row.PolicyValidUntilMs = uint64(time.Now().Add(PolicyLeaseDuration).UnixMilli())
 		_, err = s.admin.Apply(call, &pb.ApplyRequest{ExpectedVersion: page.Version, CreateOnly: !found, Upserts: []*pb.Session{s.row}})
 		cancel()
 		if status.Code(err) != codes.Aborted {

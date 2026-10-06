@@ -28,10 +28,13 @@ const sql = query => {
 };
 const lockName = 'ingest-lock-' + randomUUID();
 const consumerEnv = { ...env, MQTT_CLIENT_ID: 'acceptance-message-ingest', MQTT_USERNAME: 'acceptance-message-ingest', MQTT_PASSWORD: env.INGEST_MQTT_PASSWORD,
+  PUSH_ENABLED: env.MQTTS_TEST_PUSH_OUTBOX === '1' ? 'true' : 'false',
   INGEST_LISTEN: '127.0.0.1:18082', INGEST_SPOOL_PATH: join(state, 'ingest-acceptance.db') };
 const base = env.MQTTS_TEST_API_URL || 'http://127.0.0.1:18081';
 let consumer, lock, client, paused = false, watchdog;
 const checks = [];
+const recoveryTimeoutMs = Number(env.MQTTS_TEST_RECOVERY_TIMEOUT_MS || 20000);
+assert(Number.isInteger(recoveryTimeoutMs) && recoveryTimeoutMs >= 20000 && recoveryTimeoutMs <= 120000, 'Invalid bounded recovery timeout');
 function pass(message) { checks.push(message); console.log('PASS ' + message); }
 async function eventually(check, message, ms = 20000) {
   const deadline = Date.now() + ms;
@@ -96,9 +99,18 @@ try {
   const account = JSON.parse(await readFile(join(state, 'acceptance-account.json')));
   const bootstrap = await api(base, 'GET', '/api/v1/realtime/bootstrap', { token: account.owner.tokens.access_token });
   const connectPublisher = async () => {
-    const connection = await mqtt.connectAsync(bootstrap.broker.tcp_url, { clientId: bootstrap.client_id, username: bootstrap.broker.username,
-      password: bootstrap.broker.password, protocolVersion: 5, reconnectPeriod: 0, connectTimeout: 5000 });
-    connection.on('error', () => {}); return connection;
+    // A restart can close the socket before CONNACK. Bound that attempt and
+    // dispose it, so the readiness retry cannot leave an unsettled promise.
+    return new Promise((resolveConnection, rejectConnection) => {
+      const connection = mqtt.connect(bootstrap.broker.tcp_url, { clientId: bootstrap.client_id, username: bootstrap.broker.username,
+        password: bootstrap.broker.password, protocolVersion: 5, reconnectPeriod: 0, connectTimeout: 5000 });
+      const timer = setTimeout(() => fail(new Error('Publisher connection timeout')), 5000);
+      const cleanup = () => { clearTimeout(timer); connection.removeListener('connect', connected); connection.removeListener('error', fail); connection.removeListener('close', closed); };
+      const fail = error => { cleanup(); connection.on('error', () => {}); connection.end(true); rejectConnection(error); };
+      const closed = () => fail(new Error('Publisher closed before CONNACK'));
+      const connected = () => { cleanup(); connection.on('error', () => {}); resolveConnection(connection); };
+      connection.once('connect', connected); connection.once('error', fail); connection.once('close', closed);
+    });
   };
   client = await connectPublisher();
   const message = body => ({ id: randomUUID(), topic: account.topic, conversation_id: account.topic, timestamp: Math.floor(Date.now()/1000),
@@ -107,6 +119,34 @@ try {
   // IDs are generated here, never supplied as SQL fragments by an external actor.
   const ids = batch => batch.map(m => `'${m.id}'`).join(',');
   const count = batch => Number(sql(`SELECT count(*) FROM messages WHERE message_id IN (${ids(batch)})`));
+  let pushReply;
+  if (env.MQTTS_TEST_PUSH_OUTBOX === '1') {
+    // Exercise actual MQTTS -> independent consumer -> PostgreSQL outbox with
+    // the API provider disabled. No APNs traffic or real device token is used.
+    assert((await api(base, 'GET', '/api/v1/push/status', { token: account.owner.tokens.access_token })).available === false, 'Fixture must not enable an APNs sender');
+    const installation = randomUUID(), revision = randomUUID();
+    sql(`INSERT INTO push_devices (id,user_id,token,environment,revision,language,enabled,expires_at,created_at,updated_at) VALUES ('${installation}','${account.owner.user.id}','abcdef','sandbox','${revision}','en',true,now()+interval '1 day',now(),now())`);
+    const botBootstrap = await api(base, 'GET', '/api/v1/bot-runtime/bootstrap', { botKey: account.bot_key });
+    const readerBootstrap = await api(base, 'GET', '/api/v1/realtime/bootstrap', { token: account.owner.tokens.access_token });
+    pushReply = async label => {
+      const publisher = await mqtt.connectAsync(botBootstrap.broker.tcp_url, { clientId: botBootstrap.client_id, username: botBootstrap.broker.username, password: botBootstrap.broker.password, protocolVersion: 5, reconnectPeriod: 0, connectTimeout: 5000 });
+      publisher.on('error', () => {});
+      // CocoaMQTT uses MQTT 3.1.1 over WebSocket; verify this transport alongside
+      // the MQTT 5 backend fixtures without changing the iOS protocol.
+      const reader = await mqtt.connectAsync(readerBootstrap.broker.ws_url, { clientId: readerBootstrap.client_id, username: readerBootstrap.broker.username, password: readerBootstrap.broker.password, protocolVersion: 4, reconnectPeriod: 0, connectTimeout: 5000 });
+      reader.on('error', () => {});
+      const reply = { ...message(label), from: { type: 'bot', id: account.bot.id }, to: { type: 'user', id: account.owner.user.id } };
+      let received = false;
+      reader.on('message', (_topic, bytes) => { try { const row = JSON.parse(bytes); if (row.id === reply.id && row.content.body === label) received = true; } catch {} });
+      try {
+        await reader.subscribeAsync(account.topic, { qos: 1 });
+        for (let i=0; i<2; i++) await publisher.publishAsync(account.topic, JSON.stringify(reply), { qos: 1 });
+        await eventually(() => received && count([reply]) === 1 && Number(sql(`SELECT count(*) FROM push_deliveries p JOIN messages m ON p.message_row_id=m.id WHERE m.message_id='${reply.id}' AND p.device_id='${installation}' AND p.state='pending'`)) === 1, 'MQTT reply or exactly-once transactional push row missing');
+      } finally { await Promise.allSettled([publisher.endAsync(true),reader.endAsync(true)]); }
+    };
+    await pushReply('MQTTS push outbox replay');
+    pass('MQTT 3.1.1 WebSocket receives bot reply; duplicate broker delivery creates one message and one pending push');
+  }
   await eventually(async () => (await health()).queue?.pending === 0, 'Pre-existing backlog did not drain');
   const baselineDead = (await health()).queue.dead;
 
@@ -119,7 +159,7 @@ try {
   const brokerRestarted = await restartIsolatedBroker();
   await eventually(async () => { try { client = await connectPublisher(); return true; } catch { return false; } }, 'Publisher did not reconnect after broker restart');
   await startConsumer();
-  await eventually(() => count(offline) === 200, 'Broker lost positively acknowledged offline publications');
+  await eventually(() => count(offline) === 200, 'Broker offline publications did not finish recovery within the timeout', recoveryTimeoutMs);
   assert(sql(`SELECT string_agg(message_id::text, ',' ORDER BY seq) FROM messages WHERE message_id IN (${ids(offline)})`) === offline.map(m => m.id).join(','), 'Offline recovery changed conversation order');
   await eventually(async () => (await health()).queue?.pending === 0, 'Recovered offline backlog did not drain');
   pass(`200 publications persisted in order after consumer SIGKILL${brokerRestarted ? ' and broker SIGKILL/restart' : ''}`);
@@ -134,6 +174,7 @@ try {
   const renewed = message('consumer independently renews'); await send(renewed);
   await eventually(() => count([renewed]) === 1, 'Consumer stopped after its independent renewal interval');
   assert(execFileSync('ps', ['-o', 'stat=', '-p', String(backendPID)], { encoding: 'utf8' }).trim().startsWith('T'), 'API resumed before persistence check');
+  if (pushReply) { await pushReply('push with API paused'); pass('Independent consumer enqueues bot push while API process is paused'); }
   resume(); watchdog.kill();
   pass('101 messages persisted with the API paused, including a consumer policy renewal interval');
 
@@ -148,7 +189,7 @@ try {
   await startConsumer(false);
   assert((await health()).queue.pending === 200, 'Crash lost acknowledged spool records');
   releaseLock();
-  await eventually(() => count(backlog) === 200, 'Spool did not replay after crash and database recovery');
+  await eventually(() => count(backlog) === 200, 'Spool did not replay after crash and database recovery', recoveryTimeoutMs);
   await eventually(async () => (await health()).queue?.pending === 0, 'Committed messages not removed from queue');
   assert(sql(`SELECT string_agg(message_id::text, ',' ORDER BY seq) FROM messages WHERE message_id IN (${ids(backlog)})`) === backlog.map(m => m.id).join(','), 'Conversation order changed during replay');
   pass('200 acknowledged messages survived SIGKILL and database timeout, then replayed in order');

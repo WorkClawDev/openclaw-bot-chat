@@ -132,6 +132,13 @@ jobs:
           PY
           PGPASSWORD="$DATABASE_PASSWORD" psql -h 127.0.0.1 -U postgres -d mqtts_acceptance -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
       - run: go -C backend build -o ../run/backend ./cmd/server && go -C backend build -o ../run/admin-user ./cmd/admin-user && go -C backend build -o ../run/message-ingest ./cmd/message-ingest
+      - name: Backend regression with real PostgreSQL and Redis
+        working-directory: backend
+        env:
+          PUSH_TEST_DATABASE_DSN: host=127.0.0.1 port=5432 user=postgres password=isolated-ci-password dbname=mqtts_acceptance sslmode=disable
+          TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=postgres password=isolated-ci-password dbname=mqtts_acceptance sslmode=disable
+          TEST_PHONE_REDIS_ADDR: 127.0.0.1:6379
+        run: go test -race -p 1 ./... -count=1
       - run: npm --prefix scripts/test-environment ci
       - name: Run real PostgreSQL, Redis, MQTT and permission acceptance
         run: |
@@ -156,7 +163,7 @@ jobs:
           export MQTTS_TEST_STATE_DIR="$PWD/run/mqtts-permissions"
           export MQTTS_TEST_BACKEND_PID="$backend_pid" MQTTS_TEST_BACKEND_EXECUTABLE="$backend_executable"
           export MQTTS_TEST_ADMIN_CLI="$PWD/run/admin-user" MQTTS_TEST_INGEST_EXECUTABLE="$PWD/run/message-ingest"
-          MQTTS_TEST_BROKER_CONTAINER=mqtts-access MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access node scripts/test-environment/mqtts-ingest-acceptance.mjs
+          MQTTS_TEST_PUSH_OUTBOX=1 MQTTS_TEST_BROKER_CONTAINER=mqtts-access MQTTS_TEST_AUTHZ_CONTAINER=mqtts-authz-access node scripts/test-environment/mqtts-ingest-acceptance.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: mqtts-cache-outage

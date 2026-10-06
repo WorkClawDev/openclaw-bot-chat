@@ -3,6 +3,24 @@ import Testing
 @testable import clawchat
 
 struct BotBindingQRCodeParserTests {
+    @Test func rejectsUnsupportedSchemesAndEmbeddedCredentials() {
+        for url in [
+            "ftp://example.test/openclaw/bind?token=ocbb_test_token_only",
+            "https://user:password@example.test/openclaw/bind?token=ocbb_test_token_only",
+            "javascript:ocbb_test_token_only",
+        ] {
+            #expect(BotBindingQRCodeParser.parse(url) == .unsupported)
+        }
+    }
+
+    @Test func bindingOriginChecksSchemeHostPortAndCredentials() throws {
+        let current = try #require(URL(string: "https://api.example.test"))
+        #expect(ServiceEndpointConfiguration.hasSameOrigin(try #require(URL(string: "https://API.example.test:443/openclaw/bind")), current))
+        for value in ["http://api.example.test", "https://other.example.test", "https://api.example.test:444", "https://user@api.example.test", "file:///api.example.test"] {
+            #expect(!ServiceEndpointConfiguration.hasSameOrigin(try #require(URL(string: value)), current))
+        }
+    }
+
     @Test func parsesOneTimeBindingTokenUrl() throws {
         let token = "ocbb_abcdefghijklmnopqrstuvwxyz123456_12345678"
         let result = BotBindingQRCodeParser.parse(

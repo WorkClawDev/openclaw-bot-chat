@@ -38,11 +38,13 @@ extension SettingsView {
         profileErrorMessage = nil
         isEditingProfile = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard isEditingProfile else { return }
             focusNicknameField = true
         }
     }
 
     func cancelProfileEditing() {
+        focusNicknameField = false
         syncProfileDraftsIfNeeded()
         selectedAvatarItem = nil
         pendingAvatarImage = nil
@@ -103,6 +105,7 @@ extension SettingsView {
         }
         do {
             _ = try await viewModel.updateProfile(nickname: trimmedNickname, avatarURL: trimmedAvatarURL)
+            focusNicknameField = false
             withAnimation { isEditingProfile = false }
             presentToast(L10n.t("个人资料已更新", "Profile updated"))
         } catch {
@@ -140,29 +143,13 @@ extension SettingsView {
     func refreshNotificationAuthorization() async {
         let settings = await notificationSettings()
         notificationAuthorizationStatus = settings.authorizationStatus
-        if !hasNotificationPermission { botNotificationsEnabled = false }
+        if let user = authManager.currentUser, let token = authManager.accessToken {
+            pushNotifications.activate(ChatPushSession(userID: user.id, accessToken: token, endpoint: APIClient.shared.baseURL))
+        }
     }
 
     func updateNotifications(enabled: Bool) async {
-        if !enabled {
-            botNotificationsEnabled = false
-            presentToast(L10n.t("通知已关闭", "Notifications turned off"))
-            return
-        }
-        if hasNotificationPermission {
-            botNotificationsEnabled = true
-            presentToast(L10n.t("通知已开启", "Notifications turned on"))
-            return
-        }
-        let granted = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
-        await refreshNotificationAuthorization()
-        if granted == true {
-            botNotificationsEnabled = true
-            presentToast(L10n.t("通知已开启", "Notifications turned on"))
-        } else {
-            botNotificationsEnabled = false
-            presentToast(L10n.t("未获得通知权限", "Notification permission was not granted"), isError: true)
-        }
+        pushNotifications.setEnabled(enabled)
     }
 
     func presentToast(_ message: String, isError: Bool = false) {
@@ -205,22 +192,11 @@ extension SettingsView {
     }
 
     var notificationSubtitle: String {
-        switch notificationAuthorizationStatus {
-        case .authorized, .provisional: return botNotificationsEnabled ? L10n.t("已开启", "On") : L10n.t("已允许", "Allowed")
-        case .denied: return L10n.t("已阻止", "Blocked")
-        default: return L10n.t("已关闭", "Off")
-        }
+        pushNotifications.state.label
     }
 
     var imageUploadQualitySubtitle: String {
-        switch imageUploadQuality {
-        case "Original":
-            return L10n.t("原图", "Original")
-        case "Compressed":
-            return L10n.t("小图", "Small")
-        default:
-            return L10n.t("均衡", "Balanced")
-        }
+        ImageSendMode.preference(imageUploadQuality).shortTitle
     }
 
     var appVersionText: String {
@@ -265,16 +241,9 @@ extension SettingsView {
         }
     }
 
-    static let imageUploadQualityOptions = ["Compressed", "Balanced", "Original"]
+    static let imageUploadQualityOptions = ImageSendMode.allCases.map(\.rawValue)
     static func localizedImageUploadQuality(_ quality: String) -> String {
-        switch quality {
-        case "Compressed":
-            return L10n.t("压缩", "Compressed")
-        case "Original":
-            return L10n.t("原图", "Original")
-        default:
-            return L10n.t("均衡", "Balanced")
-        }
+        ImageSendMode.preference(quality).shortTitle
     }
     static let coralDanger = Color(red: 248 / 255, green: 113 / 255, blue: 113 / 255)
 

@@ -43,6 +43,7 @@ class BotSettingsViewModel: ObservableObject {
                 }
             } receiveValue: { (updatedBot: Bot) in
                 self.bot = updatedBot
+                NotificationCenter.default.post(name: .chatDirectoryDidChange, object: nil)
                 onDone()
             }
             .store(in: &cancellables)
@@ -58,21 +59,23 @@ class BotSettingsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (_: APIClient.EmptyResponse) in
+                NotificationCenter.default.post(name: .chatDirectoryDidChange, object: nil)
                 onDone()
             }
             .store(in: &cancellables)
     }
     
     func createKey(name: String?) {
+        guard !isLoading else { return }
         isLoading = true
         APIClient.shared.createBotKey(botID: bot.id, name: name)
             .receive(on: DispatchQueue.main)
             .sink { completion in
-                self.isLoading = false
                 if case .failure(let error) = completion {
+                    self.isLoading = false
                     self.errorMessage = error.localizedDescription
                 }
-            } receiveValue: { (response: BotKeyResponse) in
+            } receiveValue: { (response: CreatedBotKeyResponse) in
                 self.newPlaintextKey = response.key // store plaintext to show to user
                 self.fetchKeys()
             }
@@ -80,12 +83,13 @@ class BotSettingsViewModel: ObservableObject {
     }
     
     func revokeKey(keyId: UUID) {
+        guard !isLoading else { return }
         isLoading = true
         APIClient.shared.revokeBotKey(botID: bot.id, keyID: keyId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
-                self.isLoading = false
                 if case .failure(let error) = completion {
+                    self.isLoading = false
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (_: APIClient.EmptyResponse) in
@@ -110,14 +114,16 @@ struct BotSettingsView: View {
     @State private var showNewKeyAlert = false
     @State private var newKeyName = ""
     
-    var onBotUpdated: () -> Void
+    var onBotUpdated: (Bot) -> Void
+    var onBotDeleted: () -> Void
     
-    init(bot: Bot, onBotUpdated: @escaping () -> Void) {
+    init(bot: Bot, onBotUpdated: @escaping (Bot) -> Void, onBotDeleted: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: BotSettingsViewModel(bot: bot))
         _editName = State(initialValue: bot.name)
         _editDescription = State(initialValue: bot.description ?? "")
         _editAvatarURL = State(initialValue: bot.avatarUrl ?? bot.avatar ?? "")
         self.onBotUpdated = onBotUpdated
+        self.onBotDeleted = onBotDeleted
     }
     
     var body: some View {
@@ -134,6 +140,7 @@ struct BotSettingsView: View {
                 .padding(.vertical, 20)
             }
             .scrollIndicators(.hidden)
+            .accessibilityIdentifier("bot.settings.scroll")
         }
         .navigationTitle(L10n.t("机器人设置", "Bot settings"))
         .navigationBarTitleDisplayMode(.inline)
@@ -210,12 +217,12 @@ struct BotSettingsView: View {
                         let trimmedAvatarURL = editAvatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
                         viewModel.updateBot(name: editName, description: editDescription, avatarURL: trimmedAvatarURL) {
                             withAnimation { isEditing = false }
-                            onBotUpdated()
+                            onBotUpdated(viewModel.bot)
                         }
                     }
                     .font(.subheadline.bold())
                     .foregroundStyle(Color.rcmsAccent)
-                    .disabled(isUploadingAvatar || editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(viewModel.isLoading || isUploadingAvatar || editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } else {
                     Button(L10n.t("编辑", "Edit")) {
                         editName = viewModel.bot.name
@@ -331,8 +338,8 @@ struct BotSettingsView: View {
                         Text(L10n.t("状态", "Status"))
                             .foregroundStyle(Color.rcmsTextSecondary)
                         Spacer()
-                        Text(viewModel.bot.status == "online" ? L10n.online : L10n.offline)
-                            .foregroundStyle(viewModel.bot.status == "online" ? Color.rcmsOnline : Color.rcmsTextSecondary)
+                        Text(viewModel.bot.activation.label)
+                            .foregroundStyle(viewModel.bot.activation == .enabled ? Color.rcmsAccent : Color.rcmsTextSecondary)
                     }
                     .padding(16)
                 }
@@ -401,6 +408,8 @@ struct BotSettingsView: View {
                 }
                 .font(.subheadline.bold())
                 .foregroundStyle(Color.rcmsAccent)
+                .disabled(viewModel.isLoading)
+                .accessibilityIdentifier("bot.keys.create")
             }
             
             if viewModel.keys.isEmpty {
@@ -423,15 +432,23 @@ struct BotSettingsView: View {
                                 Text(key.keyPrefix + "...")
                                     .font(.caption.monospaced())
                                     .foregroundStyle(Color.rcmsTextSecondary)
+                                Text(key.isActive ? L10n.t("有效", "Active") : L10n.t("已撤销", "Revoked"))
+                                    .font(.caption)
+                                    .foregroundStyle(Color.rcmsTextSecondary)
+                                    .accessibilityIdentifier("bot.key.state.\(key.id.uuidString.lowercased())")
                             }
                             Spacer()
-                            Button(role: .destructive) {
-                                viewModel.revokeKey(keyId: key.id)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .foregroundStyle(Color.rcmsDanger)
+                            if key.isActive {
+                                Button(role: .destructive) {
+                                    viewModel.revokeKey(keyId: key.id)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(Color.rcmsDanger)
+                                }
+                                .accessibilityLabel(L10n.t("撤销密钥", "Revoke key"))
+                                .accessibilityIdentifier("bot.key.revoke.\(key.id.uuidString.lowercased())")
+                                .disabled(viewModel.isLoading)
                             }
-                            .accessibilityLabel(L10n.t("删除密钥", "Delete key"))
                         }
                         .padding(16)
                         
@@ -468,7 +485,7 @@ struct BotSettingsView: View {
             .confirmationDialog(L10n.t("确定要删除此机器人吗？", "Delete this bot?"), isPresented: $showDeleteConfirm, titleVisibility: .visible) {
                 Button(L10n.t("删除", "Delete"), role: .destructive) {
                     viewModel.deleteBot {
-                        onBotUpdated()
+                        onBotDeleted()
                         dismiss()
                     }
                 }

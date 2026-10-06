@@ -44,6 +44,9 @@ with tempfile.TemporaryDirectory(prefix='broker-deployment-') as directory:
             assert 'message-ingest' in services
             ingest = services['message-ingest']
             assert 'backend' not in ingest.get('depends_on', {})
+            assert ingest['environment']['PUSH_ENABLED'] == services['backend']['environment']['PUSH_ENABLED'] == 'false'
+            # Provider credentials must not leak into the independent consumer.
+            assert not any(k in ingest['environment'] for k in ['PUSH_PRIVATE_KEY_PATH', 'PUSH_TEAM_ID', 'PUSH_KEY_ID'])
             assert ingest['environment']['MQTT_USERNAME'] != services['backend']['environment'].get('MQTT_USERNAME')
             assert any(v['target'] == '/data' for v in ingest.get('volumes', []))
             if profile:

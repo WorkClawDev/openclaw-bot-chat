@@ -110,6 +110,7 @@ services:
       - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - PUSH_ENABLED=${PUSH_ENABLED:-false}
       - MQTT_BROKER=${MQTT_BROKER:-tcp://mqtts:1883}
       - MQTT_CLIENT_ID=${MQTT_CLIENT_ID:-openclaw-backend}
       - BROKER_SECURITY_ADDRESS=${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
@@ -169,6 +170,7 @@ services:
       - DATABASE_USER=${DATABASE_USER:-postgres}
       - DATABASE_PASSWORD=${DATABASE_PASSWORD:-postgres}
       - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
+      - PUSH_ENABLED=${PUSH_ENABLED:-false}
       - MQTT_BROKER=${MQTT_BROKER:-tcp://mqtts:1883}
       - BROKER_SECURITY_ADDRESS=${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
       - BROKER_SECURITY_INSECURE=${BROKER_SECURITY_INSECURE:-true}

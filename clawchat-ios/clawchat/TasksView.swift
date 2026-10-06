@@ -27,8 +27,9 @@ struct TasksView: View {
                     footer
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 22)
+                .padding(.top, 8)
                 .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .toolbar(.hidden, for: .navigationBar)
             .task {
@@ -91,12 +92,9 @@ struct TasksView: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(L10n.t("任务", "Tasks"))
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Color.rcmsTextStrong)
                     .accessibilityIdentifier("tasks-title")
-                Text(L10n.t("调度、排期和审核机器人工作", "Dispatch, schedule, and review bot work"))
-                    .font(.subheadline)
-                    .foregroundStyle(Color.rcmsTextSecondary)
             }
             Spacer()
             if viewModel.isLoading {
@@ -115,6 +113,7 @@ struct TasksView: View {
             }
             .accessibilityIdentifier("tasks-create-button")
             .accessibilityLabel(L10n.t("新建任务", "New task"))
+            HomeUtilityCloseButton()
         }
     }
 
@@ -193,6 +192,11 @@ struct TasksView: View {
             TaskStateView(systemImage: "exclamationmark.triangle.fill", title: L10n.t("任务加载失败", "Could not load tasks"), message: error)
         } else if viewModel.isLoading && viewModel.tasks.isEmpty {
             TaskStateView(systemImage: "hourglass", title: L10n.t("正在加载任务", "Loading tasks"), message: L10n.t("正在同步调度控制台。", "Syncing the dispatch console."))
+        } else if viewModel.filteredTasks.isEmpty {
+            // Keep the empty state in the viewport, outside the horizontally
+            // scrolling timeline whose center may be several screens away.
+            TaskStateView(systemImage: "tray", title: L10n.t("没有匹配任务", "No matching tasks"), message: L10n.t("新建任务或调整筛选条件。", "Create a task or change the active state filter."))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
             switch viewModel.viewMode {
             case .timeline:
@@ -447,11 +451,6 @@ private struct TaskGanttBoard: View {
                 )
             }
 
-            if viewModel.filteredTasks.isEmpty {
-                TaskStateView(systemImage: "tray", title: L10n.t("没有匹配任务", "No matching tasks"), message: L10n.t("新建任务或调整筛选条件。", "Create a task or change the active state filter."))
-                    .frame(width: min(timeline.width, 360), height: 220)
-                    .offset(x: max(20, timeline.width / 2 - 180), y: 80)
-            }
         }
         .frame(width: timeline.width, height: max(timeline.height, 260), alignment: .topLeading)
         .background(Color.rcmsFieldSurface.opacity(0.48))

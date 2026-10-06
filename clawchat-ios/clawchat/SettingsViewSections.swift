@@ -17,7 +17,7 @@ extension SettingsView {
 
     func compactSettingsContent(user: User) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            settingsHeader
+            if closeHomeUtility == nil { settingsHeader }
 
             profileHeader(user: user)
 
@@ -97,7 +97,7 @@ extension SettingsView {
 
     var settingsHeader: some View {
         Text(L10n.t("设置", "Settings"))
-            .font(.system(size: 28, weight: .bold, design: .rounded))
+            .font(.system(size: 17, weight: .semibold))
             .foregroundStyle(Color.rcmsTextStrong)
             .frame(maxWidth: .infinity)
             .padding(.top, 4)
@@ -266,17 +266,39 @@ extension SettingsView {
                 }
             }
             divider
-            actionRow(title: L10n.t("密码", "Password"), subtitle: "", value: "", icon: "lock") {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                    showPasswordEditor.toggle()
+            if user.canChangePassword {
+                actionRow(title: L10n.t("密码", "Password"), subtitle: "", value: "", icon: "lock") {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        showPasswordEditor.toggle()
+                    }
                 }
-            }
-            .accessibilityIdentifier("settings.password-row")
+                .accessibilityIdentifier("settings.password-row")
 
-            if showPasswordEditor {
-                passwordEditor
-                    .padding([.horizontal, .bottom], 16)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                if showPasswordEditor {
+                    passwordEditor
+                        .padding([.horizontal, .bottom], 16)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            } else {
+                HStack(spacing: 16) {
+                    Image(systemName: "iphone")
+                        .font(.system(size: 20))
+                        .frame(width: 26)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n.t("登录方式", "Sign-in method"))
+                            .font(.body.weight(.medium))
+                        Text((user.phone ?? "").isEmpty
+                             ? L10n.t("此账号未设置密码", "No password is set for this account")
+                             : L10n.t("手机验证码 · 无需密码", "Phone verification · No password required"))
+                            .font(.subheadline)
+                            .foregroundStyle(Color.rcmsTextSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("settings.passwordless-sign-in")
             }
 
             divider
@@ -426,24 +448,40 @@ extension SettingsView {
 
     var messagingCard: some View {
         VStack(spacing: 0) {
-            preferenceRow(title: L10n.t("机器人通知", "Bot notifications"), subtitle: notificationSubtitle, icon: "bell.badge") {
+            preferenceRow(title: L10n.t("机器人通知", "Bot notifications"), subtitle: notificationSubtitle, icon: "bell.badge", subtitleLineLimit: 3) {
                 Toggle("", isOn: Binding(
-                    get: { botNotificationsEnabled },
+                    get: { pushNotifications.enabled },
                     set: { newValue in
                         Task { await updateNotifications(enabled: newValue) }
                     }
                 ))
                 .labelsHidden()
                 .tint(Color.rcmsAccent)
+                .accessibilityLabel(L10n.t("机器人通知", "Bot notifications"))
+                .accessibilityIdentifier("settings.push.toggle")
+            }
+            if pushNotifications.state == .failed || pushNotifications.state == .unavailable || pushNotifications.state == .revocationPending {
+                Button(L10n.t("重试通知连接", "Retry notification connection")) {
+                    if pushNotifications.enabled { pushNotifications.setEnabled(true) }
+                    else { Task { await refreshNotificationAuthorization() } }
+                }.font(.system(size: 13)).padding(.horizontal, 16).padding(.bottom, 12)
+                    .accessibilityIdentifier("settings.push.retry")
+            }
+            if pushNotifications.state == .denied {
+                Button(L10n.t("打开系统设置", "Open system Settings")) {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }.font(.system(size: 13)).padding(.horizontal, 16).padding(.bottom, 12)
             }
             divider
             preferenceRow(title: L10n.t("紧凑消息模式", "Compact message mode"), subtitle: compactMessageMode ? L10n.t("紧凑", "Compact") : L10n.t("舒适", "Comfort"), icon: "text.alignleft") {
                 Toggle("", isOn: $compactMessageMode)
                     .labelsHidden()
                     .tint(Color.rcmsAccent)
+                    .accessibilityLabel(L10n.t("紧凑消息模式", "Compact message mode"))
+                    .accessibilityIdentifier("settings.compact.toggle")
             }
             divider
-            preferenceRow(title: L10n.t("图片上传质量", "Image upload quality"), subtitle: imageUploadQualitySubtitle, icon: "photo.on.rectangle") {
+            preferenceRow(title: L10n.t("图片上传质量", "Image quality"), subtitle: imageUploadQualitySubtitle, icon: "photo.on.rectangle") {
                 Picker(L10n.t("图片上传质量", "Image upload quality"), selection: $imageUploadQuality) {
                     ForEach(Self.imageUploadQualityOptions, id: \.self) { quality in
                         Text(Self.localizedImageUploadQuality(quality)).tag(quality)
@@ -451,6 +489,8 @@ extension SettingsView {
                 }
                 .pickerStyle(.menu)
                 .tint(Color.rcmsAccent)
+                .accessibilityIdentifier("settings.imageQuality")
+                .accessibilityValue(ImageSendMode.preference(imageUploadQuality).shortTitle)
             }
         }
         .glassCardStyle()
@@ -617,7 +657,7 @@ extension SettingsView {
         .buttonStyle(.plain)
     }
 
-    func preferenceRow<Content: View>(title: String, subtitle: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+    func preferenceRow<Content: View>(title: String, subtitle: String, icon: String, subtitleLineLimit: Int = 1, @ViewBuilder content: () -> Content) -> some View {
         HStack {
             rowIcon(icon)
             VStack(alignment: .leading, spacing: 2) {
@@ -628,7 +668,8 @@ extension SettingsView {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(Color.rcmsTextSecondary)
-                    .lineLimit(1)
+                    .lineLimit(subtitleLineLimit)
+                    .fixedSize(horizontal: false, vertical: true)
                     .truncationMode(.tail)
             }
             Spacer()

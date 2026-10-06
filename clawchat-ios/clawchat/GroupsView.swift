@@ -7,13 +7,24 @@ class GroupsViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let refreshInterval: TimeInterval = 45
+    private let messageStore = LocalMessageStore.shared
     private var cancellables = Set<AnyCancellable>()
     private var hasHydratedCache = false
     private var hasLoaded = false
     private var lastRefreshAt: Date?
+    private var refreshPending = false
+
+    init() {
+        NotificationCenter.default.publisher(for: .chatDirectoryDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshIfNeeded(force: true) }
+            .store(in: &cancellables)
+    }
 
     func refreshIfNeeded(force: Bool = false) {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         if isLoading {
+            refreshPending = refreshPending || force
             return
         }
 
@@ -38,8 +49,12 @@ class GroupsViewModel: ObservableObject {
                 if case .failure(let error) = completion {
                     self.errorMessage = error.localizedDescription
                 }
+                if self.refreshPending == true {
+                    self.refreshPending = false
+                    self.refreshIfNeeded(force: true)
+                }
             } receiveValue: { (groups: [ChatGroup]) in
-                LocalMessageStore.shared.upsert(groups: groups)
+                self.messageStore.upsert(groups: groups)
                 self.groups = groups
                 self.hasHydratedCache = true
                 self.hasLoaded = true
@@ -51,7 +66,7 @@ class GroupsViewModel: ObservableObject {
     private func hydrateCachedGroupsIfNeeded() {
         guard !hasHydratedCache else { return }
 
-        let cachedGroups = LocalMessageStore.shared.cachedGroups()
+        let cachedGroups = messageStore.cachedGroups()
         if !cachedGroups.isEmpty {
             groups = cachedGroups
         }
@@ -119,7 +134,7 @@ struct GroupsView: View {
                                 ChatRoomView(context: .init(
                                     id: conversationTopic(for: group),
                                     title: group.name,
-                                    subtitle: (group.isActive == true) ? "bots online" : "bots offline",
+                                    subtitle: group.memberSummary,
                                     isGroup: true,
                                     groupId: group.id.uuidString.lowercased(),
                                     memberCount: group.memberCount,
@@ -137,7 +152,7 @@ struct GroupsView: View {
                 .scrollIndicators(.hidden)
             }
             .navigationTitle(L10n.t("群组", "Groups"))
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
@@ -206,8 +221,8 @@ struct GroupRowCard: View {
                 name: group.name,
                 imageURL: group.avatarUrl ?? group.avatar,
                 systemImage: "person.3.fill",
-                diameter: 52,
-                statusColor: (group.isActive == true) ? Color.rcmsOnline : Color.rcmsOffline
+                diameter: 44,
+                statusColor: nil
             )
 
             VStack(alignment: .leading, spacing: 4) {
@@ -216,7 +231,7 @@ struct GroupRowCard: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(Color.rcmsTextStrong)
 
-                Text(group.description ?? "暂无消息")
+                Text(group.description ?? L10n.t("暂无消息", "No messages yet"))
                     .font(.subheadline)
                     .foregroundStyle(Color.rcmsTextSecondary)
                     .lineLimit(1)
@@ -224,14 +239,8 @@ struct GroupRowCard: View {
 
             Spacer()
         }
-        .frame(minHeight: 74)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 8)
+        .frame(minHeight: 58)
+        .padding(.vertical, 7)
         .background(Color.rcmsSurface)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.rcmsDivider)
-                .frame(height: 1)
-        }
     }
 }

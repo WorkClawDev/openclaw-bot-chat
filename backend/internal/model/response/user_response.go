@@ -36,6 +36,7 @@ type AuthUserResponse struct {
 	AvatarURL      *string        `json:"avatar_url,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
 	CreatedAtAlias time.Time      `json:"createdAt"`
+	HasPassword    bool           `json:"has_password"`
 }
 
 type TokenResponse struct {
@@ -61,6 +62,7 @@ type MeResponse struct {
 	AvatarURL      *string        `json:"avatar_url,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
 	CreatedAtAlias time.Time      `json:"createdAt"`
+	HasPassword    bool           `json:"has_password"`
 }
 
 func NewUserResponse(user *model.User) *UserResponse {
@@ -110,6 +112,7 @@ func NewAuthUserResponse(user *model.User) *AuthUserResponse {
 		Username:       user.Username,
 		Email:          userEmail(user),
 		Phone:          userPhone(user),
+		HasPassword:    userHasPassword(user),
 		Nickname:       userNickname(user),
 		Avatar:         user.AvatarURL,
 		AvatarURL:      user.AvatarURL,
@@ -129,6 +132,7 @@ func NewMeResponse(user *model.User) *MeResponse {
 		Username:       user.Username,
 		Email:          userEmail(user),
 		Phone:          userPhone(user),
+		HasPassword:    userHasPassword(user),
 		Nickname:       userNickname(user),
 		Avatar:         user.AvatarURL,
 		AvatarURL:      user.AvatarURL,
@@ -142,6 +146,11 @@ func userEmail(user *model.User) string {
 		return ""
 	}
 	return *user.Email
+}
+
+// Only self/auth responses expose this capability; the hash never leaves the server.
+func userHasPassword(user *model.User) bool {
+	return user != nil && user.PasswordHash != nil && *user.PasswordHash != ""
 }
 
 func userPhone(user *model.User) string {

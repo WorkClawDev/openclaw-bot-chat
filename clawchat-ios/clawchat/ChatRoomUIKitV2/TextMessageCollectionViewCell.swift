@@ -13,9 +13,9 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
     private var codeTasks: [String: Task<Void, Never>] = [:]
     private var avatarTask: Task<Void, Never>?
     private var audioObservationIDs: [String: UUID] = [:]
-    private var audioLoadingViews: [String: UIActivityIndicatorView] = [:]
 
     var onImageTap: ((String) -> Void)?
+    var onFileTap: ((FileBlockContentV2) -> Void)?
     var onDocumentTap: ((UUID) -> Void)?
     var onDocumentContinueTap: ((DocumentLinkPreview) -> Void)?
 
@@ -37,6 +37,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         removeAudioObservers()
         renderedMessage = nil
         onImageTap = nil
+        onFileTap = nil
         onDocumentTap = nil
         onDocumentContinueTap = nil
         blockViews.values.forEach { $0.removeFromSuperview() }
@@ -44,6 +45,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
     }
 
     func configure(with message: RenderedMessageV2) {
+        removeAudioObservers()
         renderedMessage = message
         cancelImageTasks()
         cancelCodeTasks()
@@ -108,6 +110,8 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             return makeAudioBlock(audio, frame: frame, isOutgoing: isOutgoing)
         case .document(let document):
             return makeDocumentBlock(document, frame: frame, isOutgoing: isOutgoing)
+        case .file(let file):
+            return makeFileBlock(file, frame: frame, isOutgoing: isOutgoing)
         }
     }
 
@@ -116,7 +120,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         bubbleView.accessibilityIdentifier = block.id
         bubbleView.isAccessibilityElement = false
         bubbleView.accessibilityLabel = block.text
-        bubbleView.backgroundColor = isOutgoing ? UIColor.systemBlue : UIColor.secondarySystemBackground
+        bubbleView.backgroundColor = isOutgoing ? UIColor.chatOutgoing : UIColor.chatIncoming
         bubbleView.layer.cornerRadius = 18
         bubbleView.layer.cornerCurve = .continuous
         bubbleView.clipsToBounds = true
@@ -144,11 +148,41 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         return bubbleView
     }
 
+    private func makeFileBlock(_ block: FileBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
+        let control = UIControl(frame: frame)
+        control.backgroundColor = isOutgoing ? .chatOutgoing : .chatIncoming
+        control.layer.cornerRadius = 18
+        control.layer.cornerCurve = .continuous
+        control.accessibilityIdentifier = block.id
+        control.isAccessibilityElement = true
+        control.accessibilityLabel = "\(block.name), \(block.detail)"
+        control.accessibilityTraits = .button
+        let icon = UIImageView(image: UIImage(systemName: "doc.text"))
+        icon.tintColor = isOutgoing ? .white : .secondaryLabel
+        icon.contentMode = .scaleAspectFit
+        icon.frame = CGRect(x: 14, y: 24, width: 24, height: 28)
+        control.addSubview(icon)
+        let title = UILabel(frame: CGRect(x: 50, y: 14, width: frame.width - 64, height: 22))
+        title.text = block.name
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.textColor = isOutgoing ? .white : .label
+        title.lineBreakMode = .byTruncatingMiddle
+        control.addSubview(title)
+        let detail = UILabel(frame: CGRect(x: 50, y: 40, width: frame.width - 64, height: 18))
+        detail.text = block.detail
+        detail.font = .systemFont(ofSize: 12)
+        detail.textColor = isOutgoing ? UIColor.white.withAlphaComponent(0.7) : .secondaryLabel
+        control.addSubview(detail)
+        control.subviews.forEach { $0.isUserInteractionEnabled = false }
+        control.addAction(UIAction { [weak self] _ in self?.onFileTap?(block) }, for: .touchUpInside)
+        return control
+    }
+
     private func makeDocumentBlock(_ block: DocumentLinkBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
         let container = UIView(frame: frame)
         container.accessibilityIdentifier = block.id
         container.isAccessibilityElement = false
-        container.backgroundColor = isOutgoing ? UIColor.systemBlue : UIColor.secondarySystemBackground
+        container.backgroundColor = isOutgoing ? UIColor.chatOutgoing : UIColor.chatIncoming
         container.layer.cornerRadius = 16
         container.layer.cornerCurve = .continuous
         container.layer.borderWidth = 1
@@ -208,7 +242,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         chevron.isUserInteractionEnabled = false
         openControl.addSubview(chevron)
 
-        let subtitleLabel = UILabel(frame: CGRect(x: horizontalInset, y: 84, width: max(1, frame.width - horizontalInset * 2), height: 38))
+        let subtitleLabel = UILabel(frame: CGRect(x: horizontalInset, y: 80, width: max(1, frame.width - horizontalInset * 2), height: 28))
         subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
         subtitleLabel.textColor = isOutgoing ? UIColor.white.withAlphaComponent(0.78) : .secondaryLabel
         subtitleLabel.text = block.preview.summary
@@ -222,10 +256,10 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         container.addSubview(separator)
 
         let actionTop = openHeight
-        let buttonWidth = (frame.width - horizontalInset * 2 - 42 - 16) / 2
+        let buttonWidth = (frame.width - horizontalInset * 2 - 8) / 2
         let actions = [
-            ("text.bubble", "继续修改", { [weak self] in self?.onDocumentContinueTap?(block.preview) }),
-            ("arrow.up.right", "打开", { [weak self] in self?.onDocumentTap?(block.preview.id) })
+            ("text.bubble", L10n.t("继续修改", "Edit in chat"), { [weak self] in self?.onDocumentContinueTap?(block.preview) }),
+            ("arrow.up.right", L10n.t("打开", "Open"), { [weak self] in self?.onDocumentTap?(block.preview.id) })
         ]
         for (index, action) in actions.enumerated() {
             let button = UIButton(type: .system)
@@ -239,7 +273,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             button.setTitle(" \(action.1)", for: .normal)
             button.setImage(UIImage(systemName: action.0), for: .normal)
             button.accessibilityIdentifier = "\(block.id).\(index == 0 ? "continue" : "openAction")"
-            button.accessibilityLabel = index == 0 ? "继续修改文档" : "打开文档"
+            button.accessibilityLabel = index == 0 ? L10n.t("继续修改文档", "Edit document in chat") : L10n.t("打开文档", "Open document")
             button.tintColor = isOutgoing ? .white : .systemBlue
             button.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.08) : UIColor.systemBackground.withAlphaComponent(0.72)
             button.layer.cornerRadius = 8
@@ -247,17 +281,6 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             button.addAction(UIAction { _ in action.2() }, for: .touchUpInside)
             container.addSubview(button)
         }
-
-        let shareView = UIImageView(image: UIImage(systemName: "link"))
-        shareView.tintColor = isOutgoing ? UIColor.white.withAlphaComponent(0.5) : .tertiaryLabel
-        shareView.contentMode = .center
-        shareView.frame = CGRect(x: frame.width - horizontalInset - 36, y: actionTop + 6, width: 36, height: 32)
-        shareView.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.08) : UIColor.systemBackground.withAlphaComponent(0.72)
-        shareView.layer.cornerRadius = 8
-        shareView.layer.cornerCurve = .continuous
-        shareView.isAccessibilityElement = true
-        shareView.accessibilityLabel = "分享即将支持"
-        container.addSubview(shareView)
 
         return container
     }
@@ -340,7 +363,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         container.accessibilityIdentifier = block.id
         container.isAccessibilityElement = true
         container.accessibilityLabel = block.copyableText
-        container.backgroundColor = isOutgoing ? UIColor.systemBlue.withAlphaComponent(0.95) : UIColor.secondarySystemBackground
+        container.backgroundColor = isOutgoing ? UIColor.chatOutgoing : UIColor.chatIncoming
         container.layer.cornerRadius = 12
         container.layer.cornerCurve = .continuous
         container.layer.borderWidth = isOutgoing ? 0 : 0.5
@@ -449,6 +472,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         container.accessibilityIdentifier = block.id
         container.isAccessibilityElement = true
         container.accessibilityLabel = block.name
+        container.accessibilityValue = L10n.t("图片加载中", "Loading image")
         container.accessibilityTraits.insert(.button)
         container.layer.cornerRadius = block.isSticker ? 18 : 20
         container.layer.cornerCurve = .continuous
@@ -480,54 +504,16 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
     }
 
     private func makeAudioBlock(_ block: AudioBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
-        let button = UIButton(type: .system)
-        button.frame = frame
+        let button = ChatAudioMessageButtonV2(frame: frame, isOutgoing: isOutgoing, duration: block.durationLabel)
         button.accessibilityIdentifier = block.id
-        button.layer.cornerRadius = 18
-        button.layer.cornerCurve = .continuous
-        button.clipsToBounds = true
-        button.backgroundColor = isOutgoing ? UIColor.systemBlue : UIColor.secondarySystemBackground
-        button.tintColor = isOutgoing ? .white : .systemBlue
-        button.contentHorizontalAlignment = isOutgoing ? .right : .left
-        button.accessibilityLabel = "播放语音消息"
-
-        var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: "play.fill")
-        configuration.imagePadding = 10
-        configuration.baseForegroundColor = isOutgoing ? .white : .systemBlue
-        configuration.attributedTitle = AttributedString(block.durationLabel, attributes: AttributeContainer([
-            .font: UIFont.systemFont(ofSize: 13, weight: .medium)
-        ]))
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 13, bottom: 9, trailing: 13)
-        button.configuration = configuration
-        let loadingIndicator = UIActivityIndicatorView(style: .medium)
-        loadingIndicator.color = isOutgoing ? .white : .systemBlue
-        loadingIndicator.hidesWhenStopped = true
-        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(loadingIndicator)
-        var indicatorConstraints = [
-            loadingIndicator.centerYAnchor.constraint(equalTo: button.centerYAnchor)
-        ]
-        if isOutgoing {
-            indicatorConstraints.append(loadingIndicator.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -13))
-        } else {
-            indicatorConstraints.append(loadingIndicator.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 13))
-        }
-        NSLayoutConstraint.activate(indicatorConstraints)
-        audioLoadingViews[block.id] = loadingIndicator
-        button.addAction(UIAction { [weak self, weak button] _ in
-            self?.toggleAudio(block, button: button)
+        button.addAction(UIAction { _ in
+            ChatAudioPlaybackCoordinatorV2.shared.toggle(block: block)
         }, for: .touchUpInside)
-        audioObservationIDs[block.id] = ChatAudioPlaybackCoordinatorV2.shared.addObserver { [weak self, weak button, weak loadingIndicator] state in
-            let isPlaying = state.playingBlockID == block.id
-            let isLoading = state.loadingBlockID == block.id
-            let didFail = state.failedBlockID == block.id
-            self?.updateAudioButton(
-                button,
-                loadingIndicator: loadingIndicator,
-                isPlaying: isPlaying,
-                isLoading: isLoading,
-                title: didFail ? "无法播放" : block.durationLabel
+        audioObservationIDs[block.id] = ChatAudioPlaybackCoordinatorV2.shared.addObserver { [weak button] state in
+            button?.update(
+                isPlaying: state.playingBlockID == block.id,
+                isLoading: state.loadingBlockID == block.id,
+                didFail: state.failedBlockID == block.id
             )
         }
         return button
@@ -551,68 +537,79 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
               let url = APIClient.shared.resolvedURL(from: urlString)
         else {
             placeholder.text = "图片不可用"
+            imageView.superview?.accessibilityValue = L10n.t("图片不可用", "Image unavailable")
             return
         }
 
-        let cacheKey = url.absoluteString as NSString
+        let scope = AccountSession.shared.snapshot
+        let imageStore = LocalImageStore.shared
+        let cacheKey = (scope.cacheIdentifier + "|" + url.absoluteString) as NSString
         if let cached = Self.imageCache.object(forKey: cacheKey) {
             imageView.image = cached
             placeholder.isHidden = true
+            imageView.superview?.accessibilityValue = L10n.t("图片已加载", "Image loaded")
             return
         }
 
         let cacheContent = block.cacheContent
-        let cachedFileURL = LocalImageStore.shared.cachedFileURL(for: cacheContent, fallbackIdentifier: block.id)
-        if let cachedFileURL,
-           let image = UIImage(contentsOfFile: cachedFileURL.path) {
-            Self.imageCache.setObject(image, forKey: cacheKey)
-            imageView.image = image
-            placeholder.isHidden = true
-            return
-        }
+        let cachedFileURL = imageStore.cachedFileURL(for: cacheContent, fallbackIdentifier: block.id)
 
         imageTasks[block.id] = Task { [weak imageView, weak placeholder] in
+            guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
             if let cachedFileURL,
                let image = await Self.decodedImage(from: cachedFileURL) {
+                guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
                 Self.imageCache.setObject(image, forKey: cacheKey)
                 await MainActor.run {
                     imageView?.image = image
                     placeholder?.isHidden = true
+                    imageView?.superview?.accessibilityValue = L10n.t("图片已加载", "Image loaded")
                 }
                 return
             }
 
             do {
+                guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
                 let data = try await APIClient.shared.fetchRemoteData(from: url, acceptHeader: "image/*,*/*;q=0.8")
-                _ = LocalImageStore.shared.cacheImageData(data, for: cacheContent, fallbackIdentifier: block.id)
-                guard let image = await Self.decodedImage(from: data) else {
+                guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
+                _ = imageStore.cacheImageData(data, for: cacheContent, fallbackIdentifier: block.id)
+                let decoded = await Self.decodedImage(from: data)
+                guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
+                guard let image = decoded else {
                     await MainActor.run {
                         placeholder?.text = "图片不可用"
+                        imageView?.superview?.accessibilityValue = L10n.t("图片不可用", "Image unavailable")
                     }
                     return
                 }
+                guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
                 Self.imageCache.setObject(image, forKey: cacheKey)
                 await MainActor.run {
                     imageView?.image = image
                     placeholder?.isHidden = true
+                    imageView?.superview?.accessibilityValue = L10n.t("图片已加载", "Image loaded")
                 }
             } catch {
+                guard !Task.isCancelled, AccountSession.shared.isCurrent(scope) else { return }
                 await MainActor.run {
                     placeholder?.text = "图片不可用"
+                    imageView?.superview?.accessibilityValue = L10n.t("图片不可用", "Image unavailable")
                 }
             }
         }
     }
 
     private static func decodedImage(from data: Data) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) {
-            UIImage(data: data)
+        await Task<UIImage?, Never>.detached(priority: .userInitiated) {
+            guard let image = UIImage(data: data) else { return nil }
+            return await image.byPreparingForDisplay()
         }.value
     }
 
     private static func decodedImage(from fileURL: URL) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) {
-            UIImage(contentsOfFile: fileURL.path)
+        await Task<UIImage?, Never>.detached(priority: .userInitiated) {
+            guard let image = UIImage(contentsOfFile: fileURL.path) else { return nil }
+            return await image.byPreparingForDisplay()
         }.value
     }
 
@@ -646,36 +643,9 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         }
     }
 
-    private func toggleAudio(_ block: AudioBlockContentV2, button: UIButton?) {
-        ChatAudioPlaybackCoordinatorV2.shared.toggle(block: block)
-    }
-
-    private func updateAudioButton(
-        _ button: UIButton?,
-        loadingIndicator: UIActivityIndicatorView?,
-        isPlaying: Bool,
-        isLoading: Bool,
-        title: String
-    ) {
-        var configuration = button?.configuration
-        configuration?.image = isLoading ? nil : UIImage(systemName: isPlaying ? "pause.fill" : "play.fill")
-        configuration?.attributedTitle = AttributedString(title, attributes: AttributeContainer([
-            .font: UIFont.systemFont(ofSize: 13, weight: .medium)
-        ]))
-        button?.configuration = configuration
-        if isLoading {
-            loadingIndicator?.startAnimating()
-        } else {
-            loadingIndicator?.stopAnimating()
-        }
-        button?.accessibilityLabel = isLoading ? "语音加载中" : (isPlaying ? "暂停语音消息" : "播放语音消息")
-    }
-
     private func removeAudioObservers() {
         audioObservationIDs.values.forEach { ChatAudioPlaybackCoordinatorV2.shared.removeObserver($0) }
         audioObservationIDs.removeAll()
-        audioLoadingViews.values.forEach { $0.stopAnimating() }
-        audioLoadingViews.removeAll()
     }
 
     private func cancelImageTasks() {

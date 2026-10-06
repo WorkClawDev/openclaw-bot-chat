@@ -5,6 +5,40 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    // Geometry assertions cannot establish physical frame pacing. Keep this
+    // measurement separate from simulator acceptance; inspect the recorded
+    // hitch/animation metrics before claiming the smoothness requirement passes.
+    @MainActor
+    func testPhysicalMixedContentScrollPerformance() throws {
+#if targetEnvironment(simulator)
+        throw XCTSkip("Frame pacing acceptance requires a physical iPhone")
+#else
+        let app = XCUIApplication()
+        app.launchArguments = ["-uiTestMode", "chatRoomV2", "-fixture", "mixedRichPrepend", "-chatRoomV2DecodedImages", "-settings.languageMode", "english"]
+        app.launch()
+        let collection = app.collectionViews["chatRoomV2.collectionView"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 15))
+        let image = app.buttons["v2-mixed-997-image-0"]
+        for _ in 0..<8 where !image.isHittable { collection.swipeDown() }
+        XCTAssertTrue(image.isHittable)
+        let loaded = NSPredicate(format: "value == %@", imageLoadedValue)
+        expectation(for: loaded, evaluatedWith: image)
+        waitForExpectations(timeout: 15)
+        let options = XCTMeasureOptions()
+        options.iterationCount = 5
+        measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options) {
+            for _ in 0..<3 { collection.swipeDown(velocity: .fast) }
+            for _ in 0..<3 { collection.swipeUp(velocity: .fast) }
+        }
+        XCTAssertGreaterThan(collection.cells.count, 0)
+        let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
+        XCTAssertTrue(diagnostics.exists)
+        let value = diagnostics.value as? String ?? diagnostics.label
+        XCTAssertTrue(value.contains("reloads=0"))
+        XCTAssertLessThanOrEqual(driftValue(in: value), 1.0)
+#endif
+    }
+
     @MainActor
     func testConsecutivePrependsStayStable() throws {
         let app = XCUIApplication()
@@ -37,25 +71,65 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
 
     @MainActor
     func testMixedRichContentPrependStaysStable() throws {
+        try assertMixedRichContentPrepend(decodedImages: false)
+    }
+
+    @MainActor
+    func testDecodedImagesKeepMixedHistoryStable() throws {
+        try assertMixedRichContentPrepend(decodedImages: true)
+    }
+
+    private var imageLoadedValue: String { "Image loaded" }
+
+    @MainActor
+    private func assertMixedRichContentPrepend(decodedImages: Bool) throws {
         let app = XCUIApplication()
         app.launchArguments = [
             "-uiTestMode", "chatRoomV2",
-            "-fixture", "mixedRichPrepend"
+            "-fixture", "mixedRichPrepend",
+            "-settings.languageMode", "english"
         ]
+        if decodedImages { app.launchArguments.append("-chatRoomV2DecodedImages") }
         app.launch()
 
         let collection = app.collectionViews["chatRoomV2.collectionView"]
         XCTAssertTrue(collection.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["v2-mixed-997-image-0"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.otherElements["v2-mixed-998-table-0"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["v2-mixed-999-audio-0"].waitForExistence(timeout: 10))
-        XCTAssertTrue(collection.cells["chatRoomV2.message.v2-mixed-1000"].waitForExistence(timeout: 10))
-
-        let top = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
-        let bottom = collection.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
+        // UICollectionView's accessibility frame may include offscreen content.
+        // Keep the drag within the actual application viewport on compact phones.
+        print("V5_SCROLL_VIEWPORT collection=\(collection.frame) app=\(app.frame)")
+        let viewport = collection.frame.intersection(app.frame)
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.20))
+        let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.80))
+        // A compact screen cannot display all four rich rows at the same time.
+        // Verify each block while scrolling toward history instead of assuming a tall viewport.
+        for element in [
+            collection.cells["chatRoomV2.message.v2-mixed-1000"],
+            app.buttons["v2-mixed-999-audio-0"],
+            app.otherElements["v2-mixed-998-table-0"],
+            app.buttons["v2-mixed-997-image-0"]
+        ] {
+            for _ in 0..<6 where !element.exists || !element.frame.intersects(viewport) {
+                top.press(forDuration: 0.01, thenDragTo: bottom)
+            }
+            XCTAssertTrue(element.exists && !element.frame.isEmpty && element.frame.intersects(viewport),
+                          "Rich content must be visible in the viewport on every screen size")
+        }
+        print("V5_SCROLL_REACHABLE collection=\(collection.frame) viewport=\(viewport)")
+        if decodedImages {
+            let image = app.buttons["v2-mixed-997-image-0"]
+            let frame = image.frame
+            expectation(for: NSPredicate(format: "value == %@", imageLoadedValue), evaluatedWith: image)
+            waitForExpectations(timeout: 15)
+            XCTAssertEqual(image.frame.minY, frame.minY, accuracy: 1)
+            XCTAssertEqual(image.frame.height, frame.height, accuracy: 1)
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "V5-decoded-image-mixed-history"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
         let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
         XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
-        for _ in 0..<18 {
+        for _ in 0..<36 {
             let diagnosticText = diagnostics.value as? String ?? diagnostics.label
             if diagnosticText.contains("prepends=1") {
                 break
@@ -68,9 +142,20 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
         waitForExpectations(timeout: 10)
 
         let diagnosticText = diagnostics.value as? String ?? diagnostics.label
+        print("V5_SCROLL_HISTORY \(diagnosticText)")
         XCTAssertTrue(diagnosticText.contains("restores=1"))
         XCTAssertTrue(diagnosticText.contains("reloads=0"))
         XCTAssertLessThanOrEqual(driftValue(in: diagnosticText), 1.0)
+        if decodedImages {
+            for _ in 0..<3 {
+                collection.swipeUp(velocity: .fast)
+                collection.swipeDown(velocity: .fast)
+            }
+            XCTAssertGreaterThan(collection.cells.count, 0)
+            let afterReuse = diagnostics.value as? String ?? diagnostics.label
+            XCTAssertTrue(afterReuse.contains("reloads=0"))
+            XCTAssertLessThanOrEqual(driftValue(in: afterReuse), 1)
+        }
     }
 
     @MainActor
@@ -158,7 +243,7 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["v2-rich-markdown-code-1.content"].exists)
         XCTAssertTrue(app.buttons["v2-rich-image-image-0"].exists)
         XCTAssertTrue(app.buttons["v2-rich-audio-audio-0"].exists)
-        XCTAssertTrue(app.otherElements["chatRoomV2.avatar.Fixture Bot"].exists)
+        XCTAssertFalse(app.otherElements["chatRoomV2.avatar.Fixture Bot"].exists)
         XCTAssertTrue(app.staticTexts["chatRoomV2.sender.Fixture Bot"].exists)
         XCTAssertTrue(app.staticTexts["chatRoomV2.status"].exists)
 
@@ -370,6 +455,63 @@ final class ChatRoomV2ScrollRegressionUITests: XCTestCase {
 
     private func driftValue(in diagnosticText: String) -> Double {
         metricValue("drift", in: diagnosticText)
+    }
+
+    @MainActor
+    func testCompactPreferenceUpdatesVisibleChatWithoutMovingAnchor() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-uiTestMode", "chatRoomV2", "-fixture", "mixedRichPrepend",
+                               "-chatRoomV2DensityControl", "-chatRoomV2DecodedImages"]
+        app.launch()
+        let toggle = app.switches["fixture.compact.toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        let collection = app.collectionViews["chatRoomV2.collectionView"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 10))
+        if toggle.value as? String == "1" { toggle.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -25, dy: 0)).tap() }
+        defer { if toggle.exists && toggle.value as? String == "1" { toggle.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -25, dy: 0)).tap() } }
+        // Read older content so the expected anchor is not clamped by the bottom edge.
+        collection.swipeDown()
+        let viewport = CGRect(x: app.frame.minX, y: toggle.frame.maxY,
+                              width: app.frame.width, height: app.frame.maxY - toggle.frame.maxY)
+        let visible = collection.cells.allElementsBoundByIndex.filter {
+            $0.frame.intersects(viewport) && !$0.frame.isEmpty
+        }.sorted { $0.frame.minY < $1.frame.minY }
+        let anchorID = try XCTUnwrap(visible.first).identifier
+        let anchor = collection.cells[anchorID]
+        let before = anchor.frame
+        XCTAssertGreaterThan(before.height, 10)
+        let beforeShot = XCTAttachment(screenshot: app.screenshot())
+        beforeShot.name = "V5-comfortable-mixed-messages"
+        beforeShot.lifetime = .keepAlways
+        add(beforeShot)
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -25, dy: 0)).tap()
+        let afterShot = XCTAttachment(screenshot: app.screenshot())
+        afterShot.name = "V5-density-after-toggle"
+        afterShot.lifetime = .keepAlways
+        add(afterShot)
+        XCTAssertEqual(toggle.value as? String, "1")
+        let applied = expectation(for: NSPredicate(format: "value CONTAINS %@", "density=compact"),
+                                  evaluatedWith: app.staticTexts["chatRoomV2.diagnostics"])
+        wait(for: [applied], timeout: 10)
+        let shrunk = expectation(for: NSPredicate { _, _ in
+            anchor.frame.height < before.height - 3
+        }, evaluatedWith: anchor)
+        wait(for: [shrunk], timeout: 10)
+        XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "V5-compact-mixed-messages"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -25, dy: 0)).tap()
+        let restored = expectation(for: NSPredicate { _, _ in
+            abs(anchor.frame.height - before.height) <= 1
+        }, evaluatedWith: anchor)
+        wait(for: [restored], timeout: 10)
+        XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
+        let diagnostics = app.staticTexts["chatRoomV2.diagnostics"]
+        let text = diagnostics.value as? String ?? diagnostics.label
+        XCTAssertTrue(text.contains("reloads=0"), text)
+        XCTAssertTrue(text.contains("messages=36"), text)
     }
 
     private func metricValue(_ name: String, in diagnosticText: String) -> Double {

@@ -4,12 +4,16 @@ import UIKit
 struct ChatRoomUIKitV2View: UIViewControllerRepresentable {
     let context: ChatContext
     var fixture: ChatRoomV2Fixture = .textPrependStress
+    var compactMessageMode = false
 
     func makeUIViewController(context: Context) -> ChatRoomUIKitV2ViewController {
-        ChatRoomUIKitV2ViewController(context: self.context, fixture: fixture)
+        let viewController = ChatRoomUIKitV2ViewController(context: self.context, fixture: fixture)
+        viewController.applyCompactMessageMode(compactMessageMode)
+        return viewController
     }
 
     func updateUIViewController(_ viewController: ChatRoomUIKitV2ViewController, context: Context) {
+        viewController.applyCompactMessageMode(compactMessageMode)
     }
 }
 
@@ -31,9 +35,12 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
     let onOpenDocument: (UUID) -> Void
     let onContinueDocument: (DocumentLinkPreview) -> Void
     let onTapList: () -> Void
+    var onOpenFile: ((FileBlockContentV2) -> Void)? = nil
+    var compactMessageMode = false
 
     func makeUIViewController(context: Context) -> ChatRoomUIKitV2ViewController {
         let viewController = ChatRoomUIKitV2ViewController(context: self.context)
+        viewController.applyCompactMessageMode(compactMessageMode)
         viewController.bottomAutoScrollThreshold = bottomAutoScrollThreshold
         viewController.historyPreloadDistance = historyPreloadDistance
         viewController.onLoadOlder = onLoadOlder
@@ -45,11 +52,13 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
         viewController.onOpenDocument = onOpenDocument
         viewController.onContinueDocument = onContinueDocument
         viewController.onTapList = onTapList
+        viewController.onOpenFile = onOpenFile
         viewController.applyScrollCommand(scrollCommand)
         return viewController
     }
 
     func updateUIViewController(_ viewController: ChatRoomUIKitV2ViewController, context: Context) {
+        viewController.applyCompactMessageMode(compactMessageMode)
         viewController.bottomAutoScrollThreshold = bottomAutoScrollThreshold
         viewController.historyPreloadDistance = historyPreloadDistance
         viewController.onLoadOlder = onLoadOlder
@@ -61,6 +70,7 @@ struct ChatRoomUIKitV2MessageListView: UIViewControllerRepresentable {
         viewController.onOpenDocument = onOpenDocument
         viewController.onContinueDocument = onContinueDocument
         viewController.onTapList = onTapList
+        viewController.onOpenFile = onOpenFile
         viewController.applyLiveMessages(messages, currentUserID: currentUserID)
         viewController.applyLiveHistoryState(isLoadingOlder: isLoadingOlder, hasMoreHistory: hasMoreHistory)
         viewController.applyScrollCommand(scrollCommand)

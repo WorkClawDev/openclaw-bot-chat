@@ -5,18 +5,14 @@ enum ChatRoomV2Fixture: String {
     case textPrependStress
     case textBenchmark
     case richMedia
+    case audioPlayback
     case mixedRichPrepend
     case consecutiveImagesPrepend
 }
 
 enum ChatRoomV2FeatureFlag {
-    static var isEnabled: Bool {
-#if DEBUG
-        true
-#else
-        ProcessInfo.processInfo.arguments.contains("-chatRoomV2")
-#endif
-    }
+    // Tests and release builds use the same precomputed UIKit message layout.
+    static var isEnabled: Bool { true }
 
     static var uiTestMode: String? {
         argumentValue(after: "-uiTestMode")
@@ -135,6 +131,13 @@ extension ChatMessageV2 {
     }
 
     private static func blocks(for message: Message) -> [MessageBlockContentV2] {
+        let editRequest = normalizeIdentifier(message.senderType) == "user"
+            ? message.content.meta?["document_edit_request"]?.stringValue?.nonEmpty : nil
+        let editDocument = editRequest == nil ? nil : DocumentLinkPreview.first(in: message.content.body ?? "", metadata: message.content.meta)
+        var documentBlocks: [MessageBlockContentV2] = []
+        if let editDocument {
+            documentBlocks = [.document(.init(id: "\(message.id)-document-0", preview: editDocument))]
+        }
         if normalizeIdentifier(message.content.type) == "image" {
             var blocks: [MessageBlockContentV2] = [
                 .image(ImageBlockContentV2(
@@ -147,7 +150,7 @@ extension ChatMessageV2 {
                 ))
             ]
 
-            if let caption = imageCaption(for: message) {
+            if let caption = editDocument != nil ? editRequest : imageCaption(for: message) {
                 blocks.append(contentsOf: MessageMarkdownBlockParserV2.blocks(
                     messageID: message.id,
                     text: caption,
@@ -155,7 +158,20 @@ extension ChatMessageV2 {
                     codeIDPrefix: "code-caption"
                 ))
             }
-            return blocks
+            return blocks + documentBlocks
+        }
+
+        if normalizeIdentifier(message.content.type) == "file" {
+            let content = message.content
+            let name = content.name ?? content.asset?.fileName ?? L10n.t("附件", "Attachment")
+            var blocks: [MessageBlockContentV2] = [.file(.init(
+                id: "\(message.id)-file-0", name: name, byteCount: content.size ?? content.asset?.size,
+                urlString: content.mediaURLString, assetID: content.asset?.id
+            ))]
+            if let caption = editDocument != nil ? editRequest : content.body?.trimmingCharacters(in: .whitespacesAndNewlines), !caption.isEmpty, caption != name {
+                blocks.append(contentsOf: MessageMarkdownBlockParserV2.blocks(messageID: message.id, text: caption))
+            }
+            return blocks + documentBlocks
         }
 
         if message.content.isAudio {
@@ -173,12 +189,18 @@ extension ChatMessageV2 {
         let body = message.content.body?.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = body?.nonEmpty ?? message.content.name?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? message.content.type
         if let document = DocumentLinkPreview.first(in: text, metadata: message.content.meta) {
-            return [
+            var blocks: [MessageBlockContentV2] = []
+            if normalizeIdentifier(message.senderType) == "user",
+               let request = message.content.meta?["document_edit_request"]?.stringValue?.nonEmpty {
+                blocks += MessageMarkdownBlockParserV2.blocks(messageID: message.id, text: request)
+            }
+            blocks += [
                 .document(DocumentLinkBlockContentV2(
                     id: "\(message.id)-document-0",
                     preview: document
                 ))
             ]
+            return blocks
         }
         return MessageMarkdownBlockParserV2.blocks(messageID: message.id, text: text)
     }
@@ -244,9 +266,8 @@ extension ChatMessageV2 {
     }
 
     private static func status(for message: Message) -> MessageStatusPresentationV2? {
-        let timestamp = message.displayDate.map(statusFormatter.string(from:))
-        guard timestamp != nil || message.pending || message.failed else { return nil }
-        return MessageStatusPresentationV2(timestampText: timestamp, isPending: message.pending, isFailed: message.failed)
+        guard message.pending || message.failed else { return nil }
+        return MessageStatusPresentationV2(timestampText: nil, isPending: message.pending, isFailed: message.failed)
     }
 
     private static func normalizeIdentifier(_ value: String?) -> String {
@@ -274,6 +295,7 @@ enum MessageBlockContentV2: Hashable {
     case image(ImageBlockContentV2)
     case audio(AudioBlockContentV2)
     case document(DocumentLinkBlockContentV2)
+    case file(FileBlockContentV2)
 
     var id: String {
         switch self {
@@ -289,6 +311,8 @@ enum MessageBlockContentV2: Hashable {
             block.id
         case .document(let block):
             block.id
+        case .file(let block):
+            block.id
         }
     }
 
@@ -300,9 +324,23 @@ enum MessageBlockContentV2: Hashable {
             block.code
         case .table(let block):
             block.copyableText
-        case .image, .audio, .document:
+        case .image, .audio, .document, .file:
             nil
         }
+    }
+}
+
+struct FileBlockContentV2: Hashable, Identifiable {
+    let id: String
+    let name: String
+    let byteCount: Int?
+    let urlString: String?
+    let assetID: String?
+
+    var detail: String {
+        let ext = (name as NSString).pathExtension.uppercased()
+        let size = byteCount.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+        return [ext.isEmpty ? nil : ext, size].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -786,6 +824,26 @@ enum ChatRoomV2FixtureFactory {
         }
     }
 
+    static func audioPlaybackMessages() -> [ChatMessageV2] {
+        var messages = initialTextMessages(count: 24, newestSequence: 24)
+        for (index, name) in ["long-a", "long-b", "short", "invalid"].enumerated() {
+            let duration = (name == "short" || name == "invalid") ? 6 : 90
+            messages.append(ChatMessageV2(
+                id: "v5-audio-\(name)", sequence: 25 + index, isOutgoing: index == 1,
+                blocks: [.audio(AudioBlockContentV2(
+                    id: "v5-audio-\(name)-audio-0",
+                    urlString: "http://127.0.0.1:18084/voice-\(name).wav",
+                    durationSeconds: duration, durationLabel: "\(duration)\""
+                ))]
+            ))
+        }
+        messages.append(ChatMessageV2(
+            id: "v5-audio-anchor", sequence: 29,
+            text: "Voice messages keep their position during playback.", isOutgoing: false
+        ))
+        return messages
+    }
+
     static func richMediaMessages() -> [ChatMessageV2] {
         [
             ChatMessageV2(
@@ -902,7 +960,7 @@ enum ChatRoomV2FixtureFactory {
             return mixedRichMessage(sequence: sequence)
         case .consecutiveImagesPrepend:
             return consecutiveImageMessage(sequence: sequence)
-        case .textPrependStress, .textBenchmark, .richMedia:
+        case .textPrependStress, .textBenchmark, .richMedia, .audioPlayback:
             return textMessage(sequence: sequence)
         }
     }
@@ -971,13 +1029,7 @@ enum ChatRoomV2FixtureFactory {
                 sequence: sequence,
                 isOutgoing: isOutgoing,
                 blocks: [
-                    .image(ImageBlockContentV2(
-                        id: "\(id)-image-0",
-                        urlString: nil,
-                        name: "fixture-\(sequence).jpg",
-                        aspectRatio: sequence.isMultiple(of: 2) ? 4.0 / 3.0 : 3.0 / 4.0,
-                        isSticker: false
-                    )),
+                    .image(mixedImageBlock(sequence: sequence)),
                     .text(TextBlockContentV2(
                         id: "\(id)-caption-0",
                         text: "Image caption for #\(sequence) should not change the anchored row during history loading.",
@@ -1064,6 +1116,42 @@ enum ChatRoomV2FixtureFactory {
             )
         }
     }
+
+    private static func mixedImageBlock(sequence: Int) -> ImageBlockContentV2 {
+        let usesDecodedImages = ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2"
+            && ProcessInfo.processInfo.arguments.contains("-chatRoomV2DecodedImages")
+        let block = ImageBlockContentV2(
+            id: "v2-mixed-\(sequence)-image-0",
+            urlString: usesDecodedImages ? "fixture://v5-decoded-images/\(sequence).jpg" : nil,
+            name: "fixture-\(sequence).jpg",
+            aspectRatio: 3.0 / 4.0,
+            isSticker: false
+        )
+        if usesDecodedImages, let data = decodedFixtureImageData {
+            LocalImageStore.shared.cacheImageData(data, for: block.cacheContent, fallbackIdentifier: block.id)
+        }
+        return block
+    }
+
+    // Real JPEG bytes, created before measuring scrolling and loaded through the
+    // production disk-cache/decoder path. Distinct URLs exercise cell reuse.
+    private static let decodedFixtureImageData: Data? = {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 1600), format: format).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1200, height: 1600))
+            for row in 0..<20 {
+                for column in 0..<15 {
+                    UIColor(hue: CGFloat((row * 15 + column) % 100) / 100, saturation: 0.55, brightness: 0.85, alpha: 1).setFill()
+                    context.fill(CGRect(x: column * 80, y: row * 80, width: 64, height: 64))
+                }
+            }
+            ("V5 · decoded image" as NSString).draw(at: CGPoint(x: 60, y: 720),
+                withAttributes: [.font: UIFont.boldSystemFont(ofSize: 82), .foregroundColor: UIColor.white])
+        }
+        return image.jpegData(compressionQuality: 0.9)
+    }()
 
     private static func consecutiveImageMessage(sequence: Int) -> ChatMessageV2 {
         let id = "v2-images-\(sequence)"

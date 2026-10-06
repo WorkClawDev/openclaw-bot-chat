@@ -17,6 +17,10 @@ final class ChatAudioPlaybackCoordinatorV2 {
 
     static let shared = ChatAudioPlaybackCoordinatorV2()
 
+    private let prepareAudio: (AudioBlockContentV2) async -> URL?
+    // A block may be stopped and restarted while its previous download or KVO
+    // callback is still queued. Message identity alone cannot reject that work.
+    private var playbackGeneration = UUID()
     private var player: AVPlayer?
     private var currentBlockID: String?
     private var prepareTask: Task<Void, Never>?
@@ -25,6 +29,14 @@ final class ChatAudioPlaybackCoordinatorV2 {
     private var endObserver: NSObjectProtocol?
     private var observers: [UUID: Observer] = [:]
     private(set) var state = ChatAudioPlaybackStateV2.idle
+
+    init(prepareAudio: @escaping (AudioBlockContentV2) async -> URL? = { block in
+        await LocalAudioStoreV2.shared.ensureCachedAudio(
+            for: block.cacheContent, fallbackIdentifier: block.id
+        )
+    }) {
+        self.prepareAudio = prepareAudio
+    }
 
     func addObserver(_ observer: @escaping Observer) -> UUID {
         let id = UUID()
@@ -56,26 +68,26 @@ final class ChatAudioPlaybackCoordinatorV2 {
         stop()
         currentBlockID = block.id
         publish(ChatAudioPlaybackStateV2(playingBlockID: nil, loadingBlockID: block.id, failedBlockID: nil))
+        let generation = playbackGeneration
+        let prepareAudio = self.prepareAudio
         prepareTask = Task { [weak self] in
-            guard let playableURL = await LocalAudioStoreV2.shared.ensureCachedAudio(
-                for: block.cacheContent,
-                fallbackIdentifier: block.id
-            ) else {
+            guard let playableURL = await prepareAudio(block) else {
                 await MainActor.run {
-                    guard self?.currentBlockID == block.id else { return }
+                    guard self?.playbackGeneration == generation else { return }
                     self?.publish(ChatAudioPlaybackStateV2(playingBlockID: nil, loadingBlockID: nil, failedBlockID: block.id))
                 }
                 return
             }
 
             await MainActor.run {
-                guard self?.currentBlockID == block.id else { return }
+                guard self?.playbackGeneration == generation else { return }
                 self?.startPlayer(blockID: block.id, url: playableURL)
             }
         }
     }
 
     private func startPlayer(blockID: String, url: URL) {
+        let generation = playbackGeneration
         removeEndObserver()
         statusObservation = nil
         timeControlObservation = nil
@@ -85,7 +97,7 @@ final class ChatAudioPlaybackCoordinatorV2 {
         player = nextPlayer
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor [weak self] in
-                guard self?.currentBlockID == blockID else { return }
+                guard self?.playbackGeneration == generation else { return }
                 if item.status == .failed {
                     self?.publish(ChatAudioPlaybackStateV2(playingBlockID: nil, loadingBlockID: nil, failedBlockID: blockID))
                 }
@@ -93,7 +105,7 @@ final class ChatAudioPlaybackCoordinatorV2 {
         }
         timeControlObservation = nextPlayer.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor [weak self] in
-                guard self?.currentBlockID == blockID else { return }
+                guard self?.playbackGeneration == generation else { return }
                 switch player.timeControlStatus {
                 case .playing:
                     self?.publish(ChatAudioPlaybackStateV2(playingBlockID: blockID, loadingBlockID: nil, failedBlockID: nil))
@@ -112,6 +124,7 @@ final class ChatAudioPlaybackCoordinatorV2 {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                guard self?.playbackGeneration == generation else { return }
                 self?.stop()
             }
         }
@@ -119,6 +132,7 @@ final class ChatAudioPlaybackCoordinatorV2 {
     }
 
     func stop() {
+        playbackGeneration = UUID()
         prepareTask?.cancel()
         prepareTask = nil
         player?.pause()

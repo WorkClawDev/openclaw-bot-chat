@@ -91,6 +91,7 @@ services:
       DATABASE_USER: agent
       DATABASE_DBNAME: personal_agent
       REDIS_HOST: redis
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
       MQTT_BROKER: ${MQTT_BROKER:-tcp://mqtts:1883}
       MQTT_CLIENT_ID: personal-agent-backend
       MQTT_USERNAME: personal-agent-backend
@@ -137,6 +138,7 @@ services:
       DATABASE_HOST: postgres
       DATABASE_USER: agent
       DATABASE_DBNAME: personal_agent
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
       MQTT_BROKER: ${MQTT_BROKER:-tcp://mqtts:1883}
       INGEST_WORKERS: ${INGEST_WORKERS:-4}
       INGEST_MAX_BYTES: ${INGEST_MAX_BYTES:-268435456}

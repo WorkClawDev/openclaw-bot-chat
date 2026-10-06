@@ -128,7 +128,7 @@ func (s *BrokerSecurityService) project(ctx context.Context, scope *BrokerSessio
 	if err != nil {
 		return nil, err
 	}
-	row := &pb.Session{Username: scope.Username, ClientId: scope.ClientID, PasswordSha256: password, Namespace: s.settings.Namespace, Enabled: valid, ExpiresAtMs: uint64(scope.ExpiresAt) * 1000, PolicyValidUntilMs: uint64(time.Now().Add(5 * time.Minute).UnixMilli()), SourceContext: source}
+	row := &pb.Session{Username: scope.Username, ClientId: scope.ClientID, PasswordSha256: password, Namespace: s.settings.Namespace, Enabled: valid, ExpiresAtMs: uint64(scope.ExpiresAt) * 1000, PolicyValidUntilMs: uint64(time.Now().Add(brokerrpc.PolicyLeaseDuration).UnixMilli()), SourceContext: source}
 	if !valid {
 		return row, nil
 	}
@@ -172,8 +172,8 @@ func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (
 	scope.Username = "pa-" + uuid.NewString()
 	scope.PasswordHash = hashBrokerPassword(password)
 	ttl := time.Duration(s.settings.SessionTTLSeconds) * time.Second
-	if ttl < time.Minute || ttl > 5*time.Minute {
-		ttl = 5 * time.Minute
+	if ttl < time.Minute || ttl > brokerrpc.PolicyLeaseDuration {
+		ttl = brokerrpc.PolicyLeaseDuration
 	}
 	scope.ExpiresAt = time.Now().Add(ttl).Unix()
 	for attempt := 0; attempt < 3; attempt++ {
@@ -206,7 +206,7 @@ func (s *BrokerSecurityService) Mint(ctx context.Context, scope BrokerSession) (
 
 func (s *BrokerSecurityService) serverPolicy() *pb.Session {
 	hash := sha256.Sum256([]byte(s.server.Password))
-	return &pb.Session{Username: s.server.Username, ClientId: s.server.ClientID, PasswordSha256: hash[:], Namespace: s.settings.Namespace, Enabled: true, PolicyValidUntilMs: uint64(time.Now().Add(5 * time.Minute).UnixMilli()), Permissions: []*pb.Permission{
+	return &pb.Session{Username: s.server.Username, ClientId: s.server.ClientID, PasswordSha256: hash[:], Namespace: s.settings.Namespace, Enabled: true, PolicyValidUntilMs: uint64(time.Now().Add(brokerrpc.PolicyLeaseDuration).UnixMilli()), Permissions: []*pb.Permission{
 		{Action: pb.Action_PUBLISH, TopicFilter: "agent/user/+/events"},
 	}}
 }

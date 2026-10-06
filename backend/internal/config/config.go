@@ -23,6 +23,15 @@ type Config struct {
 	Storage        StorageConfig
 	Asset          AssetConfig
 	Log            LogConfig
+	Push           PushConfig
+}
+
+type PushConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	TeamID         string `mapstructure:"team_id"`
+	KeyID          string `mapstructure:"key_id"`
+	Topic          string `mapstructure:"topic"`
+	PrivateKeyPath string `mapstructure:"private_key_path"`
 }
 
 // IngestConfig bounds the independent consumer's work and durable backlog.
@@ -147,6 +156,7 @@ type CaptchaConfig struct {
 }
 
 type TurnstileCaptchaConfig struct {
+	SiteKey   string `mapstructure:"site_key"`
 	SecretKey string `mapstructure:"secret_key"`
 	Endpoint  string `mapstructure:"endpoint"`
 }
@@ -241,6 +251,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("captcha.provider", "mock")
 	v.SetDefault("captcha.turnstile.endpoint", "https://challenges.cloudflare.com/turnstile/v0/siteverify")
 	bindEnvKeys(v,
+		"push.enabled", "push.team_id", "push.key_id", "push.topic", "push.private_key_path",
 		"broker_security.address", "broker_security.admin_token", "broker_security.namespace", "broker_security.insecure", "broker_security.ca_file", "broker_security.cert_file", "broker_security.key_file",
 		"broker_security.session_ttl_seconds",
 		"broker_security.require_message_identity",
@@ -296,6 +307,7 @@ func Load(configPath string) (*Config, error) {
 		"sms.aliyun.template_code",
 		"sms.aliyun.endpoint",
 		"captcha.provider",
+		"captcha.turnstile.site_key",
 		"captcha.turnstile.secret_key",
 		"captcha.turnstile.endpoint",
 		"storage.provider",

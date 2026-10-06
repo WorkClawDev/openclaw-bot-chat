@@ -41,6 +41,7 @@ struct ChatContext {
 class ChatRoomViewModel: ObservableObject {
     @Published var messages: [Message] = []
     @Published var inputText = ""
+    @Published var editingDocument: DocumentLinkPreview?
     @Published var isLoading = false
     @Published var isLoadingOlder = false
     @Published var hasMoreHistory = true
@@ -50,6 +51,7 @@ class ChatRoomViewModel: ObservableObject {
     @Published private(set) var visibleWindowReplacementVersion = 0
 
     let conversationId: String
+    private let messageStore = LocalMessageStore.shared
 
     private let initialPageSize = 50
     private let historyPageSize = 24
@@ -106,10 +108,11 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     func fetchMessages() {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         errorMessage = nil
         loadCachedBotProfiles()
         let cachedMessages = markStalePendingMessagesFailedIfNeeded(
-            LocalMessageStore.shared.recentMessages(conversationId: conversationId, limit: initialPageSize)
+            messageStore.recentMessages(conversationId: conversationId, limit: initialPageSize)
         )
         messages = sortMessages(enrichMessages(cachedMessages))
         updateHistoryAvailability()
@@ -123,6 +126,7 @@ class ChatRoomViewModel: ObservableObject {
 
     @MainActor
     func loadOlderMessages() async {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         guard !isLoadingOlder else { return }
         guard let beforeSequence = messages.first?.seq, beforeSequence > 1 else {
             hasMoreHistory = false
@@ -132,7 +136,7 @@ class ChatRoomViewModel: ObservableObject {
         isLoadingOlder = true
         defer { isLoadingOlder = false }
 
-        let localOlderMessages = LocalMessageStore.shared.messagesBefore(
+        let localOlderMessages = messageStore.messagesBefore(
             conversationId: conversationId,
             beforeSequence: beforeSequence,
             limit: historyPageSize
@@ -148,9 +152,10 @@ class ChatRoomViewModel: ObservableObject {
 
         do {
             let remoteOlderMessages = try await fetchRemoteMessages(limit: historyPageSize, beforeSeq: beforeSequence)
+            guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
             if !remoteOlderMessages.isEmpty {
                 RealtimeService.shared.acknowledgeDeliveredMessages(remoteOlderMessages)
-                LocalMessageStore.shared.upsert(messages: remoteOlderMessages)
+                messageStore.upsert(messages: remoteOlderMessages)
                 messages = mergeMessages(messages, with: remoteOlderMessages)
             }
         } catch {
@@ -161,6 +166,7 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     private func handleIncomingMessage(_ message: Message) {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         Self.logMessageTrace(
             "MQTT TRACE ui accepted message_id=\(message.id) conversation_id=\(message.conversationId) topic=\(message.topic) current_conversation=\(conversationId)"
         )
@@ -172,11 +178,12 @@ class ChatRoomViewModel: ObservableObject {
 
     @MainActor
     private func refreshLatestMessages() async {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         defer { isLoading = false }
 
         do {
             var remoteMessages: [Message] = []
-            if let lastSequence = LocalMessageStore.shared.highestSequence(conversationId: conversationId), lastSequence > 0 {
+            if let lastSequence = messageStore.highestSequence(conversationId: conversationId), lastSequence > 0 {
                 let catchupMessages = try await fetchRemoteMessages(
                     limit: RealtimeService.shared.historyMaxCatchupBatch,
                     afterSeq: lastSequence
@@ -185,11 +192,12 @@ class ChatRoomViewModel: ObservableObject {
             }
 
             let latestMessages = try await fetchRemoteMessages(limit: initialPageSize)
+            guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
             remoteMessages.append(contentsOf: latestMessages)
 
             if !remoteMessages.isEmpty {
                 RealtimeService.shared.acknowledgeDeliveredMessages(remoteMessages)
-                LocalMessageStore.shared.upsert(messages: remoteMessages)
+                messageStore.upsert(messages: remoteMessages)
                 if shouldReplaceVisibleWindow(withLatestPage: latestMessages) {
                     let localStatusMessages = messages.filter { $0.seq == nil && ($0.pending || $0.failed) }
                     messages = mergeMessages(latestMessages, with: localStatusMessages)
@@ -232,7 +240,7 @@ class ChatRoomViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { _ in
             } receiveValue: { [weak self] (bots: [Bot]) in
-                LocalMessageStore.shared.upsert(bots: bots)
+                self?.messageStore.upsert(bots: bots)
                 self?.applyBotProfiles(bots)
             }
             .store(in: &cancellables)
@@ -246,14 +254,14 @@ class ChatRoomViewModel: ObservableObject {
             .sink { _ in
             } receiveValue: { [weak self] (payload: GroupMembersPayload) in
                 let bots = payload.bots.compactMap(\.bot)
-                LocalMessageStore.shared.upsert(bots: bots)
+                self?.messageStore.upsert(bots: bots)
                 self?.applyBotProfiles(bots)
             }
             .store(in: &cancellables)
     }
 
     private func loadCachedBotProfiles() {
-        applyBotProfiles(LocalMessageStore.shared.cachedBots())
+        applyBotProfiles(messageStore.cachedBots())
     }
 
     private func applyBotProfiles(_ bots: [Bot]) {
@@ -359,7 +367,7 @@ class ChatRoomViewModel: ObservableObject {
         }
 
         if !changedMessages.isEmpty {
-            LocalMessageStore.shared.upsert(messages: changedMessages)
+            messageStore.upsert(messages: changedMessages)
         }
         return updated
     }
@@ -470,14 +478,16 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     func sendMessage(slashCommands: [SlashCommand] = []) {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
-        let outgoingContent = RealtimeContentPayload(
-            type: "text",
-            body: text,
-            meta: slashCommandMeta(for: text, commands: slashCommands)
-        )
+        let outgoingContent: RealtimeContentPayload
+        if let editingDocument {
+            outgoingContent = Self.documentEditContent(request: text, document: editingDocument)
+        } else {
+            outgoingContent = RealtimeContentPayload(type: "text", body: text, meta: slashCommandMeta(for: text, commands: slashCommands))
+        }
         let didSend = RealtimeService.shared.sendMessage(
             conversationId: conversationId,
             content: outgoingContent,
@@ -489,6 +499,21 @@ class ChatRoomViewModel: ObservableObject {
         }
 
         inputText = ""
+        editingDocument = nil
+    }
+
+    static func documentEditContent(request: String, document: DocumentLinkPreview) -> RealtimeContentPayload {
+        let body = L10n.t(
+            "请继续修改这份文档：\(document.title)\n\(document.path)\n\n修改要求：\(request)",
+            "Please continue editing this document: \(document.title)\n\(document.path)\n\nRequested changes: \(request)"
+        )
+        return RealtimeContentPayload(type: "text", body: body, meta: [
+            "document_title": AnyCodable(document.title),
+            "document_url": AnyCodable(document.path),
+            "document_summary": AnyCodable(document.summary),
+            "document_type": AnyCodable(document.documentType),
+            "document_edit_request": AnyCodable(request)
+        ])
     }
 
     private func slashCommandMeta(for text: String, commands: [SlashCommand]) -> [String: AnyCodable]? {
@@ -520,7 +545,7 @@ class ChatRoomViewModel: ObservableObject {
 
     @MainActor
     fileprivate func sendImage(item: PhotosPickerItem, mode: ImageSendMode) async {
-        guard !isUploadingImage else { return }
+        guard AccountSession.shared.isCurrent(messageStore.scope), !isUploadingImage else { return }
         guard connectionState == .connected else {
             errorMessage = "当前连接不可用，暂时无法发送图片。"
             return
@@ -529,11 +554,13 @@ class ChatRoomViewModel: ObservableObject {
         isUploadingImage = true
         defer { isUploadingImage = false }
 
+        let draftText = inputText
+        let document = editingDocument
         do {
             let preparedImage = try await normalizedUploadImage(from: item, mode: mode)
-            let caption = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-            try await sendPreparedImage(preparedImage, caption: caption)
-            inputText = ""
+            let caption = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+            try await sendPreparedImage(preparedImage, caption: caption, document: document)
+            finishPublishedAttachmentDraft(text: draftText, document: document)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -542,7 +569,7 @@ class ChatRoomViewModel: ObservableObject {
 #if DEBUG
     @MainActor
     fileprivate func sendFixtureImageForUITest() async {
-        guard !isUploadingImage else { return }
+        guard AccountSession.shared.isCurrent(messageStore.scope), !isUploadingImage else { return }
         guard connectionState == .connected else {
             errorMessage = "当前连接不可用，暂时无法发送图片。"
             return
@@ -553,7 +580,7 @@ class ChatRoomViewModel: ObservableObject {
 
         do {
             let payload = try fixtureUploadImagePayload()
-            try await sendPreparedImage(payload, caption: "V2 fixture image send \(Self.debugTimestampFormatter.string(from: Date()))")
+            try await sendPreparedImage(payload, caption: "V2 fixture image send \(Self.debugTimestampFormatter.string(from: Date()))", document: nil)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -562,7 +589,9 @@ class ChatRoomViewModel: ObservableObject {
 
     @MainActor
     fileprivate func sendFile(_ url:URL) async {
-        guard !isUploadingImage,connectionState == .connected else { return }
+        guard AccountSession.shared.isCurrent(messageStore.scope), !isUploadingImage,connectionState == .connected else { return }
+        let document = editingDocument
+        let caption = inputText
         isUploadingImage=true;defer { isUploadingImage=false }
         let scoped=url.startAccessingSecurityScopedResource();defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -572,21 +601,28 @@ class ChatRoomViewModel: ObservableObject {
             guard let mime=types[url.pathExtension.lowercased()] else { errorMessage="文件格式不受支持";return }
             let data=try Data(contentsOf:url)
             let asset=try await APIClient.shared.uploadFileData(data,fileName:url.lastPathComponent,mimeType:mime,conversationID:conversationId)
-            let content=RealtimeContentPayload(type:"file",body:inputText.isEmpty ? url.lastPathComponent : inputText,url:asset.downloadURL,name:asset.fileName,size:asset.size,meta:["asset":asset.metaValue])
+            guard AccountSession.shared.isCurrent(messageStore.scope) else { throw CancellationError() }
+            let draft = Self.attachmentDraftContent(caption: caption, fallbackName: url.lastPathComponent, document: document)
+            var metadata = draft.meta ?? [:]
+            metadata["asset"] = asset.metaValue
+            let content=RealtimeContentPayload(type:"file",body:draft.body,url:asset.downloadURL,name:asset.fileName,size:asset.size,meta:metadata)
             guard RealtimeService.shared.sendMessage(conversationId:conversationId,content:content,topic:conversationId) else { throw ChatImageError.messageSendFailed }
-            inputText=""
+            finishPublishedAttachmentDraft(text: caption, document: document)
         } catch { errorMessage=error.localizedDescription }
     }
 
-    private func sendPreparedImage(_ preparedImage: UploadImagePayload, caption: String) async throws {
-        let preparedUpload = try await APIClient.shared.prepareImageUpload(
+    private func sendPreparedImage(_ preparedImage: UploadImagePayload, caption: String, document: DocumentLinkPreview?) async throws {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { throw CancellationError() }
+        let api = APIClient.shared
+        let imageStore = LocalImageStore.shared
+        let preparedUpload = try await api.prepareImageUpload(
             fileName: preparedImage.fileName,
             contentType: preparedImage.mimeType,
             size: preparedImage.data.count,
             conversationID: conversationId
         )
 
-        try await APIClient.shared.uploadImageData(preparedImage.data, with: preparedUpload.upload)
+        try await api.uploadImageData(preparedImage.data, with: preparedUpload.upload)
 
         let assetID = preparedUpload.asset.id ?? ""
         let objectKey = preparedUpload.asset.objectKey ?? ""
@@ -594,9 +630,12 @@ class ChatRoomViewModel: ObservableObject {
             throw ChatImageError.invalidUploadResponse
         }
 
-        let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
-        _ = LocalImageStore.shared.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
-        var imageMeta = ["asset": asset.metaValue]
+        let asset = try await api.completeImageUpload(assetID: assetID, objectKey: objectKey)
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { throw CancellationError() }
+        _ = imageStore.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
+        let draft = Self.attachmentDraftContent(caption: caption, fallbackName: asset.fileName ?? preparedImage.fileName, document: document)
+        var imageMeta = draft.meta ?? [:]
+        imageMeta["asset"] = asset.metaValue
         if let width = preparedImage.width {
             imageMeta["width"] = AnyCodable(width)
         }
@@ -605,7 +644,7 @@ class ChatRoomViewModel: ObservableObject {
         }
         let outgoingContent = RealtimeContentPayload(
             type: "image",
-            body: caption.isEmpty ? (asset.fileName ?? preparedImage.fileName) : caption,
+            body: draft.body,
             url: asset.preferredImageURLString,
             name: asset.fileName,
             size: asset.size,
@@ -622,128 +661,28 @@ class ChatRoomViewModel: ObservableObject {
         }
     }
 
+    func finishPublishedAttachmentDraft(text: String, document: DocumentLinkPreview?) {
+        guard inputText == text, editingDocument == document else { return }
+        inputText = ""
+        editingDocument = nil
+    }
+
+    private static func attachmentDraftContent(caption: String, fallbackName: String, document: DocumentLinkPreview?) -> RealtimeContentPayload {
+        if let document {
+            return documentEditContent(
+                request: caption.isEmpty ? L10n.t("请参考附件修改文档。", "Use the attachment to edit the document.") : caption,
+                document: document
+            )
+        }
+        return RealtimeContentPayload(type: "text", body: caption.isEmpty ? fallbackName : caption)
+    }
+
     private func normalizedUploadImage(from item: PhotosPickerItem, mode: ImageSendMode) async throws -> UploadImagePayload {
         guard let rawData = try await item.loadTransferable(type: Data.self), !rawData.isEmpty else {
             throw ChatImageError.unreadableImage
         }
 
-        let preferredType = item.supportedContentTypes.first(where: { $0.conforms(to: .image) })
-        let preferredMimeType = preferredType?.preferredMIMEType?.lowercased()
-
-        if mode == .original,
-           let preferredMimeType,
-           Self.supportedImageMimeTypes.contains(preferredMimeType) {
-            return originalUploadImagePayload(
-                data: rawData,
-                preferredType: preferredType,
-                mimeType: preferredMimeType
-            )
-        }
-
-        if mode == .compressed, preferredMimeType == "image/gif" {
-            return originalUploadImagePayload(
-                data: rawData,
-                preferredType: preferredType,
-                mimeType: "image/gif"
-            )
-        }
-
-        guard let image = UIImage(data: rawData) else {
-            throw ChatImageError.unsupportedImage
-        }
-
-        let jpegQuality = mode == .compressed ? Self.compressedJPEGQuality : Self.originalFallbackJPEGQuality
-        let maxPixelSize = mode == .compressed ? Self.compressedMaxPixelSize : nil
-
-        return try jpegUploadImagePayload(
-            from: image,
-            quality: jpegQuality,
-            maxPixelSize: maxPixelSize
-        )
-    }
-
-    private func originalUploadImagePayload(data: Data, preferredType: UTType?, mimeType: String) -> UploadImagePayload {
-        let fileExtension = preferredType?.preferredFilenameExtension ?? fileExtension(for: mimeType)
-        let imageSize = imagePixelSize(from: data)
-        return UploadImagePayload(
-            data: data,
-            fileName: "image-\(UUID().uuidString.lowercased()).\(fileExtension)",
-            mimeType: mimeType,
-            width: imageSize?.width,
-            height: imageSize?.height
-        )
-    }
-
-    private func jpegUploadImagePayload(from image: UIImage, quality: CGFloat, maxPixelSize: CGFloat?) throws -> UploadImagePayload {
-        let normalizedImage = normalizedJPEGSourceImage(from: image, maxPixelSize: maxPixelSize)
-        let renderFormat = UIGraphicsImageRendererFormat.default()
-        renderFormat.scale = 1
-
-        let renderer = UIGraphicsImageRenderer(size: normalizedImage.size, format: renderFormat)
-        let flattenedImage = renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(origin: .zero, size: normalizedImage.size))
-            normalizedImage.draw(in: CGRect(origin: .zero, size: normalizedImage.size))
-        }
-
-        guard let jpegData = flattenedImage.jpegData(compressionQuality: quality) else {
-            throw ChatImageError.unsupportedImage
-        }
-
-        return UploadImagePayload(
-            data: jpegData,
-            fileName: "image-\(UUID().uuidString.lowercased()).jpg",
-            mimeType: "image/jpeg",
-            width: Int(normalizedImage.size.width.rounded()),
-            height: Int(normalizedImage.size.height.rounded())
-        )
-    }
-
-    private func imagePixelSize(from data: Data) -> (width: Int, height: Int)? {
-        guard let image = UIImage(data: data), image.size.width > 0, image.size.height > 0 else {
-            return nil
-        }
-        return (
-            width: Int((image.size.width * image.scale).rounded()),
-            height: Int((image.size.height * image.scale).rounded())
-        )
-    }
-
-    private func normalizedJPEGSourceImage(from image: UIImage, maxPixelSize: CGFloat?) -> UIImage {
-        guard let maxPixelSize else {
-            return image
-        }
-
-        let longestEdge = max(image.size.width, image.size.height)
-        guard longestEdge > maxPixelSize, longestEdge > 0 else {
-            return image
-        }
-
-        let scaleRatio = maxPixelSize / longestEdge
-        let targetSize = CGSize(
-            width: max(1, floor(image.size.width * scaleRatio)),
-            height: max(1, floor(image.size.height * scaleRatio))
-        )
-
-        let renderFormat = UIGraphicsImageRendererFormat.default()
-        renderFormat.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: targetSize, format: renderFormat)
-        return renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-    }
-
-    private func fileExtension(for mimeType: String) -> String {
-        switch mimeType {
-        case "image/png":
-            return "png"
-        case "image/webp":
-            return "webp"
-        case "image/gif":
-            return "gif"
-        default:
-            return "jpg"
-        }
+        return try ImageUploadPreparation.prepare(data: rawData, mode: mode)
     }
 
 #if DEBUG
@@ -797,61 +736,11 @@ class ChatRoomViewModel: ObservableObject {
     }()
 #endif
 
-    private static let supportedImageMimeTypes: Set<String> = [
-        "image/jpeg",
-        "image/png",
-        "image/webp",
-        "image/gif",
-    ]
-
-    private static let compressedJPEGQuality: CGFloat = 0.72
-    private static let originalFallbackJPEGQuality: CGFloat = 0.95
-    private static let compressedMaxPixelSize: CGFloat = 2000
 }
 
 private struct ChatPeerProfile: Equatable {
     let name: String?
     let avatar: String?
-}
-
-private struct UploadImagePayload {
-    let data: Data
-    let fileName: String
-    let mimeType: String
-    let width: Int?
-    let height: Int?
-}
-
-private enum ImageSendMode: CaseIterable, Hashable {
-    case compressed
-    case original
-
-    var shortTitle: String {
-        switch self {
-        case .compressed:
-            return "压缩"
-        case .original:
-            return "原图"
-        }
-    }
-
-    var menuTitle: String {
-        switch self {
-        case .compressed:
-            return "压缩发送（默认）"
-        case .original:
-            return "原图发送"
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .compressed:
-            return "arrow.down.circle"
-        case .original:
-            return "photo"
-        }
-    }
 }
 
 private struct PendingImageSelection: Identifiable {
@@ -898,13 +787,24 @@ class GroupMaintenanceViewModel: ObservableObject {
     @Published var botMembers: [GroupBotMember] = []
     @Published var allBots: [Bot] = []
     @Published var groupName = ""
+    @Published var savedGroupName: String?
+    @Published var isSaving = false
+    @Published var isUpdatingMembers = false
+    @Published var isLeaving = false
+    @Published var hasLeftGroup = false
+    @Published private(set) var currentUserID: UUID?
+    @Published var successMessage: String?
     @Published var searchText = ""
     @Published var errorMessage: String?
 
+    private let messageStore = LocalMessageStore.shared
     private var cancellables = Set<AnyCancellable>()
 
     func bootstrap(groupId: String, currentName: String) {
-        groupName = currentName
+        currentUserID = AuthManager.shared.currentUser?.id
+        groupName = savedGroupName ?? currentName
+        errorMessage = nil
+        successMessage = nil
         loadMembers(groupId: groupId)
         loadBots()
     }
@@ -914,9 +814,11 @@ class GroupMaintenanceViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
+                    self.isUpdatingMembers = false
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (payload: GroupMembersPayload) in
+                self.isUpdatingMembers = false
                 self.members = payload.users
                 self.botMembers = payload.bots
             }
@@ -928,6 +830,7 @@ class GroupMaintenanceViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
+                    self.isUpdatingMembers = false
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (bots: [Bot]) in
@@ -937,16 +840,35 @@ class GroupMaintenanceViewModel: ObservableObject {
     }
 
     func renameGroup(groupId: String) {
-        APIClient.shared.updateGroupName(groupID: groupId, name: groupName)
-            .sink { _ in } receiveValue: { (_: ChatGroup) in }
+        let name = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard permissions.canRename, !name.isEmpty, !isSaving, !isLeaving else { return }
+        errorMessage = nil
+        successMessage = nil
+        isSaving = true
+        APIClient.shared.updateGroupName(groupID: groupId, name: name)
+            .receive(on: DispatchQueue.main)
+            .sink { completion in
+                self.isSaving = false
+                if case .failure(let error) = completion { self.errorMessage = error.localizedDescription }
+            } receiveValue: { (group: ChatGroup) in
+                self.groupName = group.name
+                self.savedGroupName = group.name
+                self.successMessage = L10n.t("群名称已保存", "Group name saved")
+                NotificationCenter.default.post(name: .chatDirectoryDidChange, object: nil)
+            }
             .store(in: &cancellables)
     }
 
     func removeMember(groupId: String, memberId: UUID) {
+        guard let member = members.first(where: { $0.userId == memberId }),
+              permissions.canRemove(member), !isUpdatingMembers, !isLeaving else { return }
+        isUpdatingMembers = true
+        errorMessage = nil
         APIClient.shared.removeGroupMember(groupID: groupId, memberID: memberId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
+                    self.isUpdatingMembers = false
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (_: [String: String]) in
@@ -956,10 +878,14 @@ class GroupMaintenanceViewModel: ObservableObject {
     }
 
     func addBot(groupId: String, botId: UUID) {
+        guard permissions.canManageMembers, !isUpdatingMembers, !isLeaving else { return }
+        isUpdatingMembers = true
+        errorMessage = nil
         APIClient.shared.addBotToGroup(groupID: groupId, botID: botId)
             .receive(on: DispatchQueue.main)
             .sink { completion in
                 if case .failure(let error) = completion {
+                    self.isUpdatingMembers = false
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (_: [String: String]) in
@@ -968,10 +894,35 @@ class GroupMaintenanceViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
+    var permissions: GroupMemberPermissions {
+        GroupMemberPermissions(currentUserID: currentUserID, members: members)
+    }
+
+    func leaveGroup(groupId: String, conversationID: String) {
+        guard permissions.canLeave, let currentUserID, !isLeaving, !isUpdatingMembers else { return }
+        isLeaving = true
+        errorMessage = nil
+        APIClient.shared.removeGroupMember(groupID: groupId, memberID: currentUserID)
+            .receive(on: DispatchQueue.main)
+            .sink { completion in
+                if case .failure(let error) = completion {
+                    self.isLeaving = false
+                    self.errorMessage = error.localizedDescription
+                }
+            } receiveValue: { (_: [String: String]) in
+                RealtimeService.shared.leaveConversation(conversationID)
+                self.messageStore.removeGroup(groupID: groupId, conversationID: conversationID)
+                self.hasLeftGroup = true
+                NotificationCenter.default.post(name: .chatDirectoryDidChange, object: nil)
+            }
+            .store(in: &cancellables)
+    }
+
     var filteredBots: [Bot] {
         let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if term.isEmpty { return allBots }
-        return allBots.filter { $0.name.localizedCaseInsensitiveContains(term) }
+        let available = allBots.filter { bot in !botMembers.contains { $0.botId == bot.id } }
+        if term.isEmpty { return available }
+        return available.filter { $0.name.localizedCaseInsensitiveContains(term) }
     }
 }
 
@@ -1020,14 +971,21 @@ struct ChatRoomView: View {
 }
 
 private struct ChatRoomLegacyView: View {
+    @AppStorage("settings.compactMessageMode") private var compactMessageMode = false
     let context: ChatContext
     @StateObject private var viewModel: ChatRoomViewModel
     @StateObject private var groupVM = GroupMaintenanceViewModel()
     @ObservedObject private var authManager = AuthManager.shared
     @ObservedObject private var realtimeService = RealtimeService.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.closeNotificationChat) private var closeNotificationChat
     @State private var showGroupSheet = false
+    @State private var updatedBot: Bot?
+    @State private var botWasDeleted = false
+    @State private var conversationVisibilityOwner = UUID()
     @State private var showFileImporter = false
+    @State private var showPhotoPicker = false
+    @State private var selectedFile: FileBlockContentV2?
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var previewMessage: Message?
     @State private var pendingImageSelection: PendingImageSelection?
@@ -1126,8 +1084,9 @@ private struct ChatRoomLegacyView: View {
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .onAppear {
+            if botWasDeleted { closeChat(); return }
             guard loadsMessagesOnAppear else { return }
-            RealtimeService.shared.setActiveConversation(context.id)
+            RealtimeService.shared.setActiveConversation(context.id, owner: conversationVisibilityOwner)
             viewModel.seedBotProfile(context.bot)
             viewModel.refreshBotProfiles()
             viewModel.refreshGroupBotProfiles(groupId: context.groupId)
@@ -1140,13 +1099,18 @@ private struct ChatRoomLegacyView: View {
         .onDisappear {
             guard loadsMessagesOnAppear else { return }
             slashAutocompleteTask?.cancel()
-            RealtimeService.shared.setActiveConversation(nil)
+            RealtimeService.shared.clearActiveConversation(owner: conversationVisibilityOwner)
         }
-        .sheet(isPresented: $showGroupSheet) {
+        .sheet(isPresented: $showGroupSheet, onDismiss: {
+            if groupVM.hasLeftGroup { closeChat() }
+        }) {
             if let groupId = context.groupId {
-                GroupMaintenanceSheet(viewModel: groupVM, groupId: groupId)
+                GroupMaintenanceSheet(viewModel: groupVM, groupId: groupId, conversationID: context.id)
                     .presentationDetents([.fraction(0.65)])
             }
+        }
+        .onChange(of: groupVM.hasLeftGroup) { _, left in
+            if left { showGroupSheet = false }
         }
         .fullScreenCover(item: $pendingImageSelection) { selection in
             PendingImageSendScreen(
@@ -1166,6 +1130,9 @@ private struct ChatRoomLegacyView: View {
         }
         .fileImporter(isPresented:$showFileImporter,allowedContentTypes:[.plainText,.pdf,.commaSeparatedText,UTType(filenameExtension:"md") ?? .text,UTType(filenameExtension:"docx") ?? .data,UTType(filenameExtension:"xlsx") ?? .data]) { result in
             switch result { case .success(let url): Task { await viewModel.sendFile(url) }; case .failure(let error): viewModel.errorMessage=error.localizedDescription }
+        }
+        .sheet(item: $selectedFile) { file in
+            ChatFilePreview(file: file)
         }
         .fullScreenCover(item: $previewMessage) { message in
             ChatImagePreviewScreen(message: message)
@@ -1187,7 +1154,7 @@ private struct ChatRoomLegacyView: View {
             )
         }
         .alert(
-            "提示",
+            L10n.t("提示", "Notice"),
             isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
                 set: { isPresented in
@@ -1203,17 +1170,14 @@ private struct ChatRoomLegacyView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .task(id: avatarPrefetchKey) {
-            AvatarImagePrefetcher.prefetch(messageAvatarURLs)
-        }
         .simultaneousGesture(edgeBackGesture)
     }
 
     private var chatHeader: some View {
         ChatChromeHeader(
-            title: context.title,
+            title: updatedBot?.name ?? groupVM.savedGroupName ?? context.title,
             showSettings: context.isGroup || context.bot != nil,
-            onBack: { dismiss() },
+            onBack: { closeChat() },
             settingsContent: {
                 settingsAffordance
             }
@@ -1240,7 +1204,9 @@ private struct ChatRoomLegacyView: View {
                 onSaveImage: saveImage,
                 onOpenDocument: { selectedDocumentRoute = DocumentRoute(id: $0) },
                 onContinueDocument: continueEditingDocument,
-                onTapList: { isInputFocused = false }
+                onTapList: { isInputFocused = false },
+                onOpenFile: { selectedFile = $0 },
+                compactMessageMode: compactMessageMode
             )
         } else {
             ChatMessageListView(
@@ -1309,8 +1275,13 @@ private struct ChatRoomLegacyView: View {
                 guard value.startLocation.x <= 28 else { return }
                 guard value.translation.width > 72 else { return }
                 guard value.translation.width > Swift.abs(value.translation.height) * 1.4 else { return }
-                dismiss()
+                closeChat()
             }
+    }
+
+    private func closeChat() {
+        if let closeNotificationChat { closeNotificationChat() }
+        else { dismiss() }
     }
 
     @ViewBuilder
@@ -1322,15 +1293,12 @@ private struct ChatRoomLegacyView: View {
                     groupVM.bootstrap(groupId: groupId, currentName: context.title)
                 }
             } label: {
-                ChatHeaderIcon(systemName: "gearshape.fill", accessibilityLabel: "群设置")
+                ChatHeaderIcon(systemName: "ellipsis", accessibilityLabel: L10n.t("群设置", "Group settings"))
             }
             .buttonStyle(.plain)
-        } else if let bot = context.bot {
-            NavigationLink(destination: BotSettingsView(bot: bot, onBotUpdated: {
-                // ChatRoomView doesn't manage the bot list, but the updated bot info
-                // will be fetched when returning to BotsView.
-            })) {
-                ChatHeaderIcon(systemName: "gearshape.fill", accessibilityLabel: "机器人设置")
+        } else if let bot = updatedBot ?? context.bot {
+            NavigationLink(destination: BotSettingsView(bot: bot, onBotUpdated: { updatedBot = $0 }, onBotDeleted: { botWasDeleted = true })) {
+                ChatHeaderIcon(systemName: "ellipsis", accessibilityLabel: L10n.t("机器人设置", "Bot settings"))
             }
             .buttonStyle(.plain)
         }
@@ -1338,17 +1306,48 @@ private struct ChatRoomLegacyView: View {
 
     private var inputBar: some View {
         VStack(spacing: 6) {
+            if loadsMessagesOnAppear || ChatRoomV2FeatureFlag.uiTestMode == "chatActivityV5" {
+                ChatActivityView(conversationID: context.id)
+            }
             slashCommandSuggestions
 
-            HStack(alignment: .bottom, spacing: 8) {
-                Button { showFileImporter=true } label: { ChatComposerIconButton(systemName:"doc.badge.plus",isUploading:viewModel.isUploadingImage) }
-                .accessibilityIdentifier("chat.file.attach")
-                .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
-
-                PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                    ChatComposerIconButton(systemName: "photo", isUploading: viewModel.isUploadingImage)
+            if let document = viewModel.editingDocument {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text")
+                    Text(document.title)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("chat.document.context.title")
+                    Spacer(minLength: 4)
+                    Button { viewModel.editingDocument = nil } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .frame(width: 32, height: 32)
+                    }
+                    .accessibilityIdentifier("chat.document.context.remove")
+                    .accessibilityLabel(L10n.t("移除文档引用", "Remove document reference"))
                 }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.rcmsTextSecondary)
+                .padding(.leading, 12)
+                .padding(.trailing, 4)
+                .background(Color.rcmsFieldSurface, in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    Button { showPhotoPicker = true } label: {
+                        Label(L10n.t("照片", "Photo"), systemImage: "photo")
+                    }
+                    Button { showFileImporter = true } label: {
+                        Label(L10n.t("文件", "File"), systemImage: "doc")
+                    }
+                    .accessibilityIdentifier("chat.file.attach")
+                } label: {
+                    ChatComposerIconButton(systemName: "plus", isUploading: viewModel.isUploadingImage)
+                }
+                .accessibilityLabel(L10n.t("添加附件", "Add attachment"))
+                .accessibilityIdentifier("chat.attachments")
                 .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+                .photosPicker(isPresented: $showPhotoPicker, selection: photoPickerSelection, matching: .images)
 
                 HStack(alignment: .bottom, spacing: 8) {
                     TextField(composerPlaceholder, text: $viewModel.inputText, axis: .vertical)
@@ -1385,12 +1384,13 @@ private struct ChatRoomLegacyView: View {
                             .fill(Color.rcmsAccent)
                             .frame(width: 44, height: 44)
 
-                        Image(systemName: "paperplane.fill")
+                        Image(systemName: "arrow.up")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(.white)
-                            .offset(x: -1, y: 1)
                     }
                 }
+                .accessibilityIdentifier("chat.send")
+                .accessibilityLabel(L10n.t("发送", "Send"))
                 .disabled(isSendDisabled)
                 .opacity(isSendDisabled ? 0.45 : 1)
             }
@@ -1399,7 +1399,6 @@ private struct ChatRoomLegacyView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .background(Color.rcmsToolbarSurface)
-        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -1534,10 +1533,12 @@ private struct ChatRoomLegacyView: View {
     }
 
     private var composerPlaceholder: String {
-        context.isGroup ? "Message group" : "Message \(context.title)"
+        if viewModel.editingDocument != nil { return L10n.t("描述你想修改的内容", "Describe your changes") }
+        return context.isGroup ? L10n.t("发送到群组", "Message group") : L10n.t("发消息给 \(context.title)", "Message \(context.title)")
     }
 
     private var activeSlashQuery: String? {
+        guard viewModel.editingDocument == nil else { return nil }
         guard let range = activeSlashTokenRange(in: viewModel.inputText) else {
             return nil
         }
@@ -1557,6 +1558,7 @@ private struct ChatRoomLegacyView: View {
     }
 
     private var activeSlashArgumentContext: SlashArgumentContext? {
+        guard viewModel.editingDocument == nil else { return nil }
         guard let lineRange = activeSlashLineRange(in: viewModel.inputText) else {
             return nil
         }
@@ -1901,10 +1903,7 @@ private struct ChatRoomLegacyView: View {
     }
 
     private func continueEditingDocument(_ preview: DocumentLinkPreview) {
-        viewModel.inputText = L10n.t(
-            "请继续修改这份文档：\(preview.title)\n\(preview.path)\n\n修改要求：",
-            "Please continue editing this document: \(preview.title)\n\(preview.path)\n\nRequested changes:"
-        )
+        viewModel.editingDocument = preview
         isInputFocused = true
     }
 
@@ -2568,8 +2567,9 @@ private struct ChatChromeHeader<SettingsContent: View>: View {
         ZStack {
             HStack {
                 Button(action: onBack) {
-                    ChatHeaderIcon(systemName: "chevron.left", accessibilityLabel: "返回")
+                    ChatHeaderIcon(systemName: "chevron.left", accessibilityLabel: L10n.t("返回", "Back"))
                 }
+                .accessibilityIdentifier("chat.back")
                 .buttonStyle(.plain)
 
                 Spacer()
@@ -2578,7 +2578,7 @@ private struct ChatChromeHeader<SettingsContent: View>: View {
                     settingsContent()
                 } else {
                     Color.clear
-                        .frame(width: 36, height: 36)
+                        .frame(width: 44, height: 44)
                 }
             }
 
@@ -2593,9 +2593,8 @@ private struct ChatChromeHeader<SettingsContent: View>: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 2)
         .background(Color.rcmsToolbarSurface)
-        .background(.ultraThinMaterial)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.rcmsHairline)
@@ -2611,8 +2610,8 @@ private struct ChatHeaderIcon: View {
     var body: some View {
         Image(systemName: systemName)
             .font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(Color.rcmsAccent)
-            .frame(width: 36, height: 36)
+            .foregroundStyle(Color.rcmsTextPrimary)
+            .frame(width: 44, height: 44)
             .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -2635,7 +2634,7 @@ private struct ChatComposerIconButton: View {
             } else {
                 Image(systemName: systemName)
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(Color.rcmsAccent)
+                    .foregroundStyle(Color.rcmsTextPrimary)
                     .frame(width: 44, height: 44)
             }
         }
@@ -3603,7 +3602,7 @@ private struct PendingImageSendScreen: View {
     @State private var previewImage: UIImage?
     @State private var originalSizeLabel: String?
     @State private var loadFailed = false
-    @State private var sendMode: ImageSendMode = .compressed
+    @State private var sendMode = ImageSendMode.preference(UserDefaults.standard.string(forKey: ImageSendMode.storageKey))
 
     var body: some View {
         ZStack {
@@ -3619,6 +3618,8 @@ private struct PendingImageSendScreen: View {
                             .background(Color.white.opacity(0.12))
                             .clipShape(Circle())
                     }
+                    .accessibilityIdentifier("chat.photo.cancel")
+                    .accessibilityLabel(L10n.t("取消", "Cancel"))
 
                     Spacer()
                 }
@@ -3632,6 +3633,8 @@ private struct PendingImageSendScreen: View {
                         Image(uiImage: previewImage)
                             .resizable()
                             .scaledToFit()
+                            .accessibilityIdentifier("chat.photo.preview")
+                            .accessibilityLabel(L10n.t("所选图片", "Selected image"))
                     } else {
                         previewPlaceholder
                     }
@@ -3640,19 +3643,41 @@ private struct PendingImageSendScreen: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 20)
 
+                if let originalSizeLabel {
+                    Text(L10n.t("源文件 \(originalSizeLabel)", "Source file \(originalSizeLabel)"))
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+
                 HStack(spacing: 14) {
-                    Button {
-                        sendMode = sendMode == .original ? .compressed : .original
+                    Menu {
+                        ForEach(ImageSendMode.allCases, id: \.self) { mode in
+                            Button {
+                                sendMode = mode
+                            } label: {
+                                if sendMode == mode {
+                                    Label(mode.shortTitle, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.shortTitle)
+                                }
+                            }
+                            .accessibilityIdentifier("chat.photo.quality.\(mode.rawValue)")
+                        }
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: sendMode == .original ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 18, weight: .medium))
-                            Text(originalOptionTitle)
-                                .font(.subheadline.weight(.medium))
+                            Image(systemName: "slider.horizontal.3")
+                            Text(sendMode.shortTitle)
+                            Image(systemName: "chevron.down")
+                                .font(.caption)
                         }
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white)
+                        .frame(minHeight: 44)
                     }
-                    .buttonStyle(.plain)
+                    .disabled(isSending)
+                    .accessibilityIdentifier("chat.photo.quality")
+                    .accessibilityLabel(L10n.t("图片上传质量", "Image upload quality"))
+                    .accessibilityValue(sendMode.shortTitle)
 
                     Spacer()
 
@@ -3664,7 +3689,7 @@ private struct PendingImageSendScreen: View {
                                 ProgressView()
                                     .tint(.white)
                             }
-                            Text(isSending ? "发送中..." : "发送")
+                            Text(isSending ? L10n.t("发送中...", "Sending…") : L10n.t("发送", "Send"))
                                 .font(.headline)
                         }
                         .foregroundStyle(.white)
@@ -3674,6 +3699,7 @@ private struct PendingImageSendScreen: View {
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat.photo.send")
                     .disabled(isSending || loadFailed)
                     .opacity((isSending || loadFailed) ? 0.7 : 1)
                 }
@@ -3686,13 +3712,6 @@ private struct PendingImageSendScreen: View {
         .task(id: selection.id) {
             await loadPreview()
         }
-    }
-
-    private var originalOptionTitle: String {
-        if let originalSizeLabel {
-            return L10n.t("原图 \(originalSizeLabel)", "Original \(originalSizeLabel)")
-        }
-        return L10n.t("原图", "Original")
     }
 
     @ViewBuilder
@@ -3966,6 +3985,10 @@ struct BubbleShape: Shape {
 struct GroupMaintenanceSheet: View {
     @ObservedObject var viewModel: GroupMaintenanceViewModel
     let groupId: String
+    let conversationID: String
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var nameFocused: Bool
+    @State private var showingLeaveConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -3974,16 +3997,37 @@ struct GroupMaintenanceSheet: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        TextField(L10n.t("群名称", "Group name"), text: $viewModel.groupName)
-                            .padding(12)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        if viewModel.permissions.canRename {
+                            TextField(L10n.t("群名称", "Group name"), text: $viewModel.groupName)
+                                .accessibilityIdentifier("group.name")
+                                .focused($nameFocused)
+                                .padding(12)
+                                .background(.ultraThinMaterial)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                        Button(L10n.t("保存群名称", "Save group name")) {
-                            viewModel.renameGroup(groupId: groupId)
+                            Button(L10n.t("保存群名称", "Save group name")) {
+                                viewModel.renameGroup(groupId: groupId)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.rcmsAccent)
+                            .accessibilityIdentifier("group.save")
+                            .disabled(viewModel.isSaving || viewModel.groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        } else {
+                            Text(viewModel.groupName)
+                                .font(.headline)
+                                .accessibilityIdentifier("group.name.readonly")
+                            Text(L10n.t("只有群主可以修改群名称", "Only the owner can rename this group"))
+                                .font(.caption).foregroundStyle(Color.rcmsTextSecondary)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.rcmsAccent)
+
+                        if let message = viewModel.successMessage {
+                            Text(message).font(.caption).foregroundStyle(Color.rcmsTextSecondary)
+                                .accessibilityIdentifier("group.saved")
+                        }
+                        if let error = viewModel.errorMessage {
+                            Text(error).font(.caption).foregroundStyle(Color.rcmsDanger)
+                                .accessibilityIdentifier("group.error")
+                        }
 
                         Text(L10n.t("成员", "Members"))
                             .font(.headline)
@@ -3992,10 +4036,14 @@ struct GroupMaintenanceSheet: View {
                             HStack {
                                 Text(member.user?.username ?? member.nickname ?? member.userId.uuidString)
                                 Spacer()
-                                Button(L10n.t("移除", "Remove")) {
-                                    viewModel.removeMember(groupId: groupId, memberId: member.userId)
+                                if viewModel.permissions.canRemove(member) {
+                                    Button(L10n.t("移除", "Remove")) {
+                                        viewModel.removeMember(groupId: groupId, memberId: member.userId)
+                                    }
+                                    .foregroundStyle(Color.rcmsDanger)
+                                    .accessibilityIdentifier("group.remove.\(member.userId.uuidString.lowercased())")
+                                    .disabled(viewModel.isUpdatingMembers || viewModel.isLeaving)
                                 }
-                                .foregroundStyle(Color.rcmsDanger)
                             }
                         }
 
@@ -4013,30 +4061,64 @@ struct GroupMaintenanceSheet: View {
                             }
                         }
 
-                        Text(L10n.t("+ 添加成员", "+ Add member"))
-                            .font(.headline)
+                        if viewModel.permissions.canManageMembers {
+                            Text(L10n.t("+ 添加成员", "+ Add member"))
+                                .font(.headline)
 
-                        TextField(L10n.t("搜索机器人", "Search bots"), text: $viewModel.searchText)
-                            .padding(12)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            TextField(L10n.t("搜索机器人", "Search bots"), text: $viewModel.searchText)
+                                .padding(12)
+                                .background(.ultraThinMaterial)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                        ForEach(viewModel.filteredBots) { bot in
-                            HStack {
-                                Text(bot.name)
-                                Spacer()
-                                Button(L10n.t("添加", "Add")) {
-                                    viewModel.addBot(groupId: groupId, botId: bot.id)
+                            ForEach(viewModel.filteredBots) { bot in
+                                HStack {
+                                    Text(bot.name)
+                                    Spacer()
+                                    Button(L10n.t("添加", "Add")) {
+                                        viewModel.addBot(groupId: groupId, botId: bot.id)
+                                    }
+                                    .foregroundStyle(Color.rcmsAccent)
+                                    .accessibilityIdentifier("group.add.\(bot.id.uuidString.lowercased())")
+                                    .disabled(viewModel.isUpdatingMembers || viewModel.isLeaving)
                                 }
-                                .foregroundStyle(Color.rcmsAccent)
                             }
+                        }
+
+                        if viewModel.permissions.canLeave {
+                            Button(L10n.t("退出群聊", "Leave group"), role: .destructive) {
+                                nameFocused = false
+                                showingLeaveConfirmation = true
+                            }
+                            .accessibilityIdentifier("group.leave")
+                            .disabled(viewModel.isLeaving || viewModel.isUpdatingMembers)
                         }
                     }
                     .padding(16)
                 }
+                .accessibilityIdentifier("group.settings.scroll")
             }
             .navigationTitle(L10n.t("群维护", "Group settings"))
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.t("完成", "Done")) { dismiss() }
+                        .accessibilityIdentifier("group.done")
+                        .disabled(viewModel.isLeaving)
+                }
+            }
+            .onChange(of: viewModel.successMessage) { _, value in
+                if value != nil { nameFocused = false }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .interactiveDismissDisabled(viewModel.isLeaving)
+            .alert(L10n.t("退出群聊？", "Leave this group?"), isPresented: $showingLeaveConfirmation) {
+                Button(L10n.t("退出群聊", "Leave group"), role: .destructive) {
+                    viewModel.leaveGroup(groupId: groupId, conversationID: conversationID)
+                }
+                Button(L10n.t("取消", "Cancel"), role: .cancel) {}
+            } message: {
+                Text(L10n.t("退出后将不再接收此群消息，需要成员重新邀请才能加入。", "You will stop receiving messages from this group. An invitation is required to rejoin."))
+            }
         }
     }
 }

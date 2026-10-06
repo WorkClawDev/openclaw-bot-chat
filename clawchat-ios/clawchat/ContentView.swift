@@ -3,7 +3,9 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var authManager = AuthManager.shared
+    @StateObject private var pushNotifications = ChatPushNotifications.shared
     @AppStorage("settings.appearanceMode") private var appearanceModeRawValue = AppAppearanceMode.system.rawValue
+    @AppStorage("settings.compactMessageMode") private var compactMessageMode = false
 
     private var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRawValue) ?? .system
@@ -11,7 +13,17 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2ImagePreview" {
+            if ChatRoomV2FeatureFlag.uiTestMode == "chatFilesV5" {
+                NavigationStack {
+                    ChatRoomView(previewContext: ChatContext(id: "fixture", title: "Grok Bot", subtitle: "", isGroup: false, groupId: nil), messages: HomeV5Preview.files)
+                }
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatActivityV5" {
+                NavigationStack {
+                    ChatRoomView(previewContext: ChatContext(id: "fixture", title: "Grok Bot", subtitle: "", isGroup: false, groupId: nil), messages: HomeV5Preview.messages)
+                }
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "homeV5" {
+                HomeDashboardView(viewModel: HomeV5Preview.model)
+            } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2ImagePreview" {
                 ChatRoomV2ImagePreviewFixtureView(context: uiTestChatContext)
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2LiveBridge" {
                 ChatRoomV2LiveBridgeFixtureView(context: uiTestChatContext)
@@ -25,7 +37,16 @@ struct ContentView: View {
                     currentUserID: "fixture-user"
                 )
             } else if ChatRoomV2FeatureFlag.uiTestMode == "chatRoomV2" {
-                ChatRoomUIKitV2View(context: uiTestChatContext, fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress)
+                VStack(spacing: 0) {
+                    if ProcessInfo.processInfo.arguments.contains("-chatRoomV2DensityControl") {
+                        Toggle("Compact message mode", isOn: $compactMessageMode)
+                            .accessibilityIdentifier("fixture.compact.toggle")
+                            .padding(.horizontal, 16)
+                    }
+                    ChatRoomUIKitV2View(context: uiTestChatContext,
+                                       fixture: ChatRoomV2FeatureFlag.fixture ?? .textPrependStress,
+                                       compactMessageMode: compactMessageMode)
+                }
             } else if ChatRoomV2FeatureFlag.uiTestMode == "assistantConsole" {
                 NavigationStack { AssistantView() }
             } else if ChatRoomV2FeatureFlag.uiTestMode == "tasksConsole" {
@@ -34,6 +55,7 @@ struct ContentView: View {
                 IpadWorkspaceView(launchSection: ChatRoomV2FeatureFlag.uiTestMode)
             } else if authManager.isAuthenticated {
                 AdaptiveHomeShell()
+                    .id(authManager.currentUser?.id)
                     .onAppear {
                         authManager.refreshCurrentUserIfNeeded()
                         RealtimeService.shared.start()
@@ -48,6 +70,19 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(appearanceMode.colorScheme)
+        .onAppear { activateNotifications() }
+        .onChange(of: authManager.currentUser?.id) { _, _ in activateNotifications() }
+        .onChange(of: authManager.accessToken) { _, _ in activateNotifications() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { activateNotifications() }
+        }
+        .background(ChatPushPresentationHost(notifications: pushNotifications).frame(width: 0, height: 0))
+    }
+
+    private func activateNotifications() {
+        guard authManager.isAuthenticated, let user = authManager.currentUser,
+              let token = authManager.accessToken else { return }
+        pushNotifications.activate(ChatPushSession(userID: user.id, accessToken: token, endpoint: APIClient.shared.baseURL))
     }
 
     private var uiTestChatContext: ChatContext {
@@ -116,60 +151,12 @@ private struct AdaptiveHomeShell: View {
 }
 
 struct HomeView: View {
-    @State private var selectedTab: MainTab = .home
     @AppStorage(AppLanguageMode.storageKey) private var languageModeRawValue = AppLanguageMode.english.rawValue
 
     var body: some View {
         let _ = languageModeRawValue
-
-        ZStack {
-            FrostedBackground()
-
-            TabView(selection: $selectedTab) {
-                HomeDashboardView()
-                .tabItem {
-                    Label(L10n.t("首页", "Home"), systemImage: "house.fill")
-                }
-                .tag(MainTab.home)
-
-                ContactsView()
-                    .tabItem {
-                        Label(L10n.t("通讯录", "Contacts"), systemImage: "person.2.fill")
-                    }
-                    .tag(MainTab.contacts)
-
-                TasksView()
-                    .tabItem {
-                        Label(L10n.t("任务", "Tasks"), systemImage: "checklist.checked")
-                    }
-                    .tag(MainTab.tasks)
-
-                if DocumentsFeatureFlag.isEnabled {
-                    DocumentsView()
-                        .tabItem {
-                            Label(L10n.t("文档", "Docs"), systemImage: "doc.text.fill")
-                        }
-                        .tag(MainTab.documents)
-                }
-
-                SettingsView()
-                    .tabItem {
-                        Label(L10n.t("设置", "Settings"), systemImage: "gearshape.fill")
-                    }
-                    .tag(MainTab.settings)
-            }
-            .tint(Color.rcmsAccent)
-            .toolbarBackground(.visible, for: .tabBar)
-            .toolbarBackground(Color.rcmsToolbarSurface, for: .tabBar)
-        }
-    }
-
-    private enum MainTab: Hashable {
-        case home
-        case tasks
-        case contacts
-        case documents
-        case settings
+        HomeDashboardView()
+            .tint(Color.rcmsTextPrimary)
     }
 }
 

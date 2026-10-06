@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"strconv"
 	"sync"
@@ -18,6 +19,8 @@ type PhoneCodeStore interface {
 	Get(ctx context.Context, key string) (string, error)
 	Delete(ctx context.Context, keys ...string) error
 	IncrWithTTL(ctx context.Context, key string, ttl time.Duration) (int64, error)
+	// VerifyAndConsume counts an attempt and consumes a matching live code atomically.
+	VerifyAndConsume(ctx context.Context, codeKey, attemptKey, expectedHash string, maxAttempts int, ttl time.Duration) (bool, error)
 }
 
 type RedisPhoneCodeStore struct {
@@ -49,6 +52,33 @@ func (s *RedisPhoneCodeStore) Delete(ctx context.Context, keys ...string) error 
 		return nil
 	}
 	return s.client.Del(ctx, keys...).Err()
+}
+
+// Compare HMAC digests, never plaintext codes. All reads, the attempt limit and
+// consumption run in one Redis operation so concurrent logins cannot both win.
+var verifyPhoneCodeScript = redis.NewScript(`
+local stored = redis.call('GET', KEYS[1])
+if not stored then return 0 end
+local attempts = redis.call('INCR', KEYS[2])
+if attempts == 1 then redis.call('PEXPIRE', KEYS[2], ARGV[3]) end
+if attempts > tonumber(ARGV[2]) then
+    redis.call('DEL', KEYS[1], KEYS[2])
+    return 0
+end
+local expected = ARGV[1]
+if string.len(stored) ~= string.len(expected) then return 0 end
+local difference = 0
+for i = 1, string.len(expected) do
+    difference = bit.bor(difference, bit.bxor(string.byte(stored, i), string.byte(expected, i)))
+end
+if difference ~= 0 then return 0 end
+redis.call('DEL', KEYS[1], KEYS[2])
+return 1
+`)
+
+func (s *RedisPhoneCodeStore) VerifyAndConsume(ctx context.Context, codeKey, attemptKey, expectedHash string, maxAttempts int, ttl time.Duration) (bool, error) {
+	result, err := verifyPhoneCodeScript.Run(ctx, s.client, []string{codeKey, attemptKey}, expectedHash, maxAttempts, ttl.Milliseconds()).Int()
+	return result == 1, err
 }
 
 func (s *RedisPhoneCodeStore) IncrWithTTL(ctx context.Context, key string, ttl time.Duration) (int64, error) {
@@ -114,6 +144,45 @@ func (s *MemoryPhoneCodeStore) Delete(ctx context.Context, keys ...string) error
 		delete(s.entries, key)
 	}
 	return nil
+}
+
+func (s *MemoryPhoneCodeStore) VerifyAndConsume(ctx context.Context, codeKey, attemptKey, expectedHash string, maxAttempts int, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	now := time.Now()
+	s.pruneLocked(now)
+	code, exists := s.entries[codeKey]
+	if !exists {
+		return false, nil
+	}
+	attempt, exists := s.entries[attemptKey]
+	count := int64(0)
+	if exists {
+		var err error
+		count, err = strconv.ParseInt(attempt.value, 10, 64)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		attempt.expiresAt = now.Add(ttl)
+	}
+	count++
+	attempt.value = strconv.FormatInt(count, 10)
+	s.entries[attemptKey] = attempt
+	if count > int64(maxAttempts) {
+		delete(s.entries, codeKey)
+		delete(s.entries, attemptKey)
+		return false, nil
+	}
+	if subtle.ConstantTimeCompare([]byte(code.value), []byte(expectedHash)) != 1 {
+		return false, nil
+	}
+	delete(s.entries, codeKey)
+	delete(s.entries, attemptKey)
+	return true, nil
 }
 
 func (s *MemoryPhoneCodeStore) IncrWithTTL(ctx context.Context, key string, ttl time.Duration) (int64, error) {

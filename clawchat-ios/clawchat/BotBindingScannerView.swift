@@ -5,67 +5,79 @@ struct BotBindingScannerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var manualValue = ""
     @State private var errorMessage: String?
+    @FocusState private var manualFocused: Bool
 
     let onScanned: (String) -> Void
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 18) {
-                QRCodeScannerView { value in
-                    onScanned(value)
-                }
-                .frame(height: 260)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.rcmsHairline, lineWidth: 1)
-                )
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(L10n.t("手动粘贴二维码内容", "Paste QR content manually"))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.rcmsTextPrimary)
-
-                    TextField(
-                        L10n.t("openclaw:// 或 https://.../openclaw/bind", "openclaw:// or https://.../openclaw/bind"),
-                        text: $manualValue,
-                        axis: .vertical
-                    )
-                    .lineLimit(3, reservesSpace: true)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled(true)
-                    .padding(12)
-                    .background(Color.rcmsFieldSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            ScrollView {
+                VStack(spacing: 18) {
+                    QRCodeScannerView { value in
+                        onScanned(value)
+                    }
+                    .frame(height: 260)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(Color.rcmsHairline, lineWidth: 1)
                     )
 
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(Color.rcmsDanger)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(L10n.t("手动粘贴二维码内容", "Paste QR content manually"))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.rcmsTextPrimary)
+
+                        TextField(
+                            L10n.t("openclaw:// 或 https://.../openclaw/bind", "openclaw:// or https://.../openclaw/bind"),
+                            text: $manualValue,
+                            axis: .vertical
+                        )
+                        .lineLimit(3, reservesSpace: true)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .focused($manualFocused)
+                        .accessibilityIdentifier("bot.binding.manual")
+                        .padding(12)
+                        .background(Color.rcmsFieldSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.rcmsHairline, lineWidth: 1)
+                        )
+
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.caption)
+                                .foregroundStyle(Color.rcmsDanger)
+                        }
+
+                        Button {
+                            submitManualValue()
+                        } label: {
+                            Text(L10n.t("识别并添加", "Recognize and add"))
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.rcmsAccent)
+                        .disabled(manualValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("bot.binding.submit")
                     }
 
-                    Button {
-                        submitManualValue()
-                    } label: {
-                        Text(L10n.t("识别并添加", "Recognize and add"))
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.rcmsAccent)
-                    .disabled(manualValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
+                .padding(16)
             }
-            .padding(16)
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(L10n.t("扫描添加机器人", "Scan to add bot"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(L10n.t("完成", "Done")) { manualFocused = false }
+                        .accessibilityIdentifier("bot.binding.keyboard.done")
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button(L10n.t("取消", "Cancel")) {
                         dismiss()
@@ -76,6 +88,7 @@ struct BotBindingScannerSheet: View {
     }
 
     private func submitManualValue() {
+        manualFocused = false
         let value = manualValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         guard BotBindingQRCodeParser.parse(value) != .unsupported else {
@@ -205,7 +218,10 @@ enum BotBindingQRCodeParseResult: Equatable {
 enum BotBindingQRCodeParser {
     static func parse(_ rawValue: String) -> BotBindingQRCodeParseResult {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let components = URLComponents(string: trimmed) else {
+        guard !trimmed.isEmpty, let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(), ["http", "https", "openclaw"].contains(scheme),
+              components.user == nil, components.password == nil,
+              scheme == "openclaw" || components.host?.isEmpty == false else {
             return .unsupported
         }
 
@@ -250,7 +266,7 @@ enum BotBindingQRCodeParser {
     }
 
     private static func backendURL(from components: URLComponents) -> URL? {
-        guard components.scheme?.hasPrefix("http") == true,
+        guard ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
               let host = components.host,
               !host.isEmpty
         else {

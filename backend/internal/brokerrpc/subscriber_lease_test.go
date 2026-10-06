@@ -18,6 +18,7 @@ import (
 type leaseRPC struct {
 	row               *pb.Session
 	foreign, conflict bool
+	clockSkew         time.Duration
 	calls             int
 	t                 *testing.T
 }
@@ -39,6 +40,9 @@ func (f *leaseRPC) ListSessions(ctx context.Context, r *pb.ListSessionsRequest, 
 }
 func (f *leaseRPC) Apply(_ context.Context, r *pb.ApplyRequest, _ ...grpc.CallOption) (*pb.ApplyResponse, error) {
 	f.calls++
+	if f.clockSkew > 0 && r.Upserts[0].PolicyValidUntilMs > uint64(time.Now().Add(5*time.Minute-f.clockSkew).UnixMilli()) {
+		return nil, status.Error(codes.InvalidArgument, "policy exceeds receiver five-minute limit")
+	}
 	if f.conflict {
 		f.conflict = false
 		return nil, status.Error(codes.Aborted, "concurrent update")
@@ -79,5 +83,17 @@ func TestIndependentSubscriberLeaseScopeAndCAS(t *testing.T) {
 	f.foreign = true
 	if err := s.Renew(context.Background()); err == nil {
 		t.Fatal("foreign username was accepted")
+	}
+}
+
+func TestSubscriberLeaseToleratesSmallReceiverClockSkew(t *testing.T) {
+	s, err := NewSubscriberLease(config.BrokerSecurityConfig{Address: "127.0.0.1:1", Insecure: true, AdminToken: strings.Repeat("a", 40), Namespace: "app"}, config.MQTTConfig{Username: "ingest", ClientID: "ingest-skew", Password: strings.Repeat("p", 40), TopicPrefix: "chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.admin = &leaseRPC{t: t, clockSkew: 2 * time.Second}
+	if err := s.Renew(context.Background()); err != nil {
+		t.Fatalf("bounded lease rejected by slightly slower authz clock: %v", err)
 	}
 }
