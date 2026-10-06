@@ -6,7 +6,7 @@ This is a broker-first chat system. `backend/` is the Go API service: entrypoint
 
 ## Build, Test, and Development Commands
 
-- `docker compose up --build -d`: starts PostgreSQL, Redis, EMQX, backend, and frontend.
+- `docker compose --profile broker up --build -d`: starts PostgreSQL, Redis, a prebuilt MQTTS image, backend, and frontend. Set `MQTTS_IMAGE` and the secrets in `docs/MQTTS_ACCESS.md`; never build/checkout broker source here. For an external broker configure its URLs and omit the profile.
 - `docker compose up --build -d frontend`: rebuilds and restarts only the production frontend container after frontend code changes; this also runs `npm run build` inside Docker.
 - `./scripts/dev-up.sh`: starts the local backend stack and seeds a test account.
 - `./scripts/dev-front.sh`: runs the frontend with Next.js HMR.

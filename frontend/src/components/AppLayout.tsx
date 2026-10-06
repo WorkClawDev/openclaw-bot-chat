@@ -57,6 +57,9 @@ function NavIcon({ type }: { type: string }) {
 export function PrimaryNav() {
   const pathname = usePathname()
   const { user, logout } = useAuth()
+  const visibleItems = user?.role === 'admin'
+    ? [...navItems, { href: '/admin/users', label: 'Access', icon: 'users' }]
+    : navItems
 
   return (
     <aside className="primary-nav w-full md:w-[72px] flex flex-row md:flex-col items-center md:py-5 border-t md:border-t-0 md:border-r border-slate-200/70 z-40 shrink-0">
@@ -66,7 +69,7 @@ export function PrimaryNav() {
 
       {/* Navigation */}
       <nav aria-label="Workspace navigation" className="flex min-w-0 flex-1 flex-row md:flex-col items-center justify-around md:justify-start">
-        {navItems.map((item) => {
+        {visibleItems.map((item) => {
           const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
           return (
             <Link

@@ -1,0 +1,356 @@
+{
+  "date": "2026-10-05",
+  "frontend_source_revision": "4e593b6a3645d27797c6f51f524f9def3998428d",
+  "passed": 7,
+  "measurements": [
+    {
+      "name": "streaming-10000-cpu1",
+      "count": 10000,
+      "cpu": 1,
+      "following": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.8,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 6,
+        "empty_frames": 0,
+        "sampled_frames": 200,
+        "max_uncovered_px": 0,
+        "distance_px": 803
+      },
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 8,
+        "empty_frames": 0,
+        "sampled_frames": 278,
+        "max_uncovered_px": 0,
+        "distance_px": 11702
+      },
+      "anchor_shift_px": 0,
+      "errors": []
+    },
+    {
+      "name": "streaming-10000-cpu4",
+      "count": 10000,
+      "cpu": 4,
+      "following": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 33.3,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 6,
+        "empty_frames": 0,
+        "sampled_frames": 210,
+        "max_uncovered_px": 0,
+        "distance_px": 803
+      },
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.8,
+        "frame_p99_ms": 33.4,
+        "frame_max_ms": 50,
+        "frames_over_33ms": 1,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 8,
+        "empty_frames": 0,
+        "sampled_frames": 270,
+        "max_uncovered_px": 0,
+        "distance_px": 11647
+      },
+      "anchor_shift_px": 0,
+      "errors": []
+    },
+    {
+      "name": "desktop-1000",
+      "count": 1000,
+      "cpu": 1,
+      "mobile": false,
+      "group": false,
+      "profiled": false,
+      "open_ms": 1472,
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.8,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 50,
+        "frames_over_33ms": 1,
+        "frames_over_50ms": 0,
+        "long_tasks": 1,
+        "longest_task_ms": 50,
+        "max_rendered_messages": 7,
+        "empty_frames": 0,
+        "sampled_frames": 511,
+        "max_uncovered_px": 0,
+        "distance_px": 23611
+      },
+      "incoming": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 6,
+        "empty_frames": 0,
+        "sampled_frames": 318,
+        "max_uncovered_px": 0,
+        "distance_px": 0
+      },
+      "anchor_shift_px": 0,
+      "seeks": [
+        {
+          "top": 9534,
+          "rendered": 5
+        },
+        {
+          "top": 71628,
+          "rendered": 3
+        },
+        {
+          "top": 138983,
+          "rendered": 6
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "desktop-5000",
+      "count": 5000,
+      "cpu": 1,
+      "mobile": false,
+      "group": false,
+      "profiled": false,
+      "open_ms": 1336,
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 33.3,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 7,
+        "empty_frames": 0,
+        "sampled_frames": 507,
+        "max_uncovered_px": 0,
+        "distance_px": 23761
+      },
+      "incoming": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.8,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 6,
+        "empty_frames": 0,
+        "sampled_frames": 317,
+        "max_uncovered_px": 0,
+        "distance_px": 0
+      },
+      "anchor_shift_px": 0,
+      "seeks": [
+        {
+          "top": 36314,
+          "rendered": 5
+        },
+        {
+          "top": 337628,
+          "rendered": 3
+        },
+        {
+          "top": 644383,
+          "rendered": 6
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "desktop-10000",
+      "count": 10000,
+      "cpu": 1,
+      "mobile": false,
+      "group": false,
+      "profiled": false,
+      "open_ms": 1895,
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 33.3,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 7,
+        "empty_frames": 0,
+        "sampled_frames": 510,
+        "max_uncovered_px": 0,
+        "distance_px": 23863
+      },
+      "incoming": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 6,
+        "empty_frames": 0,
+        "sampled_frames": 319,
+        "max_uncovered_px": 0,
+        "distance_px": 0
+      },
+      "anchor_shift_px": 0,
+      "seeks": [
+        {
+          "top": 69564,
+          "rendered": 5
+        },
+        {
+          "top": 670128,
+          "rendered": 3
+        },
+        {
+          "top": 1276133,
+          "rendered": 6
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "mobile-10000-cpu4",
+      "count": 10000,
+      "cpu": 4,
+      "mobile": true,
+      "group": false,
+      "profiled": false,
+      "open_ms": 5105,
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.8,
+        "frame_p99_ms": 33.4,
+        "frame_max_ms": 150,
+        "frames_over_33ms": 13,
+        "frames_over_50ms": 11,
+        "long_tasks": 11,
+        "longest_task_ms": 151,
+        "max_rendered_messages": 5,
+        "empty_frames": 0,
+        "sampled_frames": 1410,
+        "max_uncovered_px": 0,
+        "distance_px": 21079
+      },
+      "incoming": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 49.9,
+        "frame_p99_ms": 50.1,
+        "frame_max_ms": 66.6,
+        "frames_over_33ms": 14,
+        "frames_over_50ms": 1,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 4,
+        "empty_frames": 0,
+        "sampled_frames": 260,
+        "max_uncovered_px": 0,
+        "distance_px": 0
+      },
+      "anchor_shift_px": 0,
+      "seeks": [
+        {
+          "top": 70642,
+          "rendered": 3
+        },
+        {
+          "top": 677843,
+          "rendered": 3
+        },
+        {
+          "top": 1288070,
+          "rendered": 4
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "group-10000",
+      "count": 10000,
+      "cpu": 1,
+      "mobile": false,
+      "group": true,
+      "profiled": false,
+      "open_ms": 3081,
+      "scrolling": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 7,
+        "empty_frames": 0,
+        "sampled_frames": 510,
+        "max_uncovered_px": 0,
+        "distance_px": 23842
+      },
+      "incoming": {
+        "frame_p50_ms": 16.7,
+        "frame_p95_ms": 16.7,
+        "frame_p99_ms": 16.8,
+        "frame_max_ms": 16.8,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "long_tasks": 0,
+        "longest_task_ms": 0,
+        "max_rendered_messages": 4,
+        "empty_frames": 0,
+        "sampled_frames": 315,
+        "max_uncovered_px": 0,
+        "distance_px": 0
+      },
+      "anchor_shift_px": 0,
+      "seeks": [
+        {
+          "top": 65347,
+          "rendered": 5
+        },
+        {
+          "top": 620675,
+          "rendered": 4
+        },
+        {
+          "top": 1182628,
+          "rendered": 4
+        }
+      ],
+      "errors": []
+    }
+  ]
+}

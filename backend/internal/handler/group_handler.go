@@ -83,6 +83,26 @@ func (h *GroupHandler) Create(c *gin.Context) {
 
 // Get returns a group by ID
 func (h *GroupHandler) Get(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	resourceID, parseErr := uuid.Parse(c.Param("id"))
+	if parseErr != nil {
+		apiresponse.BadRequest(c, "invalid group id")
+		return
+	}
+	if err := h.groupService.CanRead(c.Request.Context(), resourceID, userID); err != nil {
+		if errors.Is(err, service.ErrNotGroupMember) {
+			apiresponse.Forbidden(c, err.Error())
+		} else if errors.Is(err, service.ErrGroupNotFound) {
+			apiresponse.NotFound(c, "group not found")
+		} else {
+			apiresponse.InternalError(c, "could not check group access")
+		}
+		return
+	}
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -205,7 +225,7 @@ func (h *GroupHandler) AddMember(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrGroupNotFound):
 			apiresponse.NotFound(c, "group not found")
-		case errors.Is(err, service.ErrGroupAdminRequired), errors.Is(err, service.ErrNotBotOwner), errors.Is(err, service.ErrNotGroupMember):
+		case errors.Is(err, service.ErrNotGroupOwner), errors.Is(err, service.ErrGroupAdminRequired), errors.Is(err, service.ErrNotBotOwner), errors.Is(err, service.ErrNotGroupMember):
 			apiresponse.Forbidden(c, err.Error())
 		case errors.Is(err, service.ErrBotNotFound):
 			apiresponse.NotFound(c, "bot not found")
@@ -213,8 +233,8 @@ func (h *GroupHandler) AddMember(c *gin.Context) {
 			apiresponse.Conflict(c, "user is already a member")
 		case errors.Is(err, service.ErrAlreadyBotMember):
 			apiresponse.Conflict(c, "bot is already a member")
-		case errors.Is(err, service.ErrGroupFull):
-			apiresponse.BadRequest(c, "group is full")
+		case errors.Is(err, service.ErrInvalidMemberRole), errors.Is(err, service.ErrGroupFull):
+			apiresponse.BadRequest(c, err.Error())
 		default:
 			apiresponse.InternalError(c, err.Error())
 		}
@@ -250,6 +270,8 @@ func (h *GroupHandler) RemoveMember(c *gin.Context) {
 			apiresponse.NotFound(c, "group not found")
 		case errors.Is(err, service.ErrNotGroupMember):
 			apiresponse.NotFound(c, "member not found")
+		case errors.Is(err, service.ErrNotGroupOwner), errors.Is(err, service.ErrGroupAdminRequired):
+			apiresponse.Forbidden(c, err.Error())
 		default:
 			apiresponse.InternalError(c, err.Error())
 		}
@@ -260,6 +282,26 @@ func (h *GroupHandler) RemoveMember(c *gin.Context) {
 
 // GetMembers returns all members of a group
 func (h *GroupHandler) GetMembers(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+	resourceID, parseErr := uuid.Parse(c.Param("id"))
+	if parseErr != nil {
+		apiresponse.BadRequest(c, "invalid group id")
+		return
+	}
+	if err := h.groupService.CanRead(c.Request.Context(), resourceID, userID); err != nil {
+		if errors.Is(err, service.ErrNotGroupMember) {
+			apiresponse.Forbidden(c, err.Error())
+		} else if errors.Is(err, service.ErrGroupNotFound) {
+			apiresponse.NotFound(c, "group not found")
+		} else {
+			apiresponse.InternalError(c, "could not check group access")
+		}
+		return
+	}
 	groupIDStr := c.Param("id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {

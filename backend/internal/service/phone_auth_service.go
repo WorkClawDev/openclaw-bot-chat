@@ -140,7 +140,7 @@ func (s *PhoneAuthService) LoginOrRegister(ctx context.Context, req PhoneLoginRe
 	if err != nil {
 		return nil, nil, false, err
 	}
-	if user.Status == model.UserStatusBanned {
+	if !user.IsActive() {
 		return nil, nil, false, ErrUserBanned
 	}
 
@@ -319,7 +319,7 @@ func (s *PhoneAuthService) uniquePhoneUsername(ctx context.Context, phoneNumber 
 }
 
 func (s *PhoneAuthService) generateTokens(user *model.User) (*TokenResponse, error) {
-	accessToken, refreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username)
+	accessToken, refreshToken, err := s.jwtManager.GenerateTokenPair(user.ID, user.Username, user.TokenVersion)
 	if err != nil {
 		return nil, err
 	}

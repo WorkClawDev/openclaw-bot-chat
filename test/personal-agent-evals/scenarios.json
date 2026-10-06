@@ -351,22 +351,22 @@
   },
   {
     "id": "PA-39",
-    "scenario": "TestBrokerCredentialsBoundScopedAndRevoked",
+    "scenario": "Scoped MQTT policy revocation preserves original session expiry",
     "engine": "go",
     "package": "github.com/openclaw-bot-chat/backend/internal/service",
-    "test": "TestBrokerCredentialsBoundScopedAndRevoked",
-    "real_prompt": "使用其他 clientID、其他主题或撤销的 bot key 连接 broker，确认拒绝。",
-    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "test": "TestProjectionRevokesScopesWithoutExtendingSession",
+    "real_prompt": "移除群成员、禁用 Agent 或撤销 Key，确认已有 MQTT 发布和投递被撤销，原会话期限不会延长。",
+    "real_criteria": "需真实 PostgreSQL、MQTTS 和独立授权服务的权限拒绝及持久化证据；单元测试不能替代联合验收。",
     "live_mode": "manual"
   },
   {
     "id": "PA-40",
-    "scenario": "TestBrokerExpiryStoreFailureAndCallbackFailClosed",
+    "scenario": "Bounded MQTT credentials fail closed when authorization RPC is unavailable",
     "engine": "go",
     "package": "github.com/openclaw-bot-chat/backend/internal/service",
-    "test": "TestBrokerExpiryStoreFailureAndCallbackFailClosed",
-    "real_prompt": "让会话过期或 Redis 离线，确认 broker 认证和授权失败时拒绝。",
-    "real_criteria": "实际重启、授权拒绝、执行记录或数据库查询及用户审核行为有证据，不能用 SQLite 夹具代替 PostgreSQL/EMQX 验收。",
+    "test": "TestMintPublishesBoundedGenericPolicyAndHash",
+    "real_prompt": "暂停独立授权服务，确认新连接和新凭据签发拒绝；已有缓存只保留到原会话到期且最多5分钟，故障不续期。",
+    "real_criteria": "需实际暂停独立授权进程并验证 MQTT 收发及新连接拒绝；模块的到期测试和真实联合验收分别保留证据。",
     "live_mode": "manual"
   }
 ]

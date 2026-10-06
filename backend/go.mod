@@ -13,10 +13,14 @@ require (
 	github.com/rs/zerolog v1.31.0
 	github.com/spf13/viper v1.21.0
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
+	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.46.0
+	google.golang.org/grpc v1.75.1
 	gorm.io/driver/postgres v1.5.4
 	gorm.io/gorm v1.25.7-0.20240204074919-46816ad31dde
 )
+
+require google.golang.org/genproto/googleapis/rpc v0.0.0-20250707201910-8d1bb00bc6a7 // indirect
 
 require (
 	github.com/bytedance/sonic v1.9.1 // indirect
@@ -39,7 +43,7 @@ require (
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
-	github.com/jackc/pgx/v5 v5.4.3 // indirect
+	github.com/jackc/pgx/v5 v5.4.3
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -77,7 +81,7 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/protobuf v1.31.0 // indirect
+	google.golang.org/protobuf v1.36.9
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gorm.io/driver/sqlite v1.5.7 // indirect
+	gorm.io/driver/sqlite v1.5.7
 )

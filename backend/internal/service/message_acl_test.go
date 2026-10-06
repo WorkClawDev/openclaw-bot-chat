@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
@@ -29,7 +30,7 @@ func TestUserRealtimeTopicsIncludeOwnedBotsBeforeFirstMessage(t *testing.T) {
 	for _, statement := range []string{
 		`CREATE TABLE messages (conversation_id TEXT, sender_id TEXT, bot_id TEXT, is_deleted BOOLEAN, created_at DATETIME)`,
 		`CREATE TABLE groups (id TEXT, owner_id TEXT, is_active BOOLEAN, created_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE group_members (group_id TEXT, user_id TEXT)`,
+		`CREATE TABLE group_members (group_id TEXT, user_id TEXT, is_active BOOLEAN)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)
@@ -59,5 +60,68 @@ func TestUserRealtimeTopicsIncludeOwnedBotsBeforeFirstMessage(t *testing.T) {
 	want := []string{fmt.Sprintf("chat/dm/user/%s/bot/%s", owner, bots[0].ID)}
 	if !reflect.DeepEqual(topics, want) {
 		t.Fatalf("new bot must be reachable without history, without granting unrelated bots: got %v, want %v", topics, want)
+	}
+}
+
+func TestConversationLimitCountsAccessibleHistoryAndRealtimeTopicsHaveNoFirstPageCutoff(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := db.DB()
+	t.Cleanup(func() { raw.Close() })
+	if err := createTaskServiceTestSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE messages (id INTEGER PRIMARY KEY, message_id TEXT, conversation_id TEXT, sender_id TEXT, bot_id TEXT, is_deleted BOOLEAN DEFAULT false, created_at DATETIME, seq INTEGER)`,
+		`CREATE TABLE groups (id TEXT, owner_id TEXT, is_active BOOLEAN, created_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE group_members (group_id TEXT, user_id TEXT, is_active BOOLEAN)`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	user, outsider := uuid.New(), uuid.New()
+	now := time.Now().UTC()
+	for i := 0; i < 205; i++ {
+		id := uuid.New()
+		if err := db.Exec("INSERT INTO groups(id,owner_id,is_active,created_at) VALUES(?,?,true,?)", id, outsider, now).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Exec("INSERT INTO messages(conversation_id,sender_id,created_at,seq) VALUES(?,?,?,1)", "chat/group/"+id.String(), user, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	direct := fmt.Sprintf("chat/dm/user/%s/user/%s", user, outsider)
+	if err := db.Exec("INSERT INTO messages(conversation_id,sender_id,created_at,seq) VALUES(?,?,?,1)", direct, user, now.Add(-time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMessageService(repository.NewMessageRepository(db), repository.NewBotRepository(db), repository.NewGroupRepository(db), nil, nil, nil)
+	list, err := svc.GetConversationList(context.Background(), user, 1)
+	if err != nil || len(list) != 1 || list[0].ConversationID != direct {
+		t.Fatalf("inaccessible groups hid older DM: %+v %v", list, err)
+	}
+	// >200 accessible historical direct routes and >500 groups without history
+	// must all be represented in the scoped realtime credentials.
+	for i := 0; i < 205; i++ {
+		topic := fmt.Sprintf("chat/dm/user/%s/user/%s", user, uuid.New())
+		if err := db.Exec("INSERT INTO messages(conversation_id,sender_id,created_at,seq) VALUES(?,?,?,1)", topic, user, now.Add(-time.Hour)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 501; i++ {
+		if err := db.Exec("INSERT INTO groups(id,owner_id,is_active,created_at) VALUES(?,?,true,?)", uuid.New(), user, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	topics, err := svc.ListUserRealtimeTopics(context.Background(), user)
+	if err != nil || len(topics) != 707 {
+		t.Fatalf("realtime pagination: %d topics, %v", len(topics), err)
+	}
+	for _, topic := range topics {
+		if err := svc.CanUserAccessConversation(context.Background(), user, topic); err != nil {
+			t.Fatalf("unauthorized topic %s: %v", topic, err)
+		}
 	}
 }

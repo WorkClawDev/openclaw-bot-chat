@@ -30,35 +30,39 @@ services:
       timeout: 5s
       retries: 12
 
-  emqx:
-    image: ${TEST_EMQX_IMAGE:-mirror.gcr.io/emqx/emqx:5.8.5}
+  mqtts-authz:
+    profiles: [broker]
+    image: ${MQTTS_AUTHZ_IMAGE:-mqtts-authz:local}
+    environment:
+      AUTHZ_INSECURE: "true"
+      AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN}
+      AUTHZ_ADMIN_TOKEN: ${BROKER_SECURITY_ADMIN_TOKEN}
+    volumes: ["mqtts_authz_data:/data"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  mqtts:
+    profiles: [broker]
+    image: ${MQTTS_IMAGE:-mqtts:local}
     restart: unless-stopped
     environment:
-      EMQX_NODE__NAME: emqx@127.0.0.1
-      EMQX_LOG__CONSOLE_HANDLER__LEVEL: warning
-      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USERNAME}
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD}
-      MQTT_USERNAME: ${MQTT_USERNAME}
-      MQTT_PASSWORD: ${MQTT_PASSWORD}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        printf 'user_id,password,is_superuser\n%s,%s,false\n' "$$MQTT_USERNAME" "$$MQTT_PASSWORD" > /opt/emqx/etc/auth-built-in-db-bootstrap.csv
-        exec /opt/emqx/bin/emqx foreground
+      MQTTS_AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN}
+      NO_PROXY: localhost,127.0.0.1,mqtts-authz
+      no_proxy: localhost,127.0.0.1,mqtts-authz
     ports:
       - "127.0.0.1:${TEST_MQTT_PORT:-1883}:1883"
-      - "127.0.0.1:${TEST_MQTT_WS_PORT:-8083}:8083"
-      - "127.0.0.1:${TEST_DASHBOARD_PORT:-18083}:18083"
+      - "127.0.0.1:${TEST_MQTT_WS_PORT:-8083}:1883"
     volumes:
-      - ./run/test-env/emqx.conf:/opt/emqx/etc/emqx.conf:ro
-      - ./run/test-env/emqx-acl.conf:/opt/emqx/etc/test-acl.conf:ro
-      - emqx_data:/opt/emqx/data
-      - emqx_log:/opt/emqx/log
+      - ./broker/mqtts/mqtts.yaml:/app/config/mqtts.yaml:ro
+      - mqtts_data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD-SHELL", "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1883"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 18
 
   storage:
@@ -100,8 +104,8 @@ services:
       - /bin/sh
       - -c
       - |
-        export NO_PROXY="$${NO_PROXY:+$$NO_PROXY,}localhost,127.0.0.1,postgres,redis,emqx,storage,backend,frontend,proxy"
-        export no_proxy="$${no_proxy:+$$no_proxy,}localhost,127.0.0.1,postgres,redis,emqx,storage,backend,frontend,proxy"
+        export NO_PROXY="$${NO_PROXY:+$$NO_PROXY,}localhost,127.0.0.1,postgres,redis,mqtts,storage,backend,frontend,proxy"
+        export no_proxy="$${no_proxy:+$$no_proxy,}localhost,127.0.0.1,postgres,redis,mqtts,storage,backend,frontend,proxy"
         exec /app/bin/test-server
     env_file: [./.env.test]
     environment:
@@ -109,7 +113,10 @@ services:
       DATABASE_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      MQTT_BROKER: tcp://emqx:1883
+      MQTT_BROKER: tcp://mqtts:1883
+      BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
     ports:
       - "127.0.0.1:${TEST_API_PORT:-8080}:8080"
     volumes:
@@ -118,10 +125,46 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-      emqx: { condition: service_healthy }
       storage: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+
+  message-ingest:
+    image: ${TEST_NODE_IMAGE:-mirror.gcr.io/library/node:22-bookworm-slim}
+    restart: unless-stopped
+    working_dir: /app/backend
+    command:
+      - /bin/sh
+      - -c
+      - |
+        export NO_PROXY="$${NO_PROXY:+$$NO_PROXY,}localhost,127.0.0.1,postgres,redis,mqtts,storage,backend,frontend,proxy"
+        export no_proxy="$${no_proxy:+$$no_proxy,}localhost,127.0.0.1,postgres,redis,mqtts,storage,backend,frontend,proxy"
+        exec /app/bin/test-message-ingest
+    env_file: [./.env.test]
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      MQTT_BROKER: tcp://mqtts:1883
+      MQTT_CLIENT_ID: openclaw-test-message-ingest
+      MQTT_USERNAME: openclaw-test-message-ingest
+      MQTT_PASSWORD: ${INGEST_MQTT_PASSWORD:?Set a separate ingest password}
+      INGEST_LISTEN: 0.0.0.0:8081
+      INGEST_SPOOL_PATH: /data/messages.db
+      BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
+    volumes:
+      - message_ingest:/data
+      - ./backend/bin:/app/bin:ro
+      - ./backend/config.yaml:/app/backend/config.yaml:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      storage: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 18
@@ -154,6 +197,8 @@ services:
     working_dir: /app/scripts/test-environment
     command: ["node", "proxy.mjs"]
     env_file: [./.env.test]
+    environment:
+      TEST_BROKER_WS_TARGET: http://mqtts:1883
     volumes:
       - ./scripts/test-environment:/app/scripts/test-environment:ro
     ports:
@@ -175,6 +220,7 @@ services:
     command: ["node", "echo-bot.mjs"]
     environment:
       TEST_STATE_DIR: /state
+      TEST_BROKER_TCP_URL: mqtt://mqtts:1883
     volumes:
       - ./scripts/test-environment:/app/scripts/test-environment:ro
       - ./run/test-env:/state
@@ -187,8 +233,9 @@ services:
       retries: 12
 
 volumes:
+  mqtts_data:
+  message_ingest:
+  mqtts_authz_data:
   postgres_data:
   redis_data:
-  emqx_data:
-  emqx_log:
   seaweed_data:

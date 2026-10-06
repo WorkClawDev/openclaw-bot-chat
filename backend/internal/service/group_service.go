@@ -10,12 +10,13 @@ import (
 )
 
 var (
-	ErrGroupNotFound    = errors.New("group not found")
-	ErrNotGroupOwner    = errors.New("you are not the owner of this group")
-	ErrNotGroupMember   = errors.New("you are not a member of this group")
-	ErrGroupFull        = errors.New("group has reached maximum members")
-	ErrAlreadyMember    = errors.New("user is already a member of this group")
-	ErrAlreadyBotMember = errors.New("bot is already a member of this group")
+	ErrGroupNotFound     = errors.New("group not found")
+	ErrNotGroupOwner     = errors.New("you are not the owner of this group")
+	ErrNotGroupMember    = errors.New("you are not a member of this group")
+	ErrGroupFull         = errors.New("group has reached maximum members")
+	ErrAlreadyMember     = errors.New("user is already a member of this group")
+	ErrInvalidMemberRole = errors.New("invalid group member role")
+	ErrAlreadyBotMember  = errors.New("bot is already a member of this group")
 )
 
 // GroupService handles group operations
@@ -190,6 +191,18 @@ func (s *GroupService) AddMember(ctx context.Context, groupID, requesterID uuid.
 		return err
 	}
 
+	if (req.UserID == nil) == (req.BotID == nil) {
+		return ErrInvalidMemberRole
+	}
+	if req.Role == "" {
+		req.Role = model.GroupRoleMember
+	}
+	if req.Role != model.GroupRoleMember && req.Role != model.GroupRoleAdmin {
+		return ErrInvalidMemberRole
+	}
+	if req.Role == model.GroupRoleAdmin && (group.OwnerID != requesterID || req.BotID != nil) {
+		return ErrNotGroupOwner
+	}
 	if req.UserID != nil {
 		// Check if already a member
 		exists, err := s.groupRepo.IsMember(ctx, groupID, *req.UserID)
@@ -314,8 +327,11 @@ func (s *GroupService) RemoveMember(ctx context.Context, groupID, targetID, requ
 	if group.OwnerID != requesterID && requesterMember.Role != model.GroupRoleAdmin && targetID != requesterID {
 		return ErrNotGroupOwner
 	}
-	if member.Role == model.GroupRoleOwner {
-		return errors.New("cannot remove the owner from the group")
+	if targetID == group.OwnerID || member.Role == model.GroupRoleOwner {
+		return ErrNotGroupOwner
+	}
+	if member.Role == model.GroupRoleAdmin && requesterID != group.OwnerID && requesterID != targetID {
+		return ErrNotGroupOwner
 	}
 	if err := s.groupRepo.RemoveMember(ctx, groupID, targetID); err != nil {
 		return err
@@ -372,4 +388,23 @@ func (s *GroupService) GetMemberCounts(ctx context.Context, groupIDs []uuid.UUID
 		counts[groupID] = count
 	}
 	return counts, nil
+}
+
+// CanRead checks metadata and member lists as well as message history.
+func (s *GroupService) CanRead(ctx context.Context, groupID, userID uuid.UUID) error {
+	group, err := s.GetByID(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	if group.OwnerID == userID {
+		return nil
+	}
+	member, err := s.groupRepo.IsMember(ctx, groupID, userID)
+	if err != nil {
+		return err
+	}
+	if !member {
+		return ErrNotGroupMember
+	}
+	return nil
 }

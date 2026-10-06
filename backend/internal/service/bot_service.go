@@ -314,6 +314,9 @@ func (s *BotService) ValidateKey(ctx context.Context, rawKey string) (*model.Bot
 	if err != nil {
 		return nil, ErrBotNotFound
 	}
+	if bot.Status != model.BotStatusEnabled || !bot.Owner.IsActive() {
+		return nil, ErrInvalidCredentials
+	}
 	return bot, nil
 }
 

@@ -22,21 +22,36 @@ services:
       interval: 5s
       timeout: 3s
       retries: 15
-  emqx:
-    image: emqx/emqx:5.8.5
-    command: ["/bin/sh", "/opt/emqx/etc/personal-agent-start.sh"]
-    secrets: [broker-token, dashboard-key, node-cookie, backend-password]
-    volumes:
-      - ./emqx.conf.template:/opt/emqx/etc/personal-agent.conf.template:ro
-      - ./emqx-start.sh:/opt/emqx/etc/personal-agent-start.sh:ro
-      - emqx:/opt/emqx/data
-    ports: ["127.0.0.1:1885:1883", "127.0.0.1:8085:8083"]
+  mqtts-authz:
+    profiles: [broker]
+    image: ${MQTTS_AUTHZ_IMAGE:-mqtts-authz:local}
+    secrets: [broker-token, authz-admin-token]
     environment:
-      EMQX_NODE__NAME: emqx@127.0.0.1
+      AUTHZ_INSECURE: "true"
+      AUTHZ_QUERY_TOKEN_FILE: /run/secrets/broker-token
+      AUTHZ_ADMIN_TOKEN_FILE: /run/secrets/authz-admin-token
+    volumes: ["mqtts_authz:/data"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  mqtts:
+    profiles: [broker]
+    image: ${MQTTS_IMAGE:-mqtts:local}
+    secrets: [broker-token]
+    volumes:
+      - ./mqtts.yaml:/app/config/mqtts.yaml:ro
+      - mqtts_data:/data
+    ports: ["127.0.0.1:1885:1883", "127.0.0.1:8085:1883"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      NO_PROXY: localhost,127.0.0.1,mqtts-authz
+      no_proxy: localhost,127.0.0.1,mqtts-authz
     healthcheck:
-      test: [CMD-SHELL, "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
-      interval: 15s
-      timeout: 5s
+      test: [CMD-SHELL, "nc -z 127.0.0.1 1883"]
+      interval: 5s
+      timeout: 3s
       retries: 15
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
@@ -63,26 +78,28 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:size=32m,mode=1777"]
-    secrets: [db-password, jwt-key, backend-password, broker-token, storage-key]
+    secrets: [db-password, jwt-key, backend-password, authz-admin-token, storage-key]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-      emqx: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
     ports: ["127.0.0.1:18080:8080"]
     environment:
-      PERSONAL_AGENT_SECRET_BINDINGS: DATABASE_PASSWORD:db-password JWT_SECRET:jwt-key MQTT_PASSWORD:backend-password BROKER_SECURITY_CALLBACK_TOKEN:broker-token STORAGE_S3_SECRET_KEY:storage-key
+      PERSONAL_AGENT_SECRET_BINDINGS: DATABASE_PASSWORD:db-password JWT_SECRET:jwt-key MQTT_PASSWORD:backend-password BROKER_SECURITY_ADMIN_TOKEN:authz-admin-token STORAGE_S3_SECRET_KEY:storage-key
       APP_MODE: debug
       DATABASE_HOST: postgres
       DATABASE_USER: agent
       DATABASE_DBNAME: personal_agent
       REDIS_HOST: redis
-      MQTT_BROKER: tcp://emqx:1883
+      MQTT_BROKER: ${MQTT_BROKER:-tcp://mqtts:1883}
       MQTT_CLIENT_ID: personal-agent-backend
       MQTT_USERNAME: personal-agent-backend
-      MQTT_TCP_PUBLIC_URL: mqtt://127.0.0.1:1885
-      MQTT_WS_PUBLIC_URL: ws://127.0.0.1:8085/mqtt
+      MQTT_TCP_PUBLIC_URL: ${MQTT_TCP_PUBLIC_URL:-mqtt://127.0.0.1:1885}
+      MQTT_WS_PUBLIC_URL: ${MQTT_WS_PUBLIC_URL:-ws://127.0.0.1:8085/mqtt}
+      BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
       BROKER_SECURITY_SESSION_TTL_SECONDS: 300
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
       AUTH_PHONE_ENABLED: "false"
       STORAGE_PROVIDER: s3
       STORAGE_PRIVATE_READ: "true"
@@ -95,6 +112,53 @@ services:
       LOG_LEVEL: info
     healthcheck:
       test: [CMD-SHELL, "wget -Y off -q -O /dev/null http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+  message-ingest:
+    build:
+      context: ../..
+      dockerfile: deploy/personal-agent/backend.Dockerfile
+      target: message-ingest
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    secrets: [db-password, ingest-password, authz-admin-token, storage-key]
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    volumes: ["message_ingest:/data"]
+    restart: unless-stopped
+    environment:
+      PERSONAL_AGENT_SECRET_BINDINGS: DATABASE_PASSWORD:db-password MQTT_PASSWORD:ingest-password BROKER_SECURITY_ADMIN_TOKEN:authz-admin-token STORAGE_S3_SECRET_KEY:storage-key
+      APP_MODE: debug
+      DATABASE_HOST: postgres
+      DATABASE_USER: agent
+      DATABASE_DBNAME: personal_agent
+      MQTT_BROKER: ${MQTT_BROKER:-tcp://mqtts:1883}
+      INGEST_WORKERS: ${INGEST_WORKERS:-4}
+      INGEST_MAX_BYTES: ${INGEST_MAX_BYTES:-268435456}
+      INGEST_MAX_MESSAGES: ${INGEST_MAX_MESSAGES:-100000}
+      INGEST_MAX_PAYLOAD_BYTES: ${INGEST_MAX_PAYLOAD_BYTES:-1048576}
+      MQTT_CLIENT_ID: personal-agent-message-ingest
+      MQTT_USERNAME: personal-agent-message-ingest
+      BROKER_SECURITY_ADDRESS: ${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      BROKER_SECURITY_INSECURE: ${BROKER_SECURITY_INSECURE:-true}
+      BROKER_SECURITY_SESSION_TTL_SECONDS: 300
+      BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY: "true"
+      STORAGE_PROVIDER: s3
+      STORAGE_PRIVATE_READ: "true"
+      STORAGE_S3_ENDPOINT: minio:9000
+      STORAGE_S3_PUBLIC_ENDPOINT: 127.0.0.1:19000
+      STORAGE_S3_BUCKET: personal-agent
+      STORAGE_S3_REGION: us-east-1
+      STORAGE_S3_ACCESS_KEY: personal-agent-storage
+      STORAGE_S3_SSL: "false"
+      LOG_LEVEL: info
+    healthcheck:
+      test: [CMD-SHELL, "wget -Y off -q -O /dev/null http://127.0.0.1:8081/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -140,7 +204,7 @@ services:
     environment:
       PERSONAL_AGENT_SECRET_BINDINGS: BOT_CHAT_BOT_KEY:bot-key OPENAI_COMPAT_API_KEY:model-key
       BOT_CHAT_BACKEND_URL: http://backend:8080
-      BOT_CHAT_MQTT_TCP_URL: mqtt://emqx:1883
+      BOT_CHAT_MQTT_TCP_URL: ${MQTT_WORKER_URL:-mqtt://mqtts:1883}
       OPENAI_COMPAT_WORKSPACE_ID: personal-agent-workspace
       OPENCLAW_STATE_DIR: /state
       OPENCLAW_AGENT_HANDLER: /app/examples/openai-compatible-handler.cjs
@@ -160,19 +224,21 @@ services:
       worker-init: {condition: service_completed_successfully}
     restart: unless-stopped
 secrets:
-  dashboard-key: {file: ./.runtime/dashboard-key}
-  node-cookie: {file: ./.runtime/node-cookie}
   db-password: {file: ./.runtime/db-password}
   jwt-key: {file: ./.runtime/jwt-key}
   backend-password: {file: ./.runtime/backend-password}
+  ingest-password: {file: ./.runtime/ingest-password}
+  authz-admin-token: {file: ./.runtime/authz-admin-token}
   broker-token: {file: ./.runtime/broker-token}
   storage-key: {file: ./.runtime/storage-key}
   bot-key: {file: ./.runtime/bot-key}
   model-key: {file: ./.runtime/model-key}
 volumes:
+  mqtts_data:
+  message_ingest: {}
+  mqtts_authz: {}
   postgres: {}
   redis: {}
   assets: {}
-  emqx: {}
   state: {}
   output: {}

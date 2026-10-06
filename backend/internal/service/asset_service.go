@@ -228,6 +228,15 @@ func (s *AssetService) getPublicAssetURL(ctx context.Context, assetID string, ki
 	if asset.Status != model.AssetStatusReady {
 		return "", ErrAssetNotReady
 	}
+	if s.storageCfg.PrivateRead {
+		public, err := s.repo.IsPublicAvatar(ctx, asset)
+		if err != nil {
+			return "", err
+		}
+		if !public {
+			return "", ErrAssetAccessDenied
+		}
+	}
 
 	payload, err := s.buildAssetPayload(ctx, asset)
 	if err != nil {

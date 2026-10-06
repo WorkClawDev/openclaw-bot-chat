@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
+	"github.com/openclaw-bot-chat/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 var (
@@ -73,14 +75,53 @@ func (s *MessageService) CanBotAccessConversation(ctx context.Context, botID uui
 	}
 }
 
+func (s *MessageService) accessibleUserConversations(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
+	const pageSize = 200
+	topics := make([]string, 0)
+	seen := make(map[string]bool)
+	var cursor *repository.ConversationCandidate
+	for {
+		candidates, err := s.msgRepo.GetConversationCandidates(ctx, userID, nil, pageSize, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range candidates {
+			topic := candidate.ConversationID
+			if seen[topic] {
+				continue
+			}
+			seen[topic] = true
+			err := s.CanUserAccessConversation(ctx, userID, topic)
+			if errors.Is(err, ErrConversationAccessDenied) || errors.Is(err, ErrInvalidMessageRoute) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			topics = append(topics, topic)
+			if limit > 0 && len(topics) == limit {
+				return topics, nil
+			}
+		}
+		if len(candidates) < pageSize {
+			return topics, nil
+		}
+		cursor = &candidates[len(candidates)-1]
+	}
+}
+
 func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	topics := make([]string, 0, 32)
 
-	conversations, err := s.GetConversations(ctx, userID, 200)
+	conversations, err := s.accessibleUserConversations(ctx, userID, 0)
 	if err != nil {
 		return nil, err
 	}
-	topics = append(topics, conversations...)
+	for _, topic := range conversations {
+		if s.CanUserAccessConversation(ctx, userID, topic) == nil {
+			topics = append(topics, topic)
+		}
+	}
 
 	// A new bot has no message history yet, but its owner must be able to
 	// subscribe and publish the first DM using scoped broker credentials.
@@ -100,15 +141,19 @@ func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid
 		}
 	}
 
-	groups, _, err := s.groupRepo.ListByUser(ctx, userID, 1, 500)
-	if err != nil {
-		return nil, err
-	}
-	for _, group := range groups {
-		if !group.IsActive {
-			continue
+	for page := 1; ; page++ {
+		groups, total, err := s.groupRepo.ListByUser(ctx, userID, page, pageSize)
+		if err != nil {
+			return nil, err
 		}
-		topics = append(topics, fmt.Sprintf("%s/group/%s", messageTopicPrefix, group.ID.String()))
+		for _, group := range groups {
+			if group.IsActive {
+				topics = append(topics, fmt.Sprintf("%s/group/%s", messageTopicPrefix, group.ID.String()))
+			}
+		}
+		if len(groups) == 0 || int64(page*pageSize) >= total {
+			break
+		}
 	}
 
 	return uniqueSortedTopics(topics), nil
@@ -131,7 +176,9 @@ func (s *MessageService) ListBotRealtimeTopics(ctx context.Context, botID uuid.U
 		if parseMessageRoute(conversation).isDirect() {
 			continue
 		}
-		topics = append(topics, conversation)
+		if s.CanBotAccessConversation(ctx, botID, conversation) == nil {
+			topics = append(topics, conversation)
+		}
 	}
 
 	groups, err := s.ListGroupsForBot(ctx, botID)
@@ -182,7 +229,10 @@ func (s *MessageService) userMatchesDirectRoute(ctx context.Context, userID uuid
 func (s *MessageService) userOwnsBot(ctx context.Context, userID, botID uuid.UUID) (bool, error) {
 	bot, err := s.botRepo.GetByID(ctx, botID)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	return bot.OwnerID == userID, nil
 }
@@ -190,7 +240,10 @@ func (s *MessageService) userOwnsBot(ctx context.Context, userID, botID uuid.UUI
 func (s *MessageService) isUserGroupMember(ctx context.Context, userID, groupID uuid.UUID) (bool, error) {
 	group, err := s.groupRepo.GetByID(ctx, groupID)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	if !group.IsActive || group.OwnerID == userID {
 		return group.IsActive, nil
@@ -201,7 +254,10 @@ func (s *MessageService) isUserGroupMember(ctx context.Context, userID, groupID 
 func (s *MessageService) isBotGroupMember(ctx context.Context, groupID, botID uuid.UUID) (bool, error) {
 	group, err := s.groupRepo.GetByID(ctx, groupID)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
 	if !group.IsActive {
 		return false, nil

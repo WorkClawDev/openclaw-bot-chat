@@ -144,8 +144,17 @@ func newPhoneAuthServiceTestEnv(t *testing.T) phoneAuthServiceTestEnv {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("open test connection pool: %v", err)
+	}
+	// Shared-cache SQLite cannot coordinate the asynchronous audit writer with
+	// an account-access transaction on another connection. Serialize this test
+	// fixture; concurrent account updates are covered against real PostgreSQL.
+	sqlDB.SetMaxOpenConns(1)
 	if err := db.Exec(`
 		CREATE TABLE users (
+            token_version BIGINT NOT NULL DEFAULT 0,
 			id text PRIMARY KEY,
 			username text NOT NULL UNIQUE,
 			email text UNIQUE,
@@ -157,6 +166,7 @@ func newPhoneAuthServiceTestEnv(t *testing.T) phoneAuthServiceTestEnv {
 			nickname text,
 			avatar_url text,
 			status integer NOT NULL DEFAULT 1,
+			role text NOT NULL DEFAULT 'user',
 			is_deleted boolean NOT NULL DEFAULT false,
 			last_login_at datetime,
 			last_login_ip text,

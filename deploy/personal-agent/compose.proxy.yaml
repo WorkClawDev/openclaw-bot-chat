@@ -8,6 +8,13 @@ services:
       - ${PERSONAL_AGENT_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}:/run/proxy-ca.pem:ro
     environment:
       SSL_CERT_FILE: /run/proxy-ca.pem
+  message-ingest:
+    build:
+      secrets: [proxy_ca]
+    volumes:
+      - ${PERSONAL_AGENT_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}:/run/proxy-ca.pem:ro
+    environment:
+      SSL_CERT_FILE: /run/proxy-ca.pem
   frontend:
     build:
       secrets: [proxy_ca]

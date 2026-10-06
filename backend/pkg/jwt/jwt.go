@@ -15,9 +15,10 @@ var (
 
 // Claims represents JWT claims
 type Claims struct {
-	UserID    uuid.UUID `json:"user_id"`
-	Username  string    `json:"username"`
-	TokenType string    `json:"token_type"` // "access" or "refresh"
+	TokenVersion int64     `json:"token_version,omitempty"`
+	UserID       uuid.UUID `json:"user_id"`
+	Username     string    `json:"username"`
+	TokenType    string    `json:"token_type"` // "access" or "refresh"
 	jwt.RegisteredClaims
 }
 
@@ -48,12 +49,13 @@ func NewManager(cfg Config) *Manager {
 }
 
 // GenerateAccessToken generates a new access token
-func (m *Manager) GenerateAccessToken(userID uuid.UUID, username string) (string, error) {
+func (m *Manager) GenerateAccessToken(userID uuid.UUID, username string, tokenVersion int64) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		UserID:    userID,
-		Username:  username,
-		TokenType: "access",
+		TokenVersion: tokenVersion,
+		UserID:       userID,
+		Username:     username,
+		TokenType:    "access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   userID.String(),
@@ -67,12 +69,13 @@ func (m *Manager) GenerateAccessToken(userID uuid.UUID, username string) (string
 }
 
 // GenerateRefreshToken generates a new refresh token
-func (m *Manager) GenerateRefreshToken(userID uuid.UUID, username string) (string, error) {
+func (m *Manager) GenerateRefreshToken(userID uuid.UUID, username string, tokenVersion int64) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		UserID:    userID,
-		Username:  username,
-		TokenType: "refresh",
+		TokenVersion: tokenVersion,
+		UserID:       userID,
+		Username:     username,
+		TokenType:    "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   userID.String(),
@@ -86,12 +89,12 @@ func (m *Manager) GenerateRefreshToken(userID uuid.UUID, username string) (strin
 }
 
 // GenerateTokenPair generates both access and refresh tokens
-func (m *Manager) GenerateTokenPair(userID uuid.UUID, username string) (accessToken, refreshToken string, err error) {
-	accessToken, err = m.GenerateAccessToken(userID, username)
+func (m *Manager) GenerateTokenPair(userID uuid.UUID, username string, tokenVersion int64) (accessToken, refreshToken string, err error) {
+	accessToken, err = m.GenerateAccessToken(userID, username, tokenVersion)
 	if err != nil {
 		return "", "", err
 	}
-	refreshToken, err = m.GenerateRefreshToken(userID, username)
+	refreshToken, err = m.GenerateRefreshToken(userID, username, tokenVersion)
 	if err != nil {
 		return "", "", err
 	}

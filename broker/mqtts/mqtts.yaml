@@ -1,0 +1,64 @@
+server:
+  bind_address: "0.0.0.0"
+  port: 1883
+  thread_count: 2
+  max_connections: 1000
+mqtt:
+  allow_mqtt3x: true
+  max_packet_size: 1048576
+memory:
+  client_max_size: 4194304
+monitoring:
+  enabled: false
+log:
+  level: warn
+auth:
+  enabled: true
+  allow_anonymous: false
+  cache_enabled: false
+  providers:
+    - type: grpc
+      settings:
+        endpoint: mqtts-authz:50051
+        insecure: true
+        token_env: MQTTS_AUTHZ_QUERY_TOKEN
+        timeout_ms: 500
+        batch_max_requests: 32
+        batch_max_bytes: 4194304
+        batch_wait_ms: 1
+        rpc_workers: 4
+        # Admit a reconnect burst; byte and deadline limits still bound waiting work.
+        rpc_queue_capacity: 1024
+        rpc_queue_bytes: 16777216
+        failure_cooldown_ms: 1000
+        cache_ttl_ms: 10000
+        cache_max_age_ms: 300000
+        cache_max_entries: 16384
+        cache_version_interval_ms: 250
+        # Only these fields are irrelevant to projected rules. Identity,
+        # topic/conversation, unknown fields and aliases remain in the cache key.
+        publish_cache_ignored_fields: '["id","timestamp","content"]'
+        # Raw bytes; the generic authorization module evaluates projected bindings.
+        publish_payload: bytes
+        max_payload_bytes: 1048576
+
+# Independent broker spool: preserve this volume across restarts and upgrades.
+persistence:
+  enabled: true
+  path: /data/sessions.db # Directory; migrate legacy SQLite before upgrade.
+  partitions: 4
+  segment_bytes: 16777216
+  max_disk_bytes: 4294967296
+  checkpoint_interval_ms: 30000
+  max_session_expiry_seconds: 86400
+  max_sessions: 10000
+  max_subscriptions_per_session: 128
+  max_messages: 100000
+  max_messages_per_session: 10000
+  max_bytes_per_session: 33554432
+  # Ingestion has no independent source for skipped records: preserve complete fanout.
+  overflow_policy: reject
+  max_bytes: 268435456
+  max_requests: 1024
+  max_request_bytes: 16777216
+  max_inflight: 32

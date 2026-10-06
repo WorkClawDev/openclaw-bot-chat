@@ -5,7 +5,7 @@ const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: false });
 const bucketPrefix = `/${process.env.STORAGE_S3_BUCKET}/`;
 function target(url) {
   const path = new URL(url, 'http://test.local').pathname;
-  if (path === '/mqtt') return 'http://emqx:8083';
+  if (path === '/mqtt') return process.env.TEST_BROKER_WS_TARGET || 'http://mqtts:1883';
   if (path.startsWith(bucketPrefix) || path === bucketPrefix.slice(0, -1)) return 'http://storage:9000';
   if (path === '/health' || path.startsWith('/health/') || path.startsWith('/api/')) return 'http://backend:8080';
   return 'http://frontend:3000';

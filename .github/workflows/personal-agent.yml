@@ -44,3 +44,4 @@ jobs:
             run/agent-chat-ui/playwright/
             run/agent-chat-ui/browser-results.json
             run/agent-chat-performance/
+            run/mqtts-permissions/*.png

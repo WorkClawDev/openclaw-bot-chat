@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "repository": "ChangerR/mqtts",
+  "source_revision": "2c3e159028b2a115bb335b271beae98026353b6e",
+  "workflow_run_id": 37305258747,
+  "artifact_name": "mqtts-image-2c3e159028b2a115bb335b271beae98026353b6e-linux-amd64",
+  "grpc_auth_contract": 1,
+  "authz_proto_sha256": "154bf9f257cab91982819291227aa59abd63511e26c52d2b4d2cf3c59e8421af",
+  "durable_sessions_contract": 4
+}

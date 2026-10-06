@@ -26,32 +26,39 @@ services:
       timeout: 5s
       retries: 5
 
-  emqx:
-    image: emqx/emqx:5.8.5
-    ports:
-      - "${MQTT_TCP_PORT_MAPPING:-1883:1883}"
-      - "${MQTT_WS_PORT_MAPPING:-8083:8083}"
-      - "${EMQX_DASHBOARD_PORT_MAPPING:-18083:18083}"
+  mqtts-authz:
+    profiles: [broker]
+    image: ${MQTTS_AUTHZ_IMAGE:-mqtts-authz:local}
     environment:
-      EMQX_NODE__NAME: emqx@127.0.0.1
-      EMQX_LOG__CONSOLE_HANDLER__LEVEL: warning
-      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USERNAME:-admin}
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
-      MQTT_USERNAME: ${MQTT_USERNAME:-openclaw_backend}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me-in-production}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        printf 'user_id,password,is_superuser\n%s,%s,false\n' "$$MQTT_USERNAME" "$$MQTT_PASSWORD" > /opt/emqx/etc/auth-built-in-db-bootstrap.csv
-        exec /opt/emqx/bin/emqx foreground
+      AUTHZ_INSECURE: "true"
+      AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN}
+      AUTHZ_ADMIN_TOKEN: ${BROKER_SECURITY_ADMIN_TOKEN}
+    volumes: ["mqtts_authz_data:/data"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  mqtts:
+    profiles: [broker]
+    image: ${MQTTS_IMAGE:-mqtts:local}
+    ports:
+      - "${MQTT_TCP_PORT_MAPPING:-127.0.0.1:1883:1883}"
+      - "${MQTT_WS_PORT_MAPPING:-127.0.0.1:8083:1883}"
+    environment:
+      MQTTS_AUTHZ_QUERY_TOKEN: ${MQTTS_AUTHZ_QUERY_TOKEN:-}
+      NO_PROXY: localhost,127.0.0.1,mqtts-authz
+      no_proxy: localhost,127.0.0.1,mqtts-authz
     volumes:
-      - ./broker/emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
+      - ./broker/mqtts/mqtts.yaml:/app/config/mqtts.yaml:ro
+      - mqtts_data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD-SHELL", "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1883"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   minio:
     image: minio/minio:latest
@@ -92,8 +99,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      emqx:
-        condition: service_healthy
     volumes:
       - ./backend/config.yaml:/app/config.yaml
     environment:
@@ -105,13 +110,19 @@ services:
       - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - MQTT_BROKER=tcp://emqx:1883
+      - MQTT_BROKER=${MQTT_BROKER:-tcp://mqtts:1883}
+      - MQTT_CLIENT_ID=${MQTT_CLIENT_ID:-openclaw-backend}
+      - BROKER_SECURITY_ADDRESS=${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      - BROKER_SECURITY_INSECURE=${BROKER_SECURITY_INSECURE:-true}
+      - BROKER_SECURITY_ADMIN_TOKEN=${BROKER_SECURITY_ADMIN_TOKEN}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1},mqtts-authz
+      - BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true
       - MQTT_USERNAME=${MQTT_USERNAME:-openclaw_backend}
-      - MQTT_PASSWORD=${MQTT_PASSWORD:-change-me-in-production}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:?Set a random server password of at least 32 characters}
       - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-chat}
       - MQTT_TCP_PUBLIC_URL=${MQTT_TCP_PUBLIC_URL:-mqtt://127.0.0.1:1883}
       - MQTT_WS_PUBLIC_URL=${MQTT_WS_PUBLIC_URL:-ws://127.0.0.1:8083/mqtt}
-      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - JWT_SECRET=${JWT_SECRET:?Set an independent random JWT secret of at least 32 characters}
       - APP_MODE=${APP_MODE:-release}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - STORAGE_PROVIDER=${STORAGE_PROVIDER:-s3}
@@ -138,7 +149,66 @@ services:
       - STORAGE_S3_SSL=${STORAGE_S3_SSL:-false}
       - ASSET_MAX_IMAGE_SIZE_MB=${ASSET_MAX_IMAGE_SIZE_MB:-10}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health | grep -q '\"status\":\"ok\"'"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health/ready | grep -q '\"status\":\"ready\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  message-ingest:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: message-ingest
+    restart: unless-stopped
+    volumes:
+      - ./backend/config.yaml:/app/config.yaml:ro
+      - message_ingest_data:/data
+    environment:
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DATABASE_USER:-postgres}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-postgres}
+      - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
+      - MQTT_BROKER=${MQTT_BROKER:-tcp://mqtts:1883}
+      - BROKER_SECURITY_ADDRESS=${BROKER_SECURITY_ADDRESS:-mqtts-authz:50051}
+      - BROKER_SECURITY_INSECURE=${BROKER_SECURITY_INSECURE:-true}
+      - BROKER_SECURITY_ADMIN_TOKEN=${BROKER_SECURITY_ADMIN_TOKEN}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1},mqtts-authz
+      - BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true
+      - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-chat}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-s3}
+      - STORAGE_BUCKET=${STORAGE_BUCKET:-}
+      - STORAGE_REGION=${STORAGE_REGION:-}
+      - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-}
+      - STORAGE_PUBLIC_BASE_URL=${STORAGE_PUBLIC_BASE_URL:-}
+      - STORAGE_PRIVATE_READ=${STORAGE_PRIVATE_READ:-true}
+      - STORAGE_UPLOAD_URL_TTL=${STORAGE_UPLOAD_URL_TTL:-900}
+      - STORAGE_DOWNLOAD_URL_TTL=${STORAGE_DOWNLOAD_URL_TTL:-900}
+      - STORAGE_KEY_PREFIX=${STORAGE_KEY_PREFIX:-chat-assets}
+      - STORAGE_COS_SECRET_ID=${STORAGE_COS_SECRET_ID:-}
+      - STORAGE_COS_SECRET_KEY=${STORAGE_COS_SECRET_KEY:-}
+      - STORAGE_COS_SESSION_TOKEN=${STORAGE_COS_SESSION_TOKEN:-}
+      - STORAGE_OSS_ACCESS_KEY_ID=${STORAGE_OSS_ACCESS_KEY_ID:-}
+      - STORAGE_OSS_ACCESS_KEY_SECRET=${STORAGE_OSS_ACCESS_KEY_SECRET:-}
+      - STORAGE_OSS_SECURITY_TOKEN=${STORAGE_OSS_SECURITY_TOKEN:-}
+      - STORAGE_S3_ENDPOINT=${STORAGE_S3_ENDPOINT:-minio:9000}
+      - STORAGE_S3_PUBLIC_ENDPOINT=${STORAGE_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:9000}
+      - STORAGE_S3_REGION=${STORAGE_S3_REGION:-us-east-1}
+      - STORAGE_S3_BUCKET=${STORAGE_S3_BUCKET:-openclaw-assets}
+      - STORAGE_S3_ACCESS_KEY=${STORAGE_S3_ACCESS_KEY:-minioadmin}
+      - STORAGE_S3_SECRET_KEY=${STORAGE_S3_SECRET_KEY:-minioadmin}
+      - STORAGE_S3_SSL=${STORAGE_S3_SSL:-false}
+      - ASSET_MAX_IMAGE_SIZE_MB=${ASSET_MAX_IMAGE_SIZE_MB:-10}
+      - MQTT_CLIENT_ID=${INGEST_MQTT_CLIENT_ID:-openclaw-message-ingest}
+      - MQTT_USERNAME=${INGEST_MQTT_USERNAME:-openclaw_message_ingest}
+      - MQTT_PASSWORD=${INGEST_MQTT_PASSWORD:?Set a separate ingest password of at least 32 characters}
+      - INGEST_WORKERS=${INGEST_WORKERS:-4}
+      - INGEST_MAX_BYTES=${INGEST_MAX_BYTES:-268435456}
+      - INGEST_MAX_MESSAGES=${INGEST_MAX_MESSAGES:-100000}
+      - INGEST_MAX_PAYLOAD_BYTES=${INGEST_MAX_PAYLOAD_BYTES:-1048576}
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- http://127.0.0.1:8081/health/ready > /dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -160,6 +230,9 @@ services:
       - NODE_ENV=production
 
 volumes:
+  mqtts_data:
+  message_ingest_data:
+  mqtts_authz_data:
   postgres_data:
   redis_data:
   minio_data:

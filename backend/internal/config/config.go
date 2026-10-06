@@ -10,6 +10,7 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
+	Ingest         IngestConfig
 	BrokerSecurity BrokerSecurityConfig `mapstructure:"broker_security"`
 	App            AppConfig
 	Database       DatabaseConfig
@@ -24,9 +25,26 @@ type Config struct {
 	Log            LogConfig
 }
 
+// IngestConfig bounds the independent consumer's work and durable backlog.
+type IngestConfig struct {
+	Listen          string `mapstructure:"listen"`
+	SpoolPath       string `mapstructure:"spool_path"`
+	Workers         int    `mapstructure:"workers"`
+	MaxBytes        int64  `mapstructure:"max_bytes"`
+	MaxMessages     int64  `mapstructure:"max_messages"`
+	MaxPayloadBytes int    `mapstructure:"max_payload_bytes"`
+}
+
 type BrokerSecurityConfig struct {
-	CallbackToken     string `mapstructure:"callback_token"`
-	SessionTTLSeconds int    `mapstructure:"session_ttl_seconds"`
+	RequireMessageIdentity bool   `mapstructure:"require_message_identity"`
+	Address                string `mapstructure:"address"`
+	AdminToken             string `mapstructure:"admin_token"`
+	Namespace              string `mapstructure:"namespace"`
+	Insecure               bool   `mapstructure:"insecure"`
+	CAFile                 string `mapstructure:"ca_file"`
+	CertFile               string `mapstructure:"cert_file"`
+	KeyFile                string `mapstructure:"key_file"`
+	SessionTTLSeconds      int    `mapstructure:"session_ttl_seconds"`
 }
 
 // AppConfig holds application-level settings
@@ -70,6 +88,10 @@ type MQTTConfig struct {
 	ReconnectDelay int    `mapstructure:"reconnect_delay"`
 	TCPPublicURL   string `mapstructure:"tcp_public_url"`
 	WSPublicURL    string `mapstructure:"ws_public_url"`
+	TLSCAFile      string `mapstructure:"tls_ca_file"`
+	TLSCertFile    string `mapstructure:"tls_cert_file"`
+	TLSKeyFile     string `mapstructure:"tls_key_file"`
+	TLSServerName  string `mapstructure:"tls_server_name"`
 }
 
 type BrokerClientConfig struct {
@@ -200,6 +222,12 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.SetDefault("broker_security.session_ttl_seconds", 300)
+	v.SetDefault("ingest.listen", "127.0.0.1:8081")
+	v.SetDefault("ingest.spool_path", "data/message-ingest.db")
+	v.SetDefault("ingest.workers", 4)
+	v.SetDefault("ingest.max_bytes", 256*1024*1024)
+	v.SetDefault("ingest.max_messages", 100000)
+	v.SetDefault("ingest.max_payload_bytes", 1024*1024)
 	v.SetDefault("auth.phone.enabled", true)
 	v.SetDefault("auth.phone.allowed_country_codes", []string{"86"})
 	v.SetDefault("auth.phone.code_ttl_seconds", 300)
@@ -213,8 +241,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("captcha.provider", "mock")
 	v.SetDefault("captcha.turnstile.endpoint", "https://challenges.cloudflare.com/turnstile/v0/siteverify")
 	bindEnvKeys(v,
-		"broker_security.callback_token",
+		"broker_security.address", "broker_security.admin_token", "broker_security.namespace", "broker_security.insecure", "broker_security.ca_file", "broker_security.cert_file", "broker_security.key_file",
 		"broker_security.session_ttl_seconds",
+		"broker_security.require_message_identity",
 		"app.host",
 		"app.port",
 		"app.mode",
@@ -242,6 +271,10 @@ func Load(configPath string) (*Config, error) {
 		"mqtt.reconnect_delay",
 		"mqtt.tcp_public_url",
 		"mqtt.ws_public_url",
+		"mqtt.tls_ca_file",
+		"mqtt.tls_cert_file",
+		"mqtt.tls_key_file",
+		"mqtt.tls_server_name",
 		"jwt.secret",
 		"jwt.access_token_ttl",
 		"jwt.refresh_token_ttl",
