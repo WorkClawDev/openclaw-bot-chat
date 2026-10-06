@@ -4,7 +4,7 @@ import {
   type BotChatCredentialStatus,
   type InspectedBotChatAccount,
 } from "./channel-api.js";
-import { normalizeBotChatConfig, resolveDefaultBotChatAccountId } from "./runtime.js";
+import { normalizeBotChatConfig, resolveDefaultBotChatAccountId } from "./config.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

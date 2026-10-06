@@ -18,6 +18,7 @@ export const BotChatChannelConfigSchema: Record<string, unknown> = {
     permissionApprovalUrl: { type: 'string', minLength: 1 },
     permissionApprovalTimeoutMs: { type: 'number', minimum: 1 },
     permissionDeniedReply: { type: 'string', minLength: 1 },
+    taskPollingIntervalMs: { type: 'number', minimum: 1000 },
   },
 };
 

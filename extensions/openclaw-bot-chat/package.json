@@ -1,6 +1,6 @@
 {
   "name": "@workclawdev/extension-bot-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "OpenClaw extension for BotChat bridge (MQTT + permission approval)",
   "main": "dist/index.js",
@@ -14,7 +14,8 @@
     "examples/**",
     "README.md",
     "config.example.json",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "skills/**"
   ],
   "publishConfig": {
     "access": "public"
@@ -23,7 +24,7 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.4.20"
+    "openclaw": ">=2026.5.26"
   },
   "peerDependenciesMeta": {
     "openclaw": {
@@ -47,21 +48,88 @@
       "configuredState": {
         "specifier": "./dist/configured-state.js",
         "exportName": "hasBotChatConfiguredState"
+      },
+      "setup": {
+        "fields": [
+          {
+            "key": "backendUrl",
+            "kind": "string",
+            "cli": {
+              "flags": "--backend-url <url>",
+              "description": "BotChat backend URL"
+            }
+          },
+          {
+            "key": "botKey",
+            "kind": "string",
+            "sensitive": true,
+            "cli": {
+              "flags": "--bot-key <key>",
+              "description": "BotChat bot key"
+            }
+          },
+          {
+            "key": "botId",
+            "kind": "string",
+            "cli": {
+              "flags": "--bot-id <id>",
+              "description": "BotChat bot id"
+            }
+          },
+          {
+            "key": "mqttTcpUrl",
+            "kind": "string",
+            "cli": {
+              "flags": "--mqtt-tcp-url <url>",
+              "description": "MQTT TCP broker URL"
+            }
+          },
+          {
+            "key": "mqttWsUrl",
+            "kind": "string",
+            "cli": {
+              "flags": "--mqtt-ws-url <url>",
+              "description": "MQTT WebSocket broker URL"
+            }
+          },
+          {
+            "key": "useEnv",
+            "kind": "boolean",
+            "cli": {
+              "flags": "--use-env",
+              "description": "Use BOT_CHAT_* environment variables"
+            },
+            "envVars": [
+              "BOT_CHAT_BACKEND_URL",
+              "BOT_CHAT_BOT_KEY",
+              "BOT_CHAT_BOT_ID",
+              "BOT_CHAT_MQTT_TCP_URL",
+              "BOT_CHAT_MQTT_WS_URL"
+            ]
+          }
+        ]
+      },
+      "commands": {
+        "nativeCommandsAutoEnabled": true,
+        "nativeSkillsAutoEnabled": true
+      },
+      "doctorCapabilities": {
+        "dmAllowFromMode": "topOnly",
+        "groupModel": "sender",
+        "groupAllowFromFallbackToAllowFrom": true,
+        "warnOnEmptyGroupSenderAllowlist": false
       }
     },
     "install": {
       "npmSpec": "@workclawdev/extension-bot-chat",
       "defaultChoice": "npm",
-      "minHostVersion": ">=2026.4.20"
+      "minHostVersion": ">=2026.5.26"
     },
     "compat": {
-      "pluginApi": ">=2026.4.20"
+      "pluginApi": ">=2026.5.26"
     },
     "build": {
-      "openclawVersion": "2026.4.20"
-    },
-    "bundle": {
-      "stageRuntimeDependencies": true
+      "openclawVersion": "2026.5.26"
     }
   },
   "scripts": {
@@ -70,7 +138,7 @@
     "setup": "node ./dist/src/bin/setup.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "mqtt": "^5.15.1",

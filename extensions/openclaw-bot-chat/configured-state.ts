@@ -1,3 +1,3 @@
-import { hasBotChatConfiguredState } from "./src/runtime.js";
+import { hasBotChatConfiguredState } from "./src/config.js";
 
 export { hasBotChatConfiguredState };

@@ -12,13 +12,19 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBotChatPluginBase } from "./shared.js";
 import { botChatStatus } from "./status.js";
-import { botChatSetupAdapter } from "./channel.setup.js";
+import { botChatSetupAdapter, botChatSetupContract } from "./channel.setup.js";
 import { botChatDoctor } from "./doctor.js";
 import { botChatSecrets } from "./secret-config-contract.js";
+import { probeBotChatAccount } from "./probe.js";
+import { isBotChatCommandAuthorized } from "./security.js";
+import {
+  isBotChatControlTopic,
+  isBotChatValidatedControlInbound,
+  resolveBotChatAccount,
+} from "./config.js";
 import {
   buildBotChatOutboundMessageTarget,
   getBotChatRuntime,
-  resolveBotChatAccount,
   type RuntimeHooks,
 } from "./runtime.js";
 
@@ -172,9 +178,11 @@ const botChatOutboundAdapter: ChannelOutboundAdapter = {
 
 export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
   ...createBotChatPluginBase({ setup: botChatSetupAdapter }),
+  setupContract: botChatSetupContract,
   doctor: botChatDoctor,
   secrets: botChatSecrets,
   status: botChatStatus,
+  probeAccount: async ({ account, timeoutMs }) => probeBotChatAccount({ account, timeoutMs }),
   gateway: {
     startAccount: async (ctx) => {
       const logger = {
@@ -185,16 +193,48 @@ export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
       };
       await getBotChatRuntime().start(ctx.account.config as Record<string, unknown>, logger, {
         runTask: resolveBotChatTaskRunner(ctx.channelRuntime),
+        requestPairing: async ({ userId }) => {
+          const upsert = ctx.channelRuntime?.pairing?.upsertPairingRequest;
+          if (!upsert) {
+            return;
+          }
+          const result = await upsert({
+            channel: BOT_CHAT_CHANNEL_ID,
+            id: userId,
+          });
+          const reply = ctx.channelRuntime?.pairing?.buildPairingReply?.({
+            channel: BOT_CHAT_CHANNEL_ID,
+            idLine: userId,
+            code: result.code,
+          });
+          return {
+            code: result.code,
+            created: result.created,
+            reply,
+          };
+        },
         emitMessage: async (message) => {
           if (message.metadata?.senderType === "bot") {
             return;
           }
-          if (await handleBotChatSlashAutocompleteRequest({
-            cfg: ctx.cfg,
-            account: ctx.account,
-            log: ctx.log,
-            message,
-          })) {
+          const topic = readString(message.metadata?.topic) ?? message.channelId;
+          if (isBotChatControlTopic(topic) || readString(message.metadata?.content_type) === "slash_autocomplete_request") {
+            if (isBotChatValidatedControlInbound(message)) {
+              await handleBotChatSlashAutocompleteRequest({
+                cfg: ctx.cfg,
+                account: ctx.account,
+                log: ctx.log,
+                message,
+              });
+            } else {
+              ctx.log?.warn?.("botchat.inbound.invalid_control_consumed", {
+                channelId: message.channelId,
+                userId: message.userId,
+              });
+            }
+            return;
+          }
+          if (message.metadata?.pairingPending === true) {
             return;
           }
           await dispatchBotChatReply({
@@ -214,7 +254,7 @@ export const botChatPlugin: ChannelPlugin<ResolvedBotChatAccount> = {
       ctx.setStatus?.({
         connected: true,
         accountId: ctx.account.accountId,
-        botId: ctx.account.botId,
+        botId: getBotChatRuntime().getBotId?.() ?? ctx.account.botId,
       });
       const stop = async () => {
         await getBotChatRuntime().stop();
@@ -391,7 +431,10 @@ async function dispatchBotChatReply(params: {
       ExplicitDeliverRoute: true,
       NativeChannelId: params.message.channelId,
       CommandSource: resolveBotChatCommandSource(params.message),
-      CommandAuthorized: true,
+      CommandAuthorized: isBotChatCommandAuthorized({
+        account: params.account,
+        userId: params.message.userId,
+      }),
       Timestamp: Date.now(),
     },
     ...(replyTarget.recipientType === "group"
