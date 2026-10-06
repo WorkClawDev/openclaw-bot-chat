@@ -4,16 +4,16 @@ import UIKit
 final class TextMessageCollectionViewCell: UICollectionViewCell {
     static let reuseIdentifier = "TextMessageCollectionViewCell"
 
-    private static let imageCache = NSCache<NSString, UIImage>()
-    private static let avatarCache = NSCache<NSString, UIImage>()
-
     private var renderedMessage: RenderedMessageV2?
     private var blockViews: [String: UIView] = [:]
     private var imageTasks: [String: Task<Void, Never>] = [:]
+    private var imageRequestIDs: [String: UUID] = [:]
     private var codeTasks: [String: Task<Void, Never>] = [:]
     private var avatarTask: Task<Void, Never>?
+    private var avatarRequestID: UUID?
     private var audioObservationIDs: [String: UUID] = [:]
     private var audioLoadingViews: [String: UIActivityIndicatorView] = [:]
+    private var textBlockViewPool: [ReusableTextMessageBlockViewV2] = []
 
     var onImageTap: ((String) -> Void)?
     var onDocumentTap: ((UUID) -> Void)?
@@ -31,49 +31,59 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        cancelImageTasks()
-        cancelCodeTasks()
-        cancelAvatarTask()
-        removeAudioObservers()
+        resetRenderedContent()
         renderedMessage = nil
         onImageTap = nil
         onDocumentTap = nil
         onDocumentContinueTap = nil
-        blockViews.values.forEach { $0.removeFromSuperview() }
-        blockViews.removeAll()
     }
 
     func configure(with message: RenderedMessageV2) {
+        let previousMessage = renderedMessage
+        let reusableIDs = reusableViewIDs(from: previousMessage, to: message)
+        if previousMessage?.id != message.id {
+            cancelAvatarTask()
+        }
         renderedMessage = message
-        cancelImageTasks()
-        cancelCodeTasks()
-        cancelAvatarTask()
-        blockViews.values.forEach { $0.removeFromSuperview() }
-        blockViews.removeAll()
 
         let framesByID = Dictionary(uniqueKeysWithValues: message.layout.blockLayouts.map { ($0.id, $0.frame) })
+        for id in Array(blockViews.keys) where !reusableIDs.contains(id) {
+            removeBlockView(for: id)
+        }
+        for id in reusableIDs {
+            blockViews[id]?.frame = framesByID[id] ?? .zero
+        }
+
         if let sender = message.sender,
-           let avatarFrame = framesByID[MessageRenderCoordinatorV2.avatarLayoutID(for: message.id)] {
+           let avatarFrame = framesByID[MessageRenderCoordinatorV2.avatarLayoutID(for: message.id)],
+           blockViews[MessageRenderCoordinatorV2.avatarLayoutID(for: message.id)] == nil {
             let avatarView = makeAvatarView(sender, frame: avatarFrame)
             contentView.addSubview(avatarView)
             blockViews[MessageRenderCoordinatorV2.avatarLayoutID(for: message.id)] = avatarView
         }
         if let sender = message.sender,
            sender.showsName,
-           let senderFrame = framesByID[MessageRenderCoordinatorV2.senderLayoutID(for: message.id)] {
+           let senderFrame = framesByID[MessageRenderCoordinatorV2.senderLayoutID(for: message.id)],
+           blockViews[MessageRenderCoordinatorV2.senderLayoutID(for: message.id)] == nil {
             let senderView = makeSenderView(sender, frame: senderFrame)
             contentView.addSubview(senderView)
             blockViews[MessageRenderCoordinatorV2.senderLayoutID(for: message.id)] = senderView
         }
         for block in message.blocks {
-            guard let frame = framesByID[block.id] else { continue }
-            let blockView = makeBlockView(for: block, frame: frame, isOutgoing: message.isOutgoing)
+            guard let frame = framesByID[block.id], blockViews[block.id] == nil else { continue }
+            let blockView = makeBlockView(
+                for: block,
+                frame: frame,
+                isOutgoing: message.isOutgoing,
+                renderArtifacts: message.renderArtifacts
+            )
             contentView.addSubview(blockView)
             blockViews[block.id] = blockView
         }
         if let status = message.status,
            !status.displayText.isEmpty,
-           let statusFrame = framesByID[MessageRenderCoordinatorV2.statusLayoutID(for: message.id)] {
+           let statusFrame = framesByID[MessageRenderCoordinatorV2.statusLayoutID(for: message.id)],
+           blockViews[MessageRenderCoordinatorV2.statusLayoutID(for: message.id)] == nil {
             let statusView = makeStatusView(status, frame: statusFrame, isOutgoing: message.isOutgoing)
             contentView.addSubview(statusView)
             blockViews[MessageRenderCoordinatorV2.statusLayoutID(for: message.id)] = statusView
@@ -94,14 +104,34 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         contentView.clipsToBounds = false
     }
 
-    private func makeBlockView(for block: MessageBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
+    private func makeBlockView(
+        for block: MessageBlockContentV2,
+        frame: CGRect,
+        isOutgoing: Bool,
+        renderArtifacts: MessageRenderArtifactsV2
+    ) -> UIView {
         switch block {
         case .text(let text):
-            return makeTextBlock(text, frame: frame, isOutgoing: isOutgoing)
+            return makeTextBlock(
+                text,
+                artifact: renderArtifacts.text(for: text.id),
+                frame: frame,
+                isOutgoing: isOutgoing
+            )
         case .code(let code):
-            return makeCodeBlock(code, frame: frame, isOutgoing: isOutgoing)
+            return makeCodeBlock(
+                code,
+                artifact: renderArtifacts.code(for: code.id),
+                frame: frame,
+                isOutgoing: isOutgoing
+            )
         case .table(let table):
-            return makeTableBlock(table, frame: frame, isOutgoing: isOutgoing)
+            return makeTableBlock(
+                table,
+                artifact: renderArtifacts.table(for: table.id),
+                frame: frame,
+                isOutgoing: isOutgoing
+            )
         case .image(let image):
             return makeImageBlock(image, frame: frame)
         case .audio(let audio):
@@ -111,8 +141,14 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         }
     }
 
-    private func makeTextBlock(_ block: TextBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
-        let bubbleView = UIView(frame: frame)
+    private func makeTextBlock(
+        _ block: TextBlockContentV2,
+        artifact: TextBlockRenderArtifactV2?,
+        frame: CGRect,
+        isOutgoing: Bool
+    ) -> UIView {
+        let bubbleView = textBlockViewPool.popLast() ?? ReusableTextMessageBlockViewV2()
+        bubbleView.frame = frame
         bubbleView.accessibilityIdentifier = block.id
         bubbleView.isAccessibilityElement = false
         bubbleView.accessibilityLabel = block.text
@@ -121,26 +157,19 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         bubbleView.layer.cornerCurve = .continuous
         bubbleView.clipsToBounds = true
 
-        let textView = UITextView(frame: bubbleView.bounds.insetBy(dx: 12, dy: 10))
-        textView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        textView.backgroundColor = .clear
-        textView.isEditable = false
-        textView.isScrollEnabled = false
-        textView.isSelectable = true
-        textView.textContainerInset = .zero
-        textView.textContainer.lineFragmentPadding = 0
-        textView.adjustsFontForContentSizeCategory = false
-        textView.dataDetectorTypes = [.link]
+        let textView = bubbleView.textView
+        textView.frame = bubbleView.bounds.insetBy(dx: 12, dy: 10)
+        textView.accessibilityIdentifier = "chatRoomV2.text.\(block.id)"
+        textView.isAccessibilityElement = true
         textView.linkTextAttributes = [
             .foregroundColor: isOutgoing ? UIColor.white : UIColor.systemBlue,
             .underlineStyle: NSUnderlineStyle.single.rawValue
         ]
-        textView.attributedText = MessageTextFormatterV2.attributedString(
+        textView.attributedText = artifact?.attributedText ?? MessageTextFormatterV2.attributedString(
             for: block.text,
             isOutgoing: isOutgoing,
             rendersMarkdown: block.isMarkdown
         )
-        bubbleView.addSubview(textView)
         return bubbleView
     }
 
@@ -262,10 +291,15 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         return container
     }
 
-    private func makeCodeBlock(_ block: CodeBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
+    private func makeCodeBlock(
+        _ block: CodeBlockContentV2,
+        artifact: CodeBlockRenderArtifactV2?,
+        frame: CGRect,
+        isOutgoing: Bool
+    ) -> UIView {
         let container = UIView(frame: frame)
         container.accessibilityIdentifier = block.id
-        container.isAccessibilityElement = true
+        container.isAccessibilityElement = false
         container.accessibilityLabel = block.code
         container.backgroundColor = ChatCodeSyntaxHighlighterV2.backgroundColor(isOutgoing: isOutgoing, userInterfaceStyle: traitCollection.userInterfaceStyle)
         container.layer.cornerRadius = 12
@@ -299,14 +333,17 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         scrollView.alwaysBounceHorizontal = true
         scrollView.backgroundColor = .clear
 
-        let contentWidth = max(scrollFrame.width, ChatCodeSyntaxHighlighterV2.contentWidth(for: block.code) + 1)
+        let contentWidth = max(
+            scrollFrame.width,
+            (artifact?.contentWidth ?? ChatCodeSyntaxHighlighterV2.contentWidth(for: block.code)) + 1
+        )
         let label = UILabel(frame: CGRect(x: 0, y: 0, width: contentWidth, height: scrollFrame.height))
         label.accessibilityIdentifier = "\(block.id).content"
         label.isAccessibilityElement = true
         label.accessibilityLabel = block.code
         label.numberOfLines = 0
         label.lineBreakMode = .byClipping
-        label.attributedText = ChatCodeSyntaxHighlighterV2.plainAttributedString(
+        label.attributedText = artifact?.plainAttributedText ?? ChatCodeSyntaxHighlighterV2.plainAttributedString(
             for: block.code,
             isOutgoing: isOutgoing,
             userInterfaceStyle: traitCollection.userInterfaceStyle
@@ -316,16 +353,19 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         container.addSubview(scrollView)
 
         let interfaceStyle = traitCollection.userInterfaceStyle
-        codeTasks[block.id] = Task { [weak self, weak label] in
+        codeTasks[block.id] = Task { [weak self, weak label, weak container] in
             let highlighted = await ChatCodeSyntaxHighlighterV2.highlightedAttributedString(
                 for: block.code,
                 language: block.language,
                 isOutgoing: isOutgoing,
                 userInterfaceStyle: interfaceStyle
             )
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self,
-                      self.renderedMessage?.blocks.contains(where: { $0.id == block.id }) == true
+                      let container,
+                      self.blockViews[block.id] === container,
+                      self.renderedMessage?.blocks.contains(.code(block)) == true
                 else {
                     return
                 }
@@ -335,10 +375,15 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         return container
     }
 
-    private func makeTableBlock(_ block: TableBlockContentV2, frame: CGRect, isOutgoing: Bool) -> UIView {
+    private func makeTableBlock(
+        _ block: TableBlockContentV2,
+        artifact: TableBlockRenderArtifactV2?,
+        frame: CGRect,
+        isOutgoing: Bool
+    ) -> UIView {
         let container = UIView(frame: frame)
         container.accessibilityIdentifier = block.id
-        container.isAccessibilityElement = true
+        container.isAccessibilityElement = false
         container.accessibilityLabel = block.copyableText
         container.backgroundColor = isOutgoing ? UIColor.systemBlue.withAlphaComponent(0.95) : UIColor.secondarySystemBackground
         container.layer.cornerRadius = 12
@@ -347,7 +392,10 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         container.layer.borderColor = UIColor.separator.withAlphaComponent(0.42).cgColor
         container.clipsToBounds = true
 
-        let metrics = ChatTableLayoutMetricsV2.metrics(for: block)
+        let fallbackMetrics = artifact == nil ? ChatTableLayoutMetricsV2.metrics(for: block) : nil
+        let columnWidths = artifact?.columnWidths ?? fallbackMetrics?.columnWidths ?? []
+        let contentWidth = artifact?.contentWidth ?? fallbackMetrics?.contentWidth ?? frame.width
+        let contentHeight = artifact?.contentHeight ?? fallbackMetrics?.contentHeight ?? frame.height
         let scrollView = UIScrollView(frame: container.bounds)
         scrollView.accessibilityIdentifier = "\(block.id).scroll"
         scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -357,7 +405,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         scrollView.alwaysBounceVertical = false
         scrollView.backgroundColor = .clear
 
-        let contentView = UIView(frame: CGRect(x: 0, y: 0, width: metrics.contentWidth, height: metrics.contentHeight))
+        let contentView = UIView(frame: CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight))
         contentView.backgroundColor = .clear
         scrollView.contentSize = contentView.bounds.size
         scrollView.addSubview(contentView)
@@ -365,15 +413,15 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         var y: CGFloat = 0
         for (rowIndex, row) in block.rows.enumerated() {
             let rowHeight = rowIndex == 0 ? ChatTableLayoutMetricsV2.headerHeight : ChatTableLayoutMetricsV2.rowHeight
-            let rowBackground = UIView(frame: CGRect(x: 0, y: y, width: metrics.contentWidth, height: rowHeight))
+            let rowBackground = UIView(frame: CGRect(x: 0, y: y, width: contentWidth, height: rowHeight))
             rowBackground.backgroundColor = rowIndex == 0
                 ? (isOutgoing ? UIColor.white.withAlphaComponent(0.14) : UIColor.tertiarySystemFill)
                 : .clear
             contentView.addSubview(rowBackground)
 
             var x: CGFloat = 0
-            for column in 0..<metrics.columnWidths.count {
-                let width = metrics.columnWidths[column]
+            for column in 0..<columnWidths.count {
+                let width = columnWidths[column]
                 let value = column < row.count ? row[column] : ""
                 let label = UILabel(frame: CGRect(x: x + 10, y: y + 7, width: max(1, width - 20), height: max(1, rowHeight - 14)))
                 label.accessibilityIdentifier = "\(block.id).r\(rowIndex)c\(column)"
@@ -395,7 +443,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             }
 
             if rowIndex < block.rows.count - 1 {
-                let horizontalRule = UIView(frame: CGRect(x: 0, y: y + rowHeight - 0.5, width: metrics.contentWidth, height: 0.5))
+                let horizontalRule = UIView(frame: CGRect(x: 0, y: y + rowHeight - 0.5, width: contentWidth, height: 0.5))
                 horizontalRule.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.22) : UIColor.separator.withAlphaComponent(0.42)
                 contentView.addSubview(horizontalRule)
             }
@@ -554,66 +602,75 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             return
         }
 
-        let cacheKey = url.absoluteString as NSString
-        if let cached = Self.imageCache.object(forKey: cacheKey) {
+        let targetPointSize = imageView.bounds.size
+        let displayScale = max(traitCollection.displayScale, 1)
+        let cacheContent = block.cacheContent
+        let sourceIdentifier = cacheContent.mediaCacheSignatureV2.isEmpty
+            ? url.absoluteString
+            : cacheContent.mediaCacheSignatureV2
+        if let cached = ChatImagePipelineV2.shared.cachedImage(
+            sourceIdentifier: sourceIdentifier,
+            targetPointSize: targetPointSize,
+            scale: displayScale
+        ) {
             imageView.image = cached
             placeholder.isHidden = true
             return
         }
 
-        let cacheContent = block.cacheContent
-        let cachedFileURL = LocalImageStore.shared.cachedFileURL(for: cacheContent, fallbackIdentifier: block.id)
-        if let cachedFileURL,
-           let image = UIImage(contentsOfFile: cachedFileURL.path) {
-            Self.imageCache.setObject(image, forKey: cacheKey)
-            imageView.image = image
-            placeholder.isHidden = true
-            return
-        }
-
-        imageTasks[block.id] = Task { [weak imageView, weak placeholder] in
-            if let cachedFileURL,
-               let image = await Self.decodedImage(from: cachedFileURL) {
-                Self.imageCache.setObject(image, forKey: cacheKey)
-                await MainActor.run {
-                    imageView?.image = image
-                    placeholder?.isHidden = true
-                }
-                return
-            }
-
-            do {
-                let data = try await APIClient.shared.fetchRemoteData(from: url, acceptHeader: "image/*,*/*;q=0.8")
-                _ = LocalImageStore.shared.cacheImageData(data, for: cacheContent, fallbackIdentifier: block.id)
-                guard let image = await Self.decodedImage(from: data) else {
-                    await MainActor.run {
-                        placeholder?.text = "图片不可用"
+        let requestID = UUID()
+        imageRequestIDs[block.id] = requestID
+        imageTasks[block.id] = Task { [weak self, weak imageView, weak placeholder] in
+            let image = await ChatImagePipelineV2.shared.image(
+                sourceIdentifier: sourceIdentifier,
+                targetPointSize: targetPointSize,
+                scale: displayScale,
+                fallbackDataLoader: {
+                    do {
+                        let data = try await APIClient.shared.fetchRemoteData(
+                            from: url,
+                            acceptHeader: "image/*,*/*;q=0.8"
+                        )
+                        _ = await LocalImageStore.shared.cacheImageDataAsync(
+                            data,
+                            for: cacheContent,
+                            fallbackIdentifier: block.id,
+                            replacingExisting: true
+                        )
+                        return data
+                    } catch {
+                        return nil
                     }
+                }
+            ) {
+                await LocalImageStore.shared.cachedImageData(
+                    for: cacheContent,
+                    fallbackIdentifier: block.id
+                )
+            }
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard let self,
+                      self.imageRequestIDs[block.id] == requestID,
+                      self.renderedMessage?.blocks.contains(.image(block)) == true,
+                      let imageView,
+                      let container = self.blockViews[block.id],
+                      imageView.isDescendant(of: container)
+                else {
                     return
                 }
-                Self.imageCache.setObject(image, forKey: cacheKey)
-                await MainActor.run {
-                    imageView?.image = image
+
+                if let image {
+                    imageView.image = image
                     placeholder?.isHidden = true
-                }
-            } catch {
-                await MainActor.run {
+                } else {
                     placeholder?.text = "图片不可用"
                 }
+                self.imageRequestIDs[block.id] = nil
+                self.imageTasks[block.id] = nil
             }
         }
-    }
-
-    private static func decodedImage(from data: Data) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) {
-            UIImage(data: data)
-        }.value
-    }
-
-    private static func decodedImage(from fileURL: URL) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) {
-            UIImage(contentsOfFile: fileURL.path)
-        }.value
     }
 
     private func loadAvatar(for sender: MessageSenderPresentationV2, into imageView: UIImageView) {
@@ -623,25 +680,33 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
             return
         }
 
-        let cacheKey = url.absoluteString as NSString
-        if let cached = Self.avatarCache.object(forKey: cacheKey) {
-            imageView.image = cached
-            return
-        }
-
+        guard let messageID = renderedMessage?.id else { return }
+        let avatarLayoutID = MessageRenderCoordinatorV2.avatarLayoutID(for: messageID)
         if let cached = AvatarImageLoader.cachedImageForDisplay(for: url) {
-            Self.avatarCache.setObject(cached, forKey: cacheKey)
             imageView.image = cached
             return
         }
 
-        avatarTask = Task { [weak imageView] in
-            guard let image = await AvatarImageLoader.imageForDisplay(for: url) else {
-                return
-            }
-            Self.avatarCache.setObject(image, forKey: cacheKey)
+        let requestID = UUID()
+        avatarRequestID = requestID
+        avatarTask = Task { [weak self, weak imageView] in
+            let image = await AvatarImageLoader.imageForDisplay(for: url)
+            guard !Task.isCancelled else { return }
+
             await MainActor.run {
-                imageView?.image = image
+                guard let self,
+                      self.avatarRequestID == requestID,
+                      self.renderedMessage?.sender == sender,
+                      let image,
+                      let imageView,
+                      let container = self.blockViews[avatarLayoutID],
+                      imageView.isDescendant(of: container)
+                else {
+                    return
+                }
+                imageView.image = image
+                self.avatarRequestID = nil
+                self.avatarTask = nil
             }
         }
     }
@@ -678,9 +743,104 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
         audioLoadingViews.removeAll()
     }
 
+    private func removeAudioObserver(for blockID: String) {
+        if let observationID = audioObservationIDs.removeValue(forKey: blockID) {
+            ChatAudioPlaybackCoordinatorV2.shared.removeObserver(observationID)
+        }
+        audioLoadingViews.removeValue(forKey: blockID)?.stopAnimating()
+    }
+
+    private func reusableViewIDs(
+        from previousMessage: RenderedMessageV2?,
+        to message: RenderedMessageV2
+    ) -> Set<String> {
+        guard let previousMessage, previousMessage.id == message.id else { return [] }
+
+        let previousFrames = Dictionary(uniqueKeysWithValues: previousMessage.layout.blockLayouts.map { ($0.id, $0.frame) })
+        let nextFrames = Dictionary(uniqueKeysWithValues: message.layout.blockLayouts.map { ($0.id, $0.frame) })
+        let previousBlocks = Dictionary(uniqueKeysWithValues: previousMessage.blocks.map { ($0.id, $0) })
+        var reusableIDs: Set<String> = []
+
+        for block in message.blocks {
+            guard previousBlocks[block.id] == block,
+                  previousMessage.isOutgoing == message.isOutgoing,
+                  previousMessage.renderArtifacts.blocksByID[block.id] == message.renderArtifacts.blocksByID[block.id],
+                  previousFrames[block.id]?.size == nextFrames[block.id]?.size,
+                  nextFrames[block.id] != nil
+            else {
+                continue
+            }
+            if case .image = block, previousMessage.renderScale != message.renderScale {
+                continue
+            }
+            reusableIDs.insert(block.id)
+        }
+
+        let avatarID = MessageRenderCoordinatorV2.avatarLayoutID(for: message.id)
+        if previousMessage.sender == message.sender,
+           previousMessage.renderScale == message.renderScale,
+           previousFrames[avatarID]?.size == nextFrames[avatarID]?.size,
+           nextFrames[avatarID] != nil {
+            reusableIDs.insert(avatarID)
+        }
+
+        let senderID = MessageRenderCoordinatorV2.senderLayoutID(for: message.id)
+        if previousMessage.sender == message.sender,
+           previousFrames[senderID] != nil,
+           nextFrames[senderID] != nil {
+            reusableIDs.insert(senderID)
+        }
+
+        let statusID = MessageRenderCoordinatorV2.statusLayoutID(for: message.id)
+        if previousMessage.status == message.status,
+           previousMessage.isOutgoing == message.isOutgoing,
+           previousFrames[statusID] != nil,
+           nextFrames[statusID] != nil {
+            reusableIDs.insert(statusID)
+        }
+
+        return reusableIDs
+    }
+
+    private func removeBlockView(for id: String) {
+        imageTasks.removeValue(forKey: id)?.cancel()
+        imageRequestIDs[id] = nil
+        codeTasks.removeValue(forKey: id)?.cancel()
+        removeAudioObserver(for: id)
+
+        if let messageID = renderedMessage?.id,
+           id == MessageRenderCoordinatorV2.avatarLayoutID(for: messageID) {
+            cancelAvatarTask()
+        }
+        guard let view = blockViews.removeValue(forKey: id) else { return }
+        view.removeFromSuperview()
+        recycleTextBlockViewIfNeeded(view)
+    }
+
+    private func resetRenderedContent() {
+        cancelImageTasks()
+        cancelCodeTasks()
+        cancelAvatarTask()
+        removeAudioObservers()
+        blockViews.values.forEach { view in
+            view.removeFromSuperview()
+            recycleTextBlockViewIfNeeded(view)
+        }
+        blockViews.removeAll()
+    }
+
+    private func recycleTextBlockViewIfNeeded(_ view: UIView) {
+        guard let textView = view as? ReusableTextMessageBlockViewV2 else { return }
+        textView.prepareForPool()
+        if textBlockViewPool.count < 8 {
+            textBlockViewPool.append(textView)
+        }
+    }
+
     private func cancelImageTasks() {
         imageTasks.values.forEach { $0.cancel() }
         imageTasks.removeAll()
+        imageRequestIDs.removeAll()
     }
 
     private func cancelCodeTasks() {
@@ -691,6 +851,7 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
     private func cancelAvatarTask() {
         avatarTask?.cancel()
         avatarTask = nil
+        avatarRequestID = nil
     }
 
     private func initials(for name: String) -> String {
@@ -705,10 +866,45 @@ final class TextMessageCollectionViewCell: UICollectionViewCell {
     }
 
     deinit {
-        cancelImageTasks()
-        cancelCodeTasks()
-        cancelAvatarTask()
-        removeAudioObservers()
+        resetRenderedContent()
+    }
+}
+
+private final class ReusableTextMessageBlockViewV2: UIView {
+    let textView: UITextView
+
+    init() {
+        textView = UITextView(frame: .zero)
+        super.init(frame: .zero)
+
+        layer.cornerRadius = 18
+        layer.cornerCurve = .continuous
+        clipsToBounds = true
+
+        textView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        textView.backgroundColor = .clear
+        textView.isEditable = false
+        textView.isScrollEnabled = false
+        textView.isSelectable = true
+        textView.isAccessibilityElement = true
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.adjustsFontForContentSizeCategory = false
+        textView.dataDetectorTypes = []
+        addSubview(textView)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func prepareForPool() {
+        accessibilityIdentifier = nil
+        accessibilityLabel = nil
+        backgroundColor = .clear
+        textView.attributedText = nil
+        textView.accessibilityIdentifier = nil
+        textView.linkTextAttributes = [:]
     }
 }
 

@@ -332,12 +332,12 @@ final class AvatarImageLoader: ObservableObject {
         if displayedURL == url, let image {
             return image
         }
-        return Self.cachedImage(for: url)
+        return Self.memoryCachedImage(for: url)
     }
 
     static func prefetch(_ urls: [URL]) {
         for url in Array(Set(urls)) {
-            guard cachedImage(for: url) == nil else { continue }
+            guard memoryCachedImage(for: url) == nil else { continue }
             Task {
                 _ = await image(for: url)
             }
@@ -345,7 +345,7 @@ final class AvatarImageLoader: ObservableObject {
     }
 
     static func cachedImageForDisplay(for url: URL) -> UIImage? {
-        cachedImage(for: url)
+        memoryCachedImage(for: url)
     }
 
     static func imageForDisplay(for url: URL) async -> UIImage? {
@@ -354,7 +354,7 @@ final class AvatarImageLoader: ObservableObject {
 
     func load(url: URL) async {
         if currentURL != url {
-            if let cachedImage = Self.cachedImage(for: url) {
+            if let cachedImage = Self.memoryCachedImage(for: url) {
                 image = cachedImage
                 displayedURL = url
             } else {
@@ -370,21 +370,12 @@ final class AvatarImageLoader: ObservableObject {
         }
     }
 
-    private static func cachedImage(for url: URL) -> UIImage? {
-        if let image = imageCache.object(forKey: url as NSURL) {
-            return image
-        }
-
-        guard let image = diskCache.image(for: url) else {
-            return nil
-        }
-
-        imageCache.setObject(image, forKey: url as NSURL, cost: cacheCost(for: image))
-        return image
+    private static func memoryCachedImage(for url: URL) -> UIImage? {
+        imageCache.object(forKey: url as NSURL)
     }
 
     private static func image(for url: URL) async -> UIImage? {
-        if let cachedImage = cachedImage(for: url) {
+        if let cachedImage = memoryCachedImage(for: url) {
             return cachedImage
         }
 
@@ -392,7 +383,14 @@ final class AvatarImageLoader: ObservableObject {
             return await task.value
         }
 
-        let task = Task { @MainActor in
+        let task = Task<UIImage?, Never> { @MainActor in
+            if let diskData = await diskCache.data(for: url),
+               let diskImage = await downsampledBitmapImage(from: diskData) {
+                imageCache.setObject(diskImage, forKey: url as NSURL, cost: cacheCost(for: diskImage))
+                diskCache.store(diskImage, for: url)
+                return diskImage
+            }
+
             let loadedImage: UIImage?
             if url.pathExtension.caseInsensitiveCompare("svg") == .orderedSame {
                 loadedImage = await SVGAvatarSnapshotter.shared.image(for: url)
@@ -418,10 +416,18 @@ final class AvatarImageLoader: ObservableObject {
                 from: url,
                 acceptHeader: "image/avif,image/webp,image/*,*/*;q=0.8"
             )
-            return UIImage(data: data)
+            return await downsampledBitmapImage(from: data)
         } catch {
             return nil
         }
+    }
+
+    private static func downsampledBitmapImage(from data: Data) async -> UIImage? {
+        await ChatImageDownsamplerV2.downsampledImage(
+            from: data,
+            targetPointSize: CGSize(width: 96, height: 96),
+            scale: 3
+        )
     }
 
     private static func cache(_ image: UIImage, for url: URL) {
@@ -460,22 +466,17 @@ private final class AvatarImageDiskCache {
         self.directoryURL = cacheURL
     }
 
-    func image(for url: URL) -> UIImage? {
-        let fileURL = storageFileURL(for: url)
-        guard fileManager.fileExists(atPath: fileURL.path) else {
-            return nil
-        }
-        return UIImage(contentsOfFile: fileURL.path)
+    func data(for url: URL) async -> Data? {
+        let filePath = storageFileURL(for: url).path
+        return await Task.detached(priority: .utility) {
+            try? Data(contentsOf: URL(fileURLWithPath: filePath), options: .mappedIfSafe)
+        }.value
     }
 
     func store(_ image: UIImage, for url: URL) {
         let fileURL = storageFileURL(for: url)
-        writeQueue.async { [fileManager] in
-            guard !fileManager.fileExists(atPath: fileURL.path),
-                  let data = image.pngData()
-            else {
-                return
-            }
+        writeQueue.async {
+            guard let data = image.pngData() else { return }
             try? data.write(to: fileURL, options: [.atomic])
         }
     }

@@ -31,23 +31,18 @@ final class LocalMessageStore {
 
     func recentMessages(conversationId: String, limit: Int) -> [Message] {
         queue.sync {
-            loadMessages(
-                sql: """
-                SELECT payload_json
-                FROM cached_messages
-                WHERE conversation_id = ?
-                ORDER BY COALESCE(created_at, 0) DESC,
-                         COALESCE(timestamp, 0) DESC,
-                         COALESCE(seq, -1) DESC,
-                         id DESC
-                LIMIT ?
-                """,
-                bind: { statement in
-                    bind(text: conversationId, to: 1, in: statement)
-                    sqlite3_bind_int(statement, 2, Int32(normalizedLimit(limit)))
-                },
-                reverseResults: true
-            )
+            recentMessagesLocked(conversationId: conversationId, limit: limit)
+        }
+    }
+
+    func recentMessagesAsync(conversationId: String, limit: Int) async -> [Message] {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: self.recentMessagesLocked(
+                    conversationId: conversationId,
+                    limit: limit
+                ))
+            }
         }
     }
 
@@ -55,44 +50,79 @@ final class LocalMessageStore {
         guard beforeSequence > 0 else { return [] }
 
         return queue.sync {
-            loadMessages(
-                sql: """
-                SELECT payload_json
-                FROM cached_messages
-                WHERE conversation_id = ?
-                  AND seq IS NOT NULL
-                  AND seq < ?
-                ORDER BY seq DESC
-                LIMIT ?
-                """,
-                bind: { statement in
-                    bind(text: conversationId, to: 1, in: statement)
-                    sqlite3_bind_int64(statement, 2, sqlite3_int64(beforeSequence))
-                    sqlite3_bind_int(statement, 3, Int32(normalizedLimit(limit)))
-                },
-                reverseResults: true
+            messagesBeforeLocked(
+                conversationId: conversationId,
+                beforeSequence: beforeSequence,
+                limit: limit
             )
         }
     }
 
+    func messagesBeforeAsync(conversationId: String, beforeSequence: Int, limit: Int) async -> [Message] {
+        guard beforeSequence > 0 else { return [] }
+
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: self.messagesBeforeLocked(
+                    conversationId: conversationId,
+                    beforeSequence: beforeSequence,
+                    limit: limit
+                ))
+            }
+        }
+    }
+
+    private func recentMessagesLocked(conversationId: String, limit: Int) -> [Message] {
+        loadMessages(
+            sql: """
+            SELECT payload_json
+            FROM cached_messages
+            WHERE conversation_id = ?
+            ORDER BY COALESCE(created_at, 0) DESC,
+                     COALESCE(timestamp, 0) DESC,
+                     COALESCE(seq, -1) DESC,
+                     id DESC
+            LIMIT ?
+            """,
+            bind: { statement in
+                bind(text: conversationId, to: 1, in: statement)
+                sqlite3_bind_int(statement, 2, Int32(normalizedLimit(limit)))
+            },
+            reverseResults: true
+        )
+    }
+
+    private func messagesBeforeLocked(conversationId: String, beforeSequence: Int, limit: Int) -> [Message] {
+        loadMessages(
+            sql: """
+            SELECT payload_json
+            FROM cached_messages
+            WHERE conversation_id = ?
+              AND seq IS NOT NULL
+              AND seq < ?
+            ORDER BY seq DESC
+            LIMIT ?
+            """,
+            bind: { statement in
+                bind(text: conversationId, to: 1, in: statement)
+                sqlite3_bind_int64(statement, 2, sqlite3_int64(beforeSequence))
+                sqlite3_bind_int(statement, 3, Int32(normalizedLimit(limit)))
+            },
+            reverseResults: true
+        )
+    }
+
     func highestSequence(conversationId: String) -> Int? {
         queue.sync {
-            guard let statement = prepareStatement(
-                sql: "SELECT MAX(seq) FROM cached_messages WHERE conversation_id = ?"
-            ) else {
-                return nil
-            }
-            defer { sqlite3_finalize(statement) }
+            highestSequenceLocked(conversationId: conversationId)
+        }
+    }
 
-            bind(text: conversationId, to: 1, in: statement)
-
-            guard sqlite3_step(statement) == SQLITE_ROW else {
-                return nil
+    func highestSequenceAsync(conversationId: String) async -> Int? {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: self.highestSequenceLocked(conversationId: conversationId))
             }
-            guard sqlite3_column_type(statement, 0) != SQLITE_NULL else {
-                return nil
-            }
-            return Int(sqlite3_column_int64(statement, 0))
         }
     }
 
@@ -116,19 +146,15 @@ final class LocalMessageStore {
 
     func cachedBots(limit: Int = 200) -> [Bot] {
         queue.sync {
-            loadBots(
-                sql: """
-                SELECT payload_json
-                FROM cached_bots
-                ORDER BY name COLLATE NOCASE ASC,
-                         updated_at DESC,
-                         id DESC
-                LIMIT ?
-                """,
-                bind: { statement in
-                    sqlite3_bind_int(statement, 1, Int32(normalizedLimit(limit)))
-                }
-            )
+            cachedBotsLocked(limit: limit)
+        }
+    }
+
+    func cachedBotsAsync(limit: Int = 200) async -> [Bot] {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: self.cachedBotsLocked(limit: limit))
+            }
         }
     }
 
@@ -210,6 +236,41 @@ final class LocalMessageStore {
             createTablesIfNeeded()
             notifyConversationChanges()
         }
+    }
+
+    private func highestSequenceLocked(conversationId: String) -> Int? {
+        guard let statement = prepareStatement(
+            sql: "SELECT MAX(seq) FROM cached_messages WHERE conversation_id = ?"
+        ) else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        bind(text: conversationId, to: 1, in: statement)
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        guard sqlite3_column_type(statement, 0) != SQLITE_NULL else {
+            return nil
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func cachedBotsLocked(limit: Int) -> [Bot] {
+        loadBots(
+            sql: """
+            SELECT payload_json
+            FROM cached_bots
+            ORDER BY name COLLATE NOCASE ASC,
+                     updated_at DESC,
+                     id DESC
+            LIMIT ?
+            """,
+            bind: { statement in
+                sqlite3_bind_int(statement, 1, Int32(normalizedLimit(limit)))
+            }
+        )
     }
 
     private func openDatabaseIfNeeded() {
