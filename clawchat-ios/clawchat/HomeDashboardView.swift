@@ -3,7 +3,7 @@ import Combine
 
 struct HomeDashboardMetrics: Equatable {
     let totalBots: Int
-    let onlineBots: Int
+    let enabledBots: Int
     let totalGroups: Int
     let activeGroups: Int
     let totalConversations: Int
@@ -11,7 +11,7 @@ struct HomeDashboardMetrics: Equatable {
 
     init(bots: [Bot], groups: [ChatGroup], conversations: [Conversation]) {
         totalBots = bots.count
-        onlineBots = bots.filter { $0.status == "online" }.count
+        enabledBots = bots.filter { $0.activation == .enabled }.count
         totalGroups = groups.count
         activeGroups = groups.filter { $0.isActive == true }.count
         totalConversations = conversations.count
@@ -28,11 +28,35 @@ final class HomeDashboardViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
 
+    let isPreview: Bool
+
+    init(bots: [Bot] = [], groups: [ChatGroup] = [], conversations: [Conversation] = [], isPreview: Bool = false) {
+        self.bots = bots
+        self.groups = groups
+        self.conversations = conversations
+        self.isPreview = isPreview
+        if !isPreview {
+            NotificationCenter.default.publisher(for: .chatDirectoryDidChange)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.refreshIfNeeded(force: true) }
+                .store(in: &cancellables)
+            NotificationCenter.default.publisher(for: LocalMessageStore.conversationsDidChangeNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    guard let self, AccountSession.shared.isCurrent(self.messageStore.scope) else { return }
+                    self.conversations = self.messageStore.cachedConversations()
+                }
+                .store(in: &cancellables)
+        }
+    }
+
     private let refreshInterval: TimeInterval = 45
+    private let messageStore = LocalMessageStore.shared
     private var cancellables = Set<AnyCancellable>()
     private var hasHydratedCache = false
     private var hasLoaded = false
     private var lastRefreshAt: Date?
+    private var refreshPending = false
 
     var metrics: HomeDashboardMetrics {
         HomeDashboardMetrics(bots: bots, groups: groups, conversations: conversations)
@@ -50,7 +74,10 @@ final class HomeDashboardViewModel: ObservableObject {
     }
 
     func refreshIfNeeded(force: Bool = false) {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
+        guard !isPreview else { return }
         if isLoading {
+            refreshPending = refreshPending || force
             return
         }
 
@@ -76,16 +103,21 @@ final class HomeDashboardViewModel: ObservableObject {
                 if case .failure(let error) = completion {
                     self?.errorMessage = error.localizedDescription
                 }
+                if self?.refreshPending == true {
+                    self?.refreshPending = false
+                    self?.refreshIfNeeded(force: true)
+                }
             } receiveValue: { [weak self] bots, groups, conversations in
-                LocalMessageStore.shared.upsert(bots: bots)
-                LocalMessageStore.shared.upsert(groups: groups)
-                LocalMessageStore.shared.upsert(conversations: conversations)
-                self?.bots = bots
-                self?.groups = groups
-                self?.conversations = conversations
-                self?.hasHydratedCache = true
-                self?.hasLoaded = true
-                self?.lastRefreshAt = Date()
+                guard let self, AccountSession.shared.isCurrent(self.messageStore.scope) else { return }
+                self.messageStore.upsert(bots: bots)
+                self.messageStore.upsert(groups: groups)
+                self.messageStore.upsert(conversations: conversations)
+                self.bots = bots
+                self.groups = groups
+                self.conversations = conversations
+                self.hasHydratedCache = true
+                self.hasLoaded = true
+                self.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
     }
@@ -154,8 +186,9 @@ final class HomeDashboardViewModel: ObservableObject {
                     onFailure(L10n.t("服务端没有返回机器人信息。", "The server did not return bot information."))
                     return
                 }
-                LocalMessageStore.shared.upsert(bots: [bot])
-                self?.refreshIfNeeded(force: true)
+                guard let self, AccountSession.shared.isCurrent(self.messageStore.scope) else { return }
+                self.messageStore.upsert(bots: [bot])
+                self.refreshIfNeeded(force: true)
                 onSuccess(bot)
             }
             .store(in: &cancellables)
@@ -168,9 +201,9 @@ final class HomeDashboardViewModel: ObservableObject {
     private func hydrateCachedSnapshotIfNeeded() {
         guard !hasHydratedCache else { return }
 
-        let cachedBots = LocalMessageStore.shared.cachedBots()
-        let cachedGroups = LocalMessageStore.shared.cachedGroups()
-        let cachedConversations = LocalMessageStore.shared.cachedConversations()
+        let cachedBots = messageStore.cachedBots()
+        let cachedGroups = messageStore.cachedGroups()
+        let cachedConversations = messageStore.cachedConversations()
 
         if !cachedBots.isEmpty {
             bots = cachedBots
@@ -186,7 +219,7 @@ final class HomeDashboardViewModel: ObservableObject {
 }
 
 struct HomeDashboardView: View {
-    @StateObject private var viewModel = HomeDashboardViewModel()
+    @StateObject private var viewModel: HomeDashboardViewModel
     @ObservedObject private var authManager = AuthManager.shared
     @State private var showingCreateBot = false
     @State private var showingCreateGroup = false
@@ -196,23 +229,55 @@ struct HomeDashboardView: View {
     @State private var newGroupName = ""
     @State private var newGroupDescription = ""
     @State private var scanNotice: ScanNotice?
+    @State private var activeUtility: HomeUtility?
+    @State private var isSearching = false
+    @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
+
+    init(viewModel: HomeDashboardViewModel = HomeDashboardViewModel()) {
+        _viewModel = StateObject(wrappedValue: viewModel)
+    }
+
+    private var quickAccessBots: [Bot] {
+        var seen = Set<UUID>()
+        let recent = viewModel.recentConversations.compactMap { matchingBot(for: $0) }
+        return Array((recent + viewModel.bots).filter { seen.insert($0.id).inserted }.prefix(3))
+    }
+
+    private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var filteredConversations: [Conversation] {
+        guard !query.isEmpty else { return viewModel.recentConversations }
+        return viewModel.recentConversations.filter {
+            conversationTitle(for: $0).localizedCaseInsensitiveContains(query)
+                || ($0.lastMessage?.content?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
+    private var matchingBots: [Bot] {
+        guard isSearching, !query.isEmpty else { return [] }
+        return viewModel.bots.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 FrostedBackground()
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        header
-
-                        messagesSection
+                VStack(spacing: 0) {
+                    header
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 18) {
+                            if !isSearching, !quickAccessBots.isEmpty { quickAccess }
+                            messagesSection
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 12)
+                        .padding(.bottom, 24)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 22)
-                    .padding(.bottom, 28)
+                    .scrollIndicators(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
                 }
-                .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
             .onAppear {
@@ -220,6 +285,9 @@ struct HomeDashboardView: View {
             }
             .refreshable {
                 viewModel.refreshIfNeeded(force: true)
+            }
+            .sheet(item: $activeUtility) { utility in
+                HomeUtilitySheet(utility: utility)
             }
             .sheet(isPresented: $showingCreateBot) {
                 createBotSheet
@@ -243,55 +311,112 @@ struct HomeDashboardView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
-            AvatarBadge(
-                name: authManager.currentUser?.nickname ?? authManager.currentUser?.username ?? L10n.user,
-                imageURL: authManager.currentUser?.avatarUrl ?? authManager.currentUser?.avatar,
-                diameter: 50,
-                statusColor: nil
-            )
+        HStack(spacing: 8) {
+            if isSearching {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField(L10n.t("搜索机器人和聊天", "Search bots and chats"), text: $searchText)
+                    .focused($searchFocused)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("home.search.input")
+                Button(L10n.t("取消", "Cancel")) {
+                    isSearching = false
+                    searchText = ""
+                    searchFocused = false
+                }
+                .accessibilityIdentifier("home.search.cancel")
+            } else {
+                Menu {
+                    ForEach(HomeUtility.allCases.filter { $0 != .documents || DocumentsFeatureFlag.isEnabled }) { utility in
+                        Button { activeUtility = utility } label: {
+                            Label(utility.title, systemImage: utility.symbol)
+                        }
+                        .accessibilityIdentifier("home.menu.\(utility.rawValue)")
+                    }
+                } label: {
+                    AvatarBadge(
+                        name: authManager.currentUser?.nickname ?? authManager.currentUser?.username ?? L10n.user,
+                        imageURL: authManager.currentUser?.avatarUrl ?? authManager.currentUser?.avatar,
+                        diameter: 30,
+                        statusColor: nil
+                    )
+                    .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(L10n.t("账户与功能", "Account and tools"))
+                .accessibilityIdentifier("home.account")
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L10n.t("消息", "Messages"))
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.rcmsTextStrong)
-
-                Text(L10n.t("欢迎回来", "Welcome back"))
-                    .font(.subheadline)
-                    .foregroundStyle(Color.rcmsTextSecondary)
+                Spacer()
+                Button {
+                    isSearching = true
+                    searchFocused = true
+                } label: {
+                    Image(systemName: "magnifyingglass").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(L10n.t("搜索", "Search"))
+                .accessibilityIdentifier("home.search")
+                Menu {
+                    Button { activeUtility = .contacts } label: {
+                        Label(L10n.t("开始聊天", "Start a chat"), systemImage: "bubble.left")
+                    }
+                    Button { showingScanner = true } label: {
+                        Label(L10n.t("扫描添加机器人", "Scan to add bot"), systemImage: "qrcode.viewfinder")
+                    }
+                    Button { showingCreateBot = true } label: {
+                        Label(L10n.t("创建机器人", "Create bot"), systemImage: "sparkle")
+                    }
+                    Button { showingCreateGroup = true } label: {
+                        Label(L10n.t("创建群组", "Create group"), systemImage: "person.3")
+                    }
+                } label: {
+                    Image(systemName: "plus").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(L10n.t("添加", "Add"))
+                .accessibilityIdentifier("home.add")
             }
-
-            Spacer()
-
-            Menu {
-                Button {
-                    showingScanner = true
-                } label: {
-                    Label(L10n.t("扫描添加机器人", "Scan to add bot"), systemImage: "qrcode.viewfinder")
-                }
-
-                Button {
-                    showingCreateBot = true
-                } label: {
-                    Label(L10n.t("创建机器人", "Create bot"), systemImage: "cpu")
-                }
-
-                Button {
-                    showingCreateGroup = true
-                } label: {
-                    Label(L10n.t("创建群组", "Create group"), systemImage: "person.3")
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundStyle(Color.rcmsAccent)
-                    .frame(width: 50, height: 50)
-                    .background(Color.rcmsAccentSoft.opacity(0.95), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(L10n.t("添加", "Add"))
         }
-        .frame(maxWidth: .infinity)
+        .font(.system(size: 19, weight: .regular))
+        .foregroundStyle(Color.rcmsTextPrimary)
+        .frame(height: 48)
+        .padding(.horizontal, 14)
+    }
+
+    private var quickAccess: some View {
+        HStack(spacing: 24) {
+            ForEach(quickAccessBots) { bot in
+                NavigationLink {
+                    chatDestination(for: botContext(bot))
+                } label: {
+                    VStack(spacing: 8) {
+                        BotIdentityMark(name: bot.name, imageURL: bot.avatarUrl ?? bot.avatar, size: 48)
+                        Text(bot.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    .frame(width: 78)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("home.bot.\(bot.id.uuidString.lowercased())")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 4)
+    }
+
+    private func botContext(_ bot: Bot) -> ChatContext {
+        ChatContext(id: conversationTopic(for: bot) ?? bot.id.uuidString.lowercased(), title: bot.name,
+                    subtitle: bot.activation.label,
+                    isGroup: false, groupId: nil, bot: bot, avatarURLString: bot.avatarUrl ?? bot.avatar)
+    }
+
+    @ViewBuilder
+    private func chatDestination(for context: ChatContext) -> some View {
+        if viewModel.isPreview {
+            ChatRoomView(previewContext: context, messages: HomeV5Preview.messages, currentUserID: "preview-user")
+        } else {
+            ChatRoomView(context: context)
+        }
     }
 
     private var createBotSheet: some View {
@@ -412,56 +537,43 @@ struct HomeDashboardView: View {
     }
 
     private var messagesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(L10n.t("聊天", "Chats"))
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Color.rcmsTextStrong)
-
-                Spacer()
-
-                if viewModel.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-
-            if let errorMessage = viewModel.errorMessage, viewModel.recentConversations.isEmpty {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            if viewModel.isLoading, viewModel.recentConversations.isEmpty {
+                ProgressView().frame(maxWidth: .infinity).padding(24)
+            } else if let error = viewModel.errorMessage, viewModel.recentConversations.isEmpty {
+                HomeEmptyState(systemImage: "wifi.exclamationmark", title: L10n.t("暂时无法加载", "Unable to load"), message: error)
+                Button(L10n.t("重试", "Retry")) { viewModel.refreshIfNeeded(force: true) }
+                    .frame(maxWidth: .infinity).padding()
+            } else if filteredConversations.isEmpty && matchingBots.isEmpty {
                 HomeEmptyState(
-                    systemImage: "exclamationmark.triangle.fill",
-                    title: L10n.t("首页暂时不可用", "Dashboard unavailable"),
-                    message: errorMessage
-                )
-            } else if viewModel.recentConversations.isEmpty {
-                HomeEmptyState(
-                    systemImage: "bubble.left.and.bubble.right",
-                    title: L10n.t("还没有会话", "No conversations yet"),
-                    message: L10n.t("从通讯录开始聊天。", "Start a chat from Contacts.")
+                    systemImage: isSearching ? "magnifyingglass" : "bubble.left.and.bubble.right",
+                    title: isSearching ? L10n.t("没有找到结果", "No results") : L10n.t("开始一段聊天", "Start a conversation"),
+                    message: isSearching ? L10n.t("试试其他名称或消息内容。", "Try another name or message.") : L10n.t("点右上角 +，选择或添加机器人。", "Tap + to choose or add a bot.")
                 )
             } else {
-                VStack(spacing: 0) {
-                    ForEach(viewModel.recentConversations) { conversation in
-                        NavigationLink {
-                            ChatRoomView(context: chatContext(for: conversation))
-                        } label: {
-                            DashboardConversationRow(
-                                title: conversationTitle(for: conversation),
-                                subtitle: conversation.lastMessage?.content ?? L10n.noMessagesYet,
-                                timestamp: timestamp(for: conversation),
-                                unreadCount: conversation.unreadCount,
-                                avatarURL: conversationAvatarURL(for: conversation),
-                                systemImage: conversationSystemImage(for: conversation)
-                            )
-                        }
-                        .buttonStyle(.plain)
-
-                        if conversation.id != viewModel.recentConversations.last?.id {
-                            Divider()
-                                .padding(.leading, 72)
-                        }
+                if !matchingBots.isEmpty {
+                    Text(L10n.t("机器人", "Bots")).font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
+                    ForEach(matchingBots) { bot in
+                        NavigationLink { chatDestination(for: botContext(bot)) } label: {
+                            DashboardConversationRow(title: bot.name, subtitle: bot.description, avatarURL: bot.avatarUrl ?? bot.avatar, systemImage: "sparkle")
+                        }.buttonStyle(.plain)
                     }
+                    Text(L10n.t("聊天", "Chats")).font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
                 }
-                .glassCardStyle()
+                ForEach(filteredConversations) { conversation in
+                    NavigationLink {
+                        chatDestination(for: chatContext(for: conversation))
+                    } label: {
+                        DashboardConversationRow(
+                            title: conversationTitle(for: conversation),
+                            subtitle: conversation.lastMessage?.content ?? L10n.noMessagesYet,
+                            timestamp: timestamp(for: conversation), unreadCount: conversation.unreadCount,
+                            avatarURL: conversationAvatarURL(for: conversation), systemImage: conversationSystemImage(for: conversation)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("home.conversation.\(conversation.id)")
+                }
             }
         }
     }
@@ -473,7 +585,7 @@ struct HomeDashboardView: View {
                 return ChatContext(
                     id: conversationTopic(for: group),
                     title: group.name,
-                    subtitle: (group.isActive == true) ? L10n.botsOnline : L10n.botsOffline,
+                    subtitle: group.memberSummary,
                     isGroup: true,
                     groupId: group.id.uuidString.lowercased(),
                     memberCount: group.memberCount,
@@ -496,7 +608,7 @@ struct HomeDashboardView: View {
                 return ChatContext(
                     id: conversationTopic(for: bot) ?? conversation.id,
                     title: bot.name,
-                    subtitle: bot.status == "online" ? L10n.online : L10n.offline,
+                    subtitle: bot.activation.label,
                     isGroup: false,
                     groupId: nil,
                     bot: bot,
@@ -546,7 +658,7 @@ struct HomeDashboardView: View {
     }
 
     private func conversationSystemImage(for conversation: Conversation) -> String {
-        conversation.type.lowercased() == "group" ? "person.3.fill" : "bubble.left.fill"
+        conversation.type.lowercased() == "group" ? "person.3.fill" : "sparkle"
     }
 
     private func matchingGroup(for conversation: Conversation) -> ChatGroup? {

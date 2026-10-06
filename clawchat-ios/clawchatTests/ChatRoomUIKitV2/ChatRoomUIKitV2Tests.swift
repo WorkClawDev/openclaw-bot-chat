@@ -5,6 +5,35 @@ import UIKit
 
 @MainActor
 struct ChatRoomUIKitV2Tests {
+    @Test(arguments: [CGFloat(320), 393, 768])
+    func densitySwitchPreservesContentGeometryAndSeparatesCachedLayouts(width: CGFloat) {
+        let cache = MessageLayoutCacheV2()
+        let renderer = MessageRenderCoordinatorV2(layoutCache: cache)
+        let traits = UITraitCollection(displayScale: 2)
+        let messages = ChatRoomV2FixtureFactory.richMediaMessages()
+            + ChatRoomV2FixtureFactory.mixedRichMessages()
+        let comfortable = renderer.renderPage(messages, containerWidth: width, traitCollection: traits)
+        renderer.compactMessageMode = true
+        let compact = renderer.renderPage(messages, containerWidth: width, traitCollection: traits)
+        for (original, dense) in zip(comfortable, compact) {
+            #expect(original.blocks == dense.blocks)
+            #expect(original.layout.itemSize.width == dense.layout.itemSize.width)
+            #expect(original.layout.blockLayouts.count == dense.layout.blockLayouts.count)
+            for (before, after) in zip(original.layout.blockLayouts, dense.layout.blockLayouts) {
+                #expect(before.id == after.id)
+                #expect(before.frame.size == after.frame.size)
+                #expect(before.frame.minX == after.frame.minX)
+            }
+            let expectedReduction = CGFloat(4 + 2 * max(0, original.blocks.count - 1))
+            #expect(original.layout.itemSize.height - dense.layout.itemSize.height == expectedReduction)
+        }
+        renderer.compactMessageMode = false
+        #expect(renderer.renderPage(messages, containerWidth: width, traitCollection: traits) == comfortable)
+        // A different renderer sharing the cache must still get the default V5 geometry.
+        let other = MessageRenderCoordinatorV2(layoutCache: cache)
+        #expect(other.renderPage(messages, containerWidth: width, traitCollection: traits) == comfortable)
+    }
+
     @Test func storeSortsAndDeduplicatesStableMessages() {
         let layout = MessageLayoutV2(itemSize: CGSize(width: 320, height: 44), blockLayouts: [])
         let messages = [
@@ -86,8 +115,7 @@ struct ChatRoomUIKitV2Tests {
             "message-media-text-0",
             "message-media-image-0",
             "message-media-audio-0",
-            "message-media-status",
-            "message-media-avatar"
+            "message-media-status"
         ])
         #expect(rendered.layout.blockLayouts.allSatisfy { $0.frame.width > 0 && $0.frame.height > 0 })
         #expect(rendered.layout.blockLayouts[2].frame.height > rendered.layout.blockLayouts[1].frame.height)
@@ -163,7 +191,7 @@ struct ChatRoomUIKitV2Tests {
         #expect(codeBlock.language == "swift")
         #expect(codeBlock.code.contains("print(value)"))
         let codeLayout = rendered.layout.blockLayouts[1].frame
-        #expect(codeLayout.width <= 300)
+        #expect(codeLayout.width <= ChatLayoutMetrics.bubbleWidth(in: 390))
         #expect(codeLayout.height >= 48)
     }
 
@@ -199,7 +227,7 @@ struct ChatRoomUIKitV2Tests {
         #expect(tableBlock.rows[0] == ["Feature", "Status", "Notes"])
         #expect(tableBlock.rows[1][0] == "Markdown")
         let tableLayout = rendered.layout.blockLayouts[1].frame
-        #expect(tableLayout.width <= 300)
+        #expect(tableLayout.width <= ChatLayoutMetrics.bubbleWidth(in: 390))
         #expect(tableLayout.height == ChatTableLayoutMetricsV2.metrics(for: tableBlock).contentHeight)
         #expect(ChatTableLayoutMetricsV2.metrics(for: tableBlock).contentWidth > tableLayout.width)
     }
@@ -322,7 +350,7 @@ struct ChatRoomUIKitV2Tests {
             return
         }
         let codeLayout = rendered.layout.blockLayouts[0].frame
-        #expect(codeLayout.width <= 300)
+        #expect(codeLayout.width <= ChatLayoutMetrics.bubbleWidth(in: 390))
         #expect(ChatCodeSyntaxHighlighterV2.contentWidth(for: codeBlock.code) > codeLayout.width - 24)
         #expect(codeLayout.height < 120)
     }

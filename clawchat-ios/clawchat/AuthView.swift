@@ -13,6 +13,27 @@ class AuthViewModel: ObservableObject {
     @Published var isRequestingPhoneCode = false
     @Published var errorMessage: String?
     @Published var fieldErrors: [String: String] = [:]
+    @Published var phoneConfiguration: PhoneAuthConfiguration?
+    @Published var phoneChallenge: PhoneCaptchaChallenge?
+
+    private let injectedPhoneAPI: (any PhoneAuthenticationAPI)?
+    private var phoneAPI: any PhoneAuthenticationAPI { injectedPhoneAPI ?? APIClient.shared }
+    private var phoneRequest: AnyCancellable?
+    private var phoneOperation: UUID?
+    private var pendingPhoneChallenge: (id: UUID, phone: String, api: any PhoneAuthenticationAPI)?
+
+    init(phoneAPI: (any PhoneAuthenticationAPI)? = nil) {
+        injectedPhoneAPI = phoneAPI
+    }
+
+    var supportsPhoneAuth: Bool { phoneConfiguration?.enabled == true }
+
+    func loadPhoneAvailability() {
+        phoneAPI.fetchPhoneConfiguration()
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] in self?.phoneConfiguration = $0 })
+            .store(in: &cancellables)
+    }
 
     private var cancellables = Set<AnyCancellable>()
     private var cooldownTimer: AnyCancellable?
@@ -73,27 +94,85 @@ class AuthViewModel: ObservableObject {
     }
 
     func requestPhoneCode() {
-        guard validatePhoneForCode() else { return }
-        guard let normalizedPhone = normalizedMainlandPhone(phone) else { return }
-
+        guard canRequestPhoneCode, validatePhoneForCode(), let normalized = normalizedMainlandPhone(phone) else { return }
+        let api = phoneAPI
+        let operation = UUID()
+        phoneOperation = operation
         isRequestingPhoneCode = true
         errorMessage = nil
-
-        APIClient.shared.requestPhoneCode(phone: normalizedPhone, captchaToken: captchaTokenForPhoneCode())
+        phoneRequest = api.fetchPhoneConfiguration()
             .receive(on: DispatchQueue.main)
-            .sink { completion in
-                self.isRequestingPhoneCode = false
-                if case .failure(let error) = completion {
-                    if let apiError = error as? APIClient.APIError {
-                        self.errorMessage = apiError.errorDescription
-                    } else {
-                        self.errorMessage = error.localizedDescription
+            .sink { [weak self] completion in
+                if case .failure(let error) = completion { self?.failPhoneCode(operation, error: error) }
+            } receiveValue: { [weak self] configuration in
+                guard let self, self.phoneOperation == operation else { return }
+                self.phoneConfiguration = configuration
+                guard configuration.enabled else { self.failPhoneCode(operation, error: PhoneCaptchaError.unavailable); return }
+                switch configuration.captchaProvider {
+                case "mock" where PhoneCaptchaChallenge.isLoopback(api.baseURL):
+                    self.sendPhoneCode(operation, phone: normalized, api: api, token: "mock")
+                case "turnstile":
+                    guard let url = PhoneCaptchaChallenge.url(baseURL: api.baseURL) else {
+                        self.failPhoneCode(operation, error: PhoneCaptchaError.unavailable); return
                     }
+                    self.pendingPhoneChallenge = (operation, normalized, api)
+                    self.phoneChallenge = PhoneCaptchaChallenge(id: operation, url: url)
+                default:
+                    self.failPhoneCode(operation, error: PhoneCaptchaError.unavailable)
                 }
-            } receiveValue: { response in
+            }
+    }
+
+    func completePhoneChallenge(_ id: UUID, result: Result<String, PhoneCaptchaError>) {
+        guard let pending = pendingPhoneChallenge, pending.id == id, phoneOperation == id else { return }
+        pendingPhoneChallenge = nil
+        phoneChallenge = nil
+        switch result {
+        case .success(let token):
+            guard !token.isEmpty, token.count <= 2048 else { failPhoneCode(id, error: PhoneCaptchaError.failed); return }
+            sendPhoneCode(id, phone: pending.phone, api: pending.api, token: token)
+        case .failure(let error): failPhoneCode(id, error: error)
+        }
+    }
+
+    func cancelPhoneChallenge() {
+        // Sheet dismissal after successful verification must not cancel the code POST.
+        guard pendingPhoneChallenge != nil else { return }
+        cancelPhoneCodeRequest()
+    }
+
+    func cancelPhoneCodeRequest() {
+        phoneRequest?.cancel()
+        phoneOperation = nil
+        pendingPhoneChallenge = nil
+        phoneChallenge = nil
+        isRequestingPhoneCode = false
+    }
+
+    private func sendPhoneCode(_ operation: UUID, phone: String, api: any PhoneAuthenticationAPI, token: String) {
+        guard phoneOperation == operation else { return }
+        guard normalizedMainlandPhone(self.phone) == phone, phoneAPI.baseURL == api.baseURL else {
+            failPhoneCode(operation, error: PhoneCaptchaError.contextChanged); return
+        }
+        phoneRequest = api.requestPhoneCode(phone: phone, captchaToken: token, purpose: "login")
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] completion in
+                if case .failure(let error) = completion { self?.failPhoneCode(operation, error: error) }
+            } receiveValue: { [weak self] response in
+                guard let self, self.phoneOperation == operation else { return }
+                self.phoneOperation = nil
+                self.isRequestingPhoneCode = false
                 self.startPhoneCodeCooldown(response.cooldownSeconds ?? 60)
             }
-            .store(in: &cancellables)
+    }
+
+    private func failPhoneCode(_ operation: UUID, error: Error) {
+        guard phoneOperation == operation else { return }
+        phoneOperation = nil
+        pendingPhoneChallenge = nil
+        phoneChallenge = nil
+        isRequestingPhoneCode = false
+        errorMessage = error.localizedDescription
     }
 
     func validatePhoneLogin() -> Bool {
@@ -209,10 +288,6 @@ class AuthViewModel: ObservableObject {
         return phone
     }
 
-    private func captchaTokenForPhoneCode() -> String {
-        "mock"
-    }
-
     private func startPhoneCodeCooldown(_ seconds: Int) {
         phoneCodeCooldown = max(1, seconds)
         cooldownTimer?.cancel()
@@ -243,18 +318,32 @@ struct LoginView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                FrostedBackground()
+            GeometryReader { geometry in
+                ZStack {
+                    FrostedBackground()
 
-                if usesWideLayout {
-                    wideBody
-                } else {
-                    compactBody
+                    if usesWideLayout && geometry.size.width >= 1000 {
+                        wideBody
+                    } else {
+                        compactBody
+                            .frame(maxWidth: 520)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(isPresented: $isRegistering) {
                 RegisterView()
+            }
+            .task { viewModel.loadPhoneAvailability() }
+            .onReceive(viewModel.$phoneConfiguration) { configuration in
+                if configuration?.enabled == false { usesPhoneAuth = false }
+            }
+            .onDisappear { viewModel.cancelPhoneCodeRequest() }
+            .sheet(item: $viewModel.phoneChallenge, onDismiss: viewModel.cancelPhoneChallenge) { challenge in
+                PhoneCaptchaSheet(challenge: challenge) { result in
+                    viewModel.completePhoneChallenge(challenge.id, result: result)
+                }
             }
         }
     }
@@ -330,7 +419,7 @@ struct LoginView: View {
 
                 loginModeLink
             }
-            .frame(width: 430)
+            .frame(maxWidth: 430)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 54)
         }
@@ -464,6 +553,7 @@ struct LoginView: View {
             if usesPhoneAuth {
                 Button {
                     usesPhoneAuth = false
+                    viewModel.cancelPhoneCodeRequest()
                     viewModel.errorMessage = nil
                     viewModel.fieldErrors = [:]
                 } label: {
@@ -472,7 +562,7 @@ struct LoginView: View {
                         .foregroundStyle(Color.rcmsAccent)
                 }
             } else {
-                if ServiceEndpointConfiguration.currentBaseURL == ServiceEndpointConfiguration.chinaBaseURL {
+                if viewModel.supportsPhoneAuth {
                     Button {
                         usesPhoneAuth = true
                         viewModel.errorMessage = nil
@@ -499,14 +589,18 @@ struct RegisterView: View {
     }
 
     var body: some View {
-        ZStack {
-            FrostedBackground()
+        GeometryReader { geometry in
+            ZStack {
+                FrostedBackground()
 
-                if usesWideLayout {
+                if usesWideLayout && geometry.size.width >= 1000 {
                     wideBody
                 } else {
                     compactBody
+                        .frame(maxWidth: 520)
+                        .frame(maxWidth: .infinity)
                 }
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -582,7 +676,7 @@ struct RegisterView: View {
 
                 signInLink
             }
-            .frame(width: 430)
+            .frame(maxWidth: 430)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 54)
         }

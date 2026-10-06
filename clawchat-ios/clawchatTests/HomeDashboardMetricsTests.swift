@@ -23,11 +23,20 @@ struct HomeDashboardMetricsTests {
         )
 
         #expect(metrics.totalBots == 3)
-        #expect(metrics.onlineBots == 1)
+        #expect(metrics.enabledBots == 1)
         #expect(metrics.totalGroups == 3)
         #expect(metrics.activeGroups == 1)
         #expect(metrics.totalConversations == 3)
         #expect(metrics.unreadMessages == 2)
+    }
+
+    @Test func legacyBotStatusIsActivationNotRuntimePresence() throws {
+        for (value, expected) in [("online", BotActivation.enabled), ("offline", .disabled), ("enabled", .enabled), ("disabled", .disabled), ("error", .unknown)] {
+            let data = Data("{\"id\":\"00000000-0000-4000-8000-000000000001\",\"name\":\"Unused bot\",\"status\":\"\(value)\"}".utf8)
+            let bot = try JSONDecoder().decode(Bot.self, from: data)
+            #expect(bot.activation == expected)
+        }
+        #expect(makeBot(status: nil).activation == .unknown)
     }
 
     private func makeBot(status: String?) -> Bot {

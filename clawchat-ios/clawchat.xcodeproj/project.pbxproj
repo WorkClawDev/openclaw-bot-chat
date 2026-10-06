@@ -201,6 +201,7 @@
 				TargetAttributes = {
 					E196D9AA2F8BEE31001C6033 = {
 						CreatedOnToolsVersion = 26.4;
+						SystemCapabilities = { com.apple.Push = { enabled = 1; }; };
 					};
 					E196D9B72F8BEE35001C6033 = {
 						CreatedOnToolsVersion = 26.4;
@@ -428,6 +429,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = clawchat.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "clawchat-macos.entitlements";
+				CLAWCHAT_APNS_ENVIRONMENT = development;
+				INFOPLIST_FILE = "clawchat-push-Info.plist";
 				CURRENT_PROJECT_VERSION = 1;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = ZGZY2CRNKM;
@@ -469,6 +474,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = clawchat.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "clawchat-macos.entitlements";
+				CLAWCHAT_APNS_ENVIRONMENT = production;
+				INFOPLIST_FILE = "clawchat-push-Info.plist";
 				CURRENT_PROJECT_VERSION = 1;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = ZGZY2CRNKM;

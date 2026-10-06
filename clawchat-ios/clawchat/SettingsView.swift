@@ -3,6 +3,7 @@ import UserNotifications
 import PhotosUI
 
 struct SettingsView: View {
+    @Environment(\.closeHomeUtility) var closeHomeUtility
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject var viewModel: SettingsViewModel
     @StateObject var authManager = AuthManager.shared
@@ -10,7 +11,7 @@ struct SettingsView: View {
     @StateObject var endpointManager = ServiceEndpointManager.shared
     let loadsProfileOnAppear: Bool
 
-    @AppStorage("settings.botNotificationsEnabled") var botNotificationsEnabled = false
+    @StateObject var pushNotifications = ChatPushNotifications.shared
     @AppStorage("settings.compactMessageMode") var compactMessageMode = false
     @AppStorage("settings.imageUploadQuality") var imageUploadQuality = "Compressed"
     @AppStorage("settings.appearanceMode") var appearanceModeRawValue = AppAppearanceMode.system.rawValue
@@ -59,20 +60,31 @@ struct SettingsView: View {
         AppLanguageMode(rawValue: languageModeRawValue) ?? .english
     }
 
-    var usesWideSettingsLayout: Bool {
-        AppPlatform.usesDesktopPresentation && horizontalSizeClass == .regular
+    func usesWideSettingsLayout(availableWidth: CGFloat) -> Bool {
+        // iPad mini remains regular-width in portrait, but two settings columns
+        // cannot fit beside the navigation rail without truncating their controls.
+        AppPlatform.usesDesktopPresentation && horizontalSizeClass == .regular && availableWidth >= 860
     }
 
     var body: some View {
         NavigationStack {
+          GeometryReader { geometry in
             ZStack(alignment: .top) {
                 FrostedBackground()
 
                 ScrollView {
-                    NavigationLink("个人助手") { AssistantView() }.padding()
-                    settingsContent
+                    settingsContent(availableWidth: geometry.size.width)
                 }
                 .scrollIndicators(.hidden)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if closeHomeUtility != nil {
+                        HStack {
+                            Text(L10n.t("设置", "Settings")).font(.system(size: 17, weight: .semibold))
+                            Spacer()
+                            HomeUtilityCloseButton()
+                        }.padding(.leading, 20).padding(.trailing, 8).background(Color.rcmsBackground)
+                    }
+                }
                 .refreshable {
                     await refreshAll()
                 }
@@ -94,6 +106,12 @@ struct SettingsView: View {
             }
             .onChange(of: resolvedUser?.id) { _, _ in
                 syncProfileDraftsIfNeeded()
+            }
+            .onChange(of: resolvedUser?.canChangePassword) { _, allowed in
+                if allowed != true {
+                    showPasswordEditor = false
+                    resetPasswordForm()
+                }
             }
             .sheet(item: $pendingAvatarImage) { pending in
                 AvatarCropperView(
@@ -124,13 +142,14 @@ struct SettingsView: View {
                     Text(viewModel.loadErrorMessage ?? "")
                 }
             )
+          }
         }
     }
 
     @ViewBuilder
-    var settingsContent: some View {
+    func settingsContent(availableWidth: CGFloat) -> some View {
         if let user = resolvedUser {
-            if usesWideSettingsLayout {
+            if usesWideSettingsLayout(availableWidth: availableWidth) {
                 wideSettingsContent(user: user)
             } else {
                 compactSettingsContent(user: user)

@@ -10,7 +10,13 @@ import (
 
 // MessageRepository handles message database operations
 type MessageRepository struct {
-	db *gorm.DB
+	db             *gorm.DB
+	messageCreated func(context.Context, *gorm.DB, *model.Message) error
+}
+
+// SetMessageCreatedHook installs a transactional outbox hook before MQTT starts.
+func (r *MessageRepository) SetMessageCreatedHook(hook func(context.Context, *gorm.DB, *model.Message) error) {
+	r.messageCreated = hook
 }
 
 func NewMessageRepository(db *gorm.DB) *MessageRepository {
@@ -108,7 +114,13 @@ func (r *MessageRepository) CreateWithNextSeq(ctx context.Context, msg *model.Me
 			return err
 		}
 		msg.Seq = seq
-		return scoped.Create(ctx, msg)
+		if err := scoped.Create(ctx, msg); err != nil {
+			return err
+		}
+		if r.messageCreated != nil {
+			return r.messageCreated(ctx, tx, msg)
+		}
+		return nil
 	})
 }
 

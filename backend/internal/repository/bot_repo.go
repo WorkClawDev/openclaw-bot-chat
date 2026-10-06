@@ -54,6 +54,15 @@ func (r *BotRepository) ListByOwner(ctx context.Context, ownerID uuid.UUID, page
 	return bots, total, nil
 }
 
+// ListEnabledIDsByOwner includes bots that have no message history yet.
+func (r *BotRepository) ListEnabledIDsByOwner(ctx context.Context, ownerID uuid.UUID) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := r.db.WithContext(ctx).Model(&model.Bot{}).
+		Where("owner_id = ? AND status = ?", ownerID, model.BotStatusEnabled).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
 func (r *BotRepository) Update(ctx context.Context, bot *model.Bot) error {
 	return r.db.WithContext(ctx).Save(bot).Error
 }

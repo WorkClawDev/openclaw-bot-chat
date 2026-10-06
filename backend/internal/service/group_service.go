@@ -10,12 +10,13 @@ import (
 )
 
 var (
-	ErrGroupNotFound    = errors.New("group not found")
-	ErrNotGroupOwner    = errors.New("you are not the owner of this group")
-	ErrNotGroupMember   = errors.New("you are not a member of this group")
-	ErrGroupFull        = errors.New("group has reached maximum members")
-	ErrAlreadyMember    = errors.New("user is already a member of this group")
-	ErrAlreadyBotMember = errors.New("bot is already a member of this group")
+	ErrGroupNotFound          = errors.New("group not found")
+	ErrNotGroupOwner          = errors.New("you are not the owner of this group")
+	ErrNotGroupMember         = errors.New("you are not a member of this group")
+	ErrGroupFull              = errors.New("group has reached maximum members")
+	ErrAlreadyMember          = errors.New("user is already a member of this group")
+	ErrAlreadyBotMember       = errors.New("bot is already a member of this group")
+	ErrCannotRemoveGroupOwner = errors.New("cannot remove the owner from the group")
 )
 
 // GroupService handles group operations
@@ -315,7 +316,7 @@ func (s *GroupService) RemoveMember(ctx context.Context, groupID, targetID, requ
 		return ErrNotGroupOwner
 	}
 	if member.Role == model.GroupRoleOwner {
-		return errors.New("cannot remove the owner from the group")
+		return ErrCannotRemoveGroupOwner
 	}
 	if err := s.groupRepo.RemoveMember(ctx, groupID, targetID); err != nil {
 		return err

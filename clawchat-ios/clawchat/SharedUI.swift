@@ -629,13 +629,7 @@ struct DashboardConversationRow: View {
 
     var body: some View {
         HStack(spacing: UITheme.Spacing.small) {
-            AvatarBadge(
-                name: title,
-                imageURL: avatarURL,
-                systemImage: systemImage,
-                diameter: 52,
-                statusColor: statusColor
-            )
+            BotIdentityMark(name: title, imageURL: avatarURL, size: 44, isGroup: systemImage.contains("person.3"))
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: UITheme.Spacing.tight) {
@@ -680,9 +674,9 @@ struct DashboardConversationRow: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        .padding(.horizontal, 0)
+        .padding(.vertical, 7)
         .contentShape(Rectangle())
     }
 

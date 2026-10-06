@@ -2,16 +2,27 @@ import Foundation
 import CryptoKit
 
 final class LocalImageStore {
-    static let shared = LocalImageStore()
+    private static let sharedLock = NSLock()
+    private static var currentStore: LocalImageStore?
+    static var shared: LocalImageStore {
+        let scope = AccountSession.shared.snapshot
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        if let currentStore, currentStore.scope == scope { return currentStore }
+        let store = LocalImageStore(scope: scope)
+        currentStore = store
+        return store
+    }
+    let scope: AccountSession.Snapshot
 
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "site.changer.clawchat.local-image-store")
     private let directoryURL: URL
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, scope: AccountSession.Snapshot = AccountSession.shared.snapshot, rootDirectory: URL? = nil) {
         self.fileManager = fileManager
+        self.scope = scope
 
-        let baseURL = (try? fileManager.url(
+        let baseURL = rootDirectory ?? (try? fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
@@ -19,7 +30,10 @@ final class LocalImageStore {
         )) ?? fileManager.temporaryDirectory
 
         let clawchatURL = baseURL.appendingPathComponent("clawchat", isDirectory: true)
-        let imageCacheURL = clawchatURL.appendingPathComponent("image-cache", isDirectory: true)
+        let imageCacheURL = clawchatURL
+            .appendingPathComponent("endpoints", isDirectory: true)
+            .appendingPathComponent(scope.cacheIdentifier, isDirectory: true)
+            .appendingPathComponent("image-cache", isDirectory: true)
 
         if !fileManager.fileExists(atPath: imageCacheURL.path) {
             try? fileManager.createDirectory(at: imageCacheURL, withIntermediateDirectories: true)
@@ -78,17 +92,20 @@ final class LocalImageStore {
     }
 
     func ensureCachedImage(for message: Message) async -> URL? {
+        guard AccountSession.shared.isCurrent(scope) else { return nil }
+        let api = APIClient.shared
         if let cached = cachedFileURL(for: message) {
             return cached
         }
 
-        guard let remoteURL = APIClient.shared.resolvedURL(from: message.content.imageURLString)
+        guard let remoteURL = api.resolvedURL(from: message.content.imageURLString)
         else {
             return nil
         }
 
         do {
-            let data = try await APIClient.shared.fetchRemoteData(from: remoteURL, acceptHeader: "image/*,*/*;q=0.8")
+            let data = try await api.fetchRemoteData(from: remoteURL, acceptHeader: "image/*,*/*;q=0.8")
+            guard AccountSession.shared.isCurrent(scope) else { return nil }
             return cacheImageData(data, for: message)
         } catch {
             print("Failed to cache image locally: \(error.localizedDescription)")

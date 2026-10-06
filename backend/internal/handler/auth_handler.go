@@ -12,8 +12,9 @@ import (
 
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
-	authService      *service.AuthService
-	phoneAuthService *service.PhoneAuthService
+	authService       *service.AuthService
+	phoneAuthService  *service.PhoneAuthService
+	phonePresentation phoneAuthPresentation
 }
 
 // NewAuthHandler creates a new auth handler

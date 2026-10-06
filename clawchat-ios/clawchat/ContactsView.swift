@@ -7,6 +7,7 @@ struct ContactsView: View {
 
     @State private var selectedSection: ContactSection = .bots
     @State private var searchText = ""
+    @State private var isSearching = false
 
     private var filteredBots: [Bot] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -36,15 +37,27 @@ struct ContactsView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
 
-                    searchBar
-                        .padding(.horizontal, 16)
+                    if isSearching {
+                        searchBar.padding(.horizontal, 16)
+                    }
 
                     content
                 }
             }
             .navigationTitle(L10n.t("通讯录", "Contacts"))
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { HomeUtilityCloseButton() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isSearching.toggle()
+                        if !isSearching { searchText = "" }
+                    } label: { Image(systemName: isSearching ? "xmark" : "magnifyingglass") }
+                    .accessibilityLabel(L10n.t("搜索", "Search"))
+                    .accessibilityIdentifier("contacts.search")
+                }
+            }
             .onAppear {
                 authManager.refreshCurrentUserIfNeeded()
                 botsViewModel.refreshIfNeeded()
@@ -120,7 +133,7 @@ struct ContactsView: View {
                         ChatRoomView(context: .init(
                             id: topic,
                             title: bot.name,
-                            subtitle: bot.status == "online" ? L10n.online : L10n.offline,
+                            subtitle: bot.activation.label,
                             isGroup: false,
                             groupId: nil,
                             bot: bot,
@@ -130,6 +143,7 @@ struct ContactsView: View {
                         BotRowCard(bot: bot)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("contacts.bot.\(bot.id.uuidString.lowercased())")
                 } else {
                     BotRowCard(bot: bot)
                         .opacity(0.6)
@@ -161,7 +175,7 @@ struct ContactsView: View {
                     ChatRoomView(context: .init(
                         id: conversationTopic(for: group),
                         title: group.name,
-                        subtitle: (group.isActive == true) ? L10n.botsOnline : L10n.botsOffline,
+                        subtitle: group.memberSummary,
                         isGroup: true,
                         groupId: group.id.uuidString.lowercased(),
                         memberCount: group.memberCount,
@@ -171,6 +185,7 @@ struct ContactsView: View {
                     GroupRowCard(group: group)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("contacts.group.\(group.id.uuidString.lowercased())")
             }
         }
     }

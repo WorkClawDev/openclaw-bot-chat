@@ -7,6 +7,13 @@ enum RealtimeConnectionState: Equatable {
     case idle, connecting, connected, disconnected
 }
 
+enum BrokerSessionPolicy {
+    static func renewalDelay(expiresAt: Int64?, now: Date) -> TimeInterval? {
+        guard let expiresAt else { return nil }
+        return max(3, TimeInterval(expiresAt) - now.timeIntervalSince1970 - 30)
+    }
+}
+
 class RealtimeService: NSObject, ObservableObject {
     static let shared = RealtimeService()
 
@@ -23,9 +30,15 @@ class RealtimeService: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var mqttClient: CocoaMQTT?
     private var activeConversationID: String?
+    private var activeConversationOwner: UUID?
+    var visibleConversationID: String? { activeConversationID }
     private var requestedTopics = Set<String>()
     private var subscribedTopics = Set<String>()
     private var retryWorkItem: DispatchWorkItem?
+    private var renewalWorkItem: DispatchWorkItem?
+    private var bootstrapRequest: AnyCancellable?
+    private var sessionGeneration = 0
+    private var scopeRefreshAttempted = Set<String>()
     private let retryDelay: TimeInterval = 3
     private var deliveryConfirmationTasks: [String: Task<Void, Never>] = [:]
     private let deliveryConfirmationTimeout: UInt64 = 20_000_000_000
@@ -46,6 +59,12 @@ class RealtimeService: NSObject, ObservableObject {
             log("start skipped: user is not authenticated")
             return
         }
+        if connectionState == .connected,
+           let expiry = bootstrap?.broker.expiresAt,
+           TimeInterval(expiry) - Date().timeIntervalSince1970 <= 30 {
+            refreshSession()
+            return
+        }
         guard connectionState != .connected && connectionState != .connecting else {
             log("start skipped: current state=\(connectionState)")
             return
@@ -55,47 +74,110 @@ class RealtimeService: NSObject, ObservableObject {
         connectionState = .connecting
         log("bootstrap request started")
 
-        fetchBootstrap()
+        let generation = sessionGeneration
+        bootstrapRequest = fetchBootstrap()
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] completion in
+                guard let self, generation == self.sessionGeneration else { return }
                 if case .failure(let error) = completion {
-                    self?.log("bootstrap failed: \(error)")
-                    DispatchQueue.main.async {
-                        self?.connectionState = .disconnected
-                    }
-                    self?.scheduleRetry(reason: "bootstrap_failed")
+                    self.log("bootstrap failed: \(error)")
+                    self.connectionState = .disconnected
+                    self.scheduleRetry(reason: "bootstrap_failed")
                 }
             } receiveValue: { [weak self] bootstrap in
-                self?.log(
-                    "bootstrap ok client_id=\(bootstrap.clientId) broker_ws=\(bootstrap.broker.wsPublicURL) qos=\(bootstrap.broker.qos ?? -1) subscriptions=\(bootstrap.subscriptions.count) topics=\(self?.topicListDescription(bootstrap.subscriptions.map(\.topic)) ?? "[]")"
+                guard let self, generation == self.sessionGeneration else { return }
+                self.log(
+                    "bootstrap ok client_id=\(bootstrap.clientId) broker_ws=\(bootstrap.broker.wsPublicURL) qos=\(bootstrap.broker.qos ?? -1) subscriptions=\(bootstrap.subscriptions.count)"
                 )
-                self?.bootstrap = bootstrap
-                self?.connect(using: bootstrap)
+                self.bootstrap = bootstrap
+                self.scopeRefreshAttempted.subtract(bootstrap.subscriptions.map(\.topic))
+                self.connect(using: bootstrap)
             }
-            .store(in: &cancellables)
+    }
+
+    /// Keep the open conversation and requested topics while replacing scoped credentials.
+    private func refreshSession() {
+        invalidateSession()
+        connectionState = .idle
+        start()
+    }
+
+    private func invalidateSession() {
+        sessionGeneration += 1
+        bootstrapRequest?.cancel()
+        bootstrapRequest = nil
+        renewalWorkItem?.cancel()
+        renewalWorkItem = nil
+        cancelRetry()
+        disconnectClient()
+        bootstrap = nil
+    }
+
+    private func disconnectClient() {
+        mqttClient?.delegate = nil
+        mqttClient?.autoReconnect = false
+        mqttClient?.disconnect()
+        mqttClient = nil
+        subscribedTopics.removeAll()
+    }
+
+    private func scheduleRenewal() {
+        renewalWorkItem?.cancel()
+        guard let delay = BrokerSessionPolicy.renewalDelay(expiresAt: bootstrap?.broker.expiresAt, now: Date()) else { return }
+        let generation = sessionGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.sessionGeneration == generation else { return }
+            self.refreshSession()
+        }
+        renewalWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     func stop() {
         log("stop requested")
-        cancelRetry()
-        mqttClient?.disconnect()
-        mqttClient = nil
+        invalidateSession()
         activeConversationID = nil
+        activeConversationOwner = nil
         requestedTopics.removeAll()
+        scopeRefreshAttempted.removeAll()
         subscribedTopics.removeAll()
         slashCommands.removeAll()
         slashAutocompleteChoicesByKey.removeAll()
         slashAutocompletePendingKeys.removeAll()
         slashAutocompleteRequestIdsByKey.removeAll()
+        for task in deliveryConfirmationTasks.values { task.cancel() }
+        deliveryConfirmationTasks.removeAll()
+        lastMessagesByConversation.removeAll()
         connectionState = .idle
     }
 
-    func setActiveConversation(_ conversationID: String?) {
+    func setActiveConversation(_ conversationID: String?, owner: UUID? = nil) {
         activeConversationID = conversationID
+        activeConversationOwner = owner
         log("active conversation set to \(conversationID ?? "<nil>")")
         if let conversationID {
             ensureSubscribed(to: conversationID)
             LocalMessageStore.shared.markConversationRead(conversationId: conversationID)
         }
+    }
+
+    func clearActiveConversation(owner: UUID) {
+        guard activeConversationOwner == owner else { return }
+        activeConversationID = nil
+        activeConversationOwner = nil
+    }
+
+    /// Replace the old scoped broker session immediately after membership is removed.
+    func leaveConversation(_ conversationID: String) {
+        let topic = normalizedTopic(conversationID)
+        requestedTopics.remove(topic)
+        scopeRefreshAttempted.remove(topic)
+        lastMessagesByConversation.removeValue(forKey: topic)
+        if activeConversationID == topic {
+            activeConversationID = nil
+            activeConversationOwner = nil
+        }
+        refreshSession()
     }
 
     func ensureSubscribed(to topic: String, qos: Int? = nil) {
@@ -117,6 +199,10 @@ class RealtimeService: NSObject, ObservableObject {
             return
         }
 
+        guard bootstrap?.subscriptions.contains(where: { $0.topic == normalizedTopic }) == true else {
+            if scopeRefreshAttempted.insert(normalizedTopic).inserted { refreshSession() }
+            return
+        }
         subscribe(topic: normalizedTopic, qos: qos ?? bootstrap?.broker.qos ?? 1, using: mqttClient)
     }
 
@@ -134,9 +220,7 @@ class RealtimeService: NSObject, ObservableObject {
 
         connectionState = .connecting
 
-        mqttClient?.disconnect()
-        mqttClient = nil
-        subscribedTopics.removeAll()
+        disconnectClient()
 
         let secureSchemes = Set(["wss", "https"])
         let isSecure = secureSchemes.contains((url.scheme ?? "").lowercased())
@@ -150,12 +234,14 @@ class RealtimeService: NSObject, ObservableObject {
         mqtt.username = bootstrap.broker.username
         mqtt.password = bootstrap.broker.password
         mqtt.keepAlive = 60
-        mqtt.autoReconnect = true
+        // Every reconnect obtains fresh scoped credentials from the API.
+        mqtt.autoReconnect = false
         mqtt.cleanSession = true
         mqtt.didReceiveTrust = { _, _, completionHandler in
             completionHandler(true)
         }
         mqtt.delegate = self
+        mqtt.delegateQueue = .main
 
         mqttClient = mqtt
         log(
@@ -215,12 +301,13 @@ class RealtimeService: NSObject, ObservableObject {
 
     @discardableResult
     func sendMessage(conversationId: String, content: RealtimeContentPayload, topic: String) -> Bool {
-        guard let mqttClient, let user = AuthManager.shared.currentUser else {
+        ensureSubscribed(to: topic)
+        guard connectionState == .connected,
+              bootstrap?.publishTopics.contains(topic) == true,
+              let mqttClient, let user = AuthManager.shared.currentUser else {
             log("publish blocked: has_client=\(mqttClient != nil) has_user=\(AuthManager.shared.currentUser != nil)")
             return false
         }
-
-        ensureSubscribed(to: topic)
 
         let route = MessageRoute(topic: topic)
         guard let target = route.targetForSender(type: "user", id: user.id.uuidString.lowercased()) else {
@@ -264,7 +351,9 @@ class RealtimeService: NSObject, ObservableObject {
             isActiveConversation: isActiveConversation
         )
 
+        let generation = sessionGeneration
         DispatchQueue.main.async {
+            guard self.sessionGeneration == generation else { return }
             self.messagePublisher.send(optimisticMessage)
             self.lastMessagesByConversation[conversationId] = optimisticMessage
         }
@@ -289,7 +378,7 @@ class RealtimeService: NSObject, ObservableObject {
         argIndex: Int,
         partial: String
     ) -> String? {
-        guard let mqttClient, let user = AuthManager.shared.currentUser else {
+        guard connectionState == .connected, let mqttClient, let user = AuthManager.shared.currentUser else {
             log("slash autocomplete skipped: has_client=\(mqttClient != nil) has_user=\(AuthManager.shared.currentUser != nil)")
             return nil
         }
@@ -391,7 +480,9 @@ class RealtimeService: NSObject, ObservableObject {
             currentUserID: AuthManager.shared.currentUser?.id.uuidString,
             isActiveConversation: normalizeConversationID(activeConversationID) == normalizeConversationID(message.conversationId)
         )
+        let generation = sessionGeneration
         DispatchQueue.main.async {
+            guard self.sessionGeneration == generation else { return }
             self.messagePublisher.send(message)
             self.lastMessagesByConversation[message.conversationId] = message
         }
@@ -564,20 +655,18 @@ class RealtimeService: NSObject, ObservableObject {
 
 extension RealtimeService: CocoaMQTTDelegate {
     func mqtt(_ mqtt: CocoaMQTT, didConnectAck ack: CocoaMQTTConnAck) {
+        guard mqtt === mqttClient else { return }
         guard ack == .accept else {
             log("connect rejected reason=\(ack.rawValue) description=\(ack)")
-            DispatchQueue.main.async {
-                self.connectionState = .disconnected
-            }
+            connectionState = .disconnected
             scheduleRetry(reason: "connect_rejected")
             return
         }
 
         cancelRetry()
         log("connect accepted client_id=\(bootstrap?.clientId ?? "<unknown>")")
-        DispatchQueue.main.async {
-            self.connectionState = .connected
-        }
+        connectionState = .connected
+        scheduleRenewal()
 
         guard let bootstrap else { return }
         subscribedTopics.removeAll()
@@ -587,22 +676,23 @@ extension RealtimeService: CocoaMQTTDelegate {
         for sub in bootstrap.subscriptions {
             subscribe(topic: sub.topic, qos: sub.qos, using: mqtt)
         }
-        for topic in requestedTopics {
-            subscribe(topic: topic, qos: bootstrap.broker.qos ?? 1, using: mqtt)
+        for topic in Array(requestedTopics) {
+            guard mqtt === mqttClient else { return }
+            ensureSubscribed(to: topic)
         }
     }
 
     func mqtt(_ mqtt: CocoaMQTT, didStateChangeTo state: CocoaMQTTConnState) {
+        guard mqtt === mqttClient else { return }
         log("state changed to \(state)")
         if state == .disconnected {
-            DispatchQueue.main.async {
-                self.connectionState = .disconnected
-            }
+            connectionState = .disconnected
             scheduleRetry(reason: "state_disconnected")
         }
     }
 
     func mqtt(_ mqtt: CocoaMQTT, didReceiveMessage message: CocoaMQTTMessage, id: UInt16) {
+        guard mqtt === mqttClient else { return }
         if message.topic.hasPrefix("agent/user/") { DispatchQueue.main.async { NotificationCenter.default.post(name:Notification.Name("agentUpdate"),object:nil) };return }
         log("receive raw topic=\(message.topic) packet_id=\(id) qos=\(message.qos.rawValue) bytes=\(message.payload.count)", highFrequency: true)
         guard let stringPayload = message.string else {
@@ -639,6 +729,7 @@ extension RealtimeService: CocoaMQTTDelegate {
     }
 
     func mqtt(_ mqtt: CocoaMQTT, didSubscribeTopics success: NSDictionary, failed: [String]) {
+        guard mqtt === mqttClient else { return }
         log("subscribe ack success=\(success.allKeys) failed=\(failed)")
         for key in success.allKeys {
             if let topic = key as? String {
@@ -660,14 +751,13 @@ extension RealtimeService: CocoaMQTTDelegate {
         log("pong received", highFrequency: true)
     }
     func mqttDidDisconnect(_ mqtt: CocoaMQTT, withError err: Error?) {
+        guard mqtt === mqttClient else { return }
         if let err {
             log("disconnected error=\(err.localizedDescription)")
         } else {
             log("disconnected without error")
         }
-        DispatchQueue.main.async {
-            self.connectionState = .disconnected
-        }
+        connectionState = .disconnected
         scheduleRetry(reason: "socket_disconnected")
     }
     func mqtt(_ mqtt: CocoaMQTT, didPublishMessage message: CocoaMQTTMessage, id: UInt16) {

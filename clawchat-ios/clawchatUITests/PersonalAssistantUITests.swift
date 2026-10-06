@@ -1,10 +1,11 @@
 import XCTest
 final class PersonalAssistantUITests:XCTestCase {
  override func setUpWithError()throws{continueAfterFailure=false}
- @MainActor func testAssistantApprovalInputAndManagement()throws {
-  let app=XCUIApplication();app.launchArguments=["-uiTestMode","assistantConsole","-uiTestAuthenticated","-openclawApiBaseURL","http://127.0.0.1:18082"]
+ @MainActor func testAssistantApprovalInputAndManagement()async throws {
+  var req=URLRequest(url:URL(string:"http://127.0.0.1:18082/fixture/reset")!);req.httpMethod="POST";_ = try await URLSession.shared.data(for:req)
+  let app=XCUIApplication();app.launchArguments=["-settings.languageMode","chinese","-uiTestMode","assistantConsole","-uiTestAuthenticated","-openclawApiBaseURL","http://127.0.0.1:18082"]
   app.launch()
-  XCTAssertTrue(app.navigationBars["个人助手"].waitForExistence(timeout:10))
+  XCTAssertTrue(app.navigationBars["执行与授权"].waitForExistence(timeout:10))
   XCTAssertTrue(app.staticTexts["请补充报告的目标读者"].waitForExistence(timeout:10))
   let input=app.textFields["补充信息"];input.tap();input.typeText("For weekly meeting")
   app.buttons["assistant.resume"].tap()
@@ -22,7 +23,7 @@ final class PersonalAssistantUITests:XCTestCase {
  @MainActor func testUncertainOperationEvidenceAndResume()async throws {
   var req=URLRequest(url:URL(string:"http://127.0.0.1:18082/fixture/reset")!);req.httpMethod="POST";_ = try await URLSession.shared.data(for:req)
   req.url=URL(string:"http://127.0.0.1:18082/fixture/uncertain")!;_ = try await URLSession.shared.data(for:req)
-  let app=XCUIApplication();app.launchArguments=["-uiTestMode","assistantConsole","-uiTestAuthenticated","-openclawApiBaseURL","http://127.0.0.1:18082"];app.launch()
+  let app=XCUIApplication();app.launchArguments=["-settings.languageMode","chinese","-uiTestMode","assistantConsole","-uiTestAuthenticated","-openclawApiBaseURL","http://127.0.0.1:18082"];app.launch()
   XCTAssertTrue(app.staticTexts["需要核对：fixture_external_write"].waitForExistence(timeout:10))
   let input=app.textFields["核对证据"];input.tap();input.typeText("Provider audit confirms no effect")
   let confirm=app.buttons["确认未执行，允许重试"];if !confirm.isHittable{app.swipeUp()};confirm.tap()

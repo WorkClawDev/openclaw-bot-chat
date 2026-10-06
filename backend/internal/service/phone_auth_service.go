@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -234,28 +233,16 @@ func (s *PhoneAuthService) verifyCode(ctx context.Context, purpose, countryCode,
 
 	codeKey := s.codeKey(purpose, countryCode, phoneNumber)
 	attemptKey := s.attemptKey(purpose, countryCode, phoneNumber)
-	attempts, err := s.store.IncrWithTTL(ctx, attemptKey, time.Duration(s.cfg.CodeTTLSeconds)*time.Second)
+	accepted, err := s.store.VerifyAndConsume(ctx, codeKey, attemptKey,
+		s.codeHash(purpose, countryCode, phoneNumber, code),
+		s.cfg.MaxVerifyAttempts, time.Duration(s.cfg.CodeTTLSeconds)*time.Second)
 	if err != nil {
 		return err
 	}
-	if int(attempts) > s.cfg.MaxVerifyAttempts {
-		_ = s.store.Delete(ctx, codeKey, attemptKey)
+	if !accepted {
 		return ErrInvalidPhoneCode
 	}
-
-	stored, err := s.store.Get(ctx, codeKey)
-	if err != nil {
-		if errors.Is(err, ErrPhoneCodeNotFound) {
-			return ErrInvalidPhoneCode
-		}
-		return err
-	}
-	actual := s.codeHash(purpose, countryCode, phoneNumber, code)
-	if subtle.ConstantTimeCompare([]byte(stored), []byte(actual)) != 1 {
-		return ErrInvalidPhoneCode
-	}
-
-	return s.store.Delete(ctx, codeKey, attemptKey)
+	return nil
 }
 
 func (s *PhoneAuthService) getOrCreatePhoneUser(ctx context.Context, countryCode, phoneNumber string) (*model.User, bool, error) {

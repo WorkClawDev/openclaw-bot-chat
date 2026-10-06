@@ -35,6 +35,7 @@ final class DocumentsViewModel: ObservableObject {
 struct DocumentsView: View {
     @StateObject private var viewModel = DocumentsViewModel()
     @State private var isCreating = false
+    @State private var isSearching = false
 
     var body: some View {
         NavigationStack {
@@ -43,12 +44,13 @@ struct DocumentsView: View {
 
                 VStack(alignment: .leading, spacing: 16) {
                     header
-                    searchField
+                    if isSearching { searchField }
                     content
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 22)
+                .padding(.top, 8)
                 .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .toolbar(.hidden, for: .navigationBar)
             .task {
@@ -69,17 +71,21 @@ struct DocumentsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(L10n.t("文档", "Documents"))
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Color.rcmsTextStrong)
-                Text(L10n.t("我的文档、机器人结果和草稿", "My documents, bot results, and drafts"))
-                    .font(.subheadline)
-                    .foregroundStyle(Color.rcmsTextSecondary)
             }
             Spacer()
             if viewModel.isLoading {
                 ProgressView()
                     .controlSize(.small)
             }
+            Button {
+                isSearching.toggle()
+                if !isSearching { viewModel.searchText = "" }
+            } label: {
+                Image(systemName: isSearching ? "xmark" : "magnifyingglass").frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(L10n.t("搜索文档", "Search documents"))
             Button {
                 isCreating = true
             } label: {
@@ -91,6 +97,7 @@ struct DocumentsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .accessibilityLabel(L10n.t("新建文档", "New document"))
+            HomeUtilityCloseButton()
         }
     }
 
@@ -184,7 +191,7 @@ struct DocumentDetailView: View {
                 }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                exportMenu
+                documentActionsMenu
                 Button {
                     isEditing = true
                 } label: {
@@ -313,7 +320,7 @@ struct DocumentDetailView: View {
         }
     }
 
-    private var exportMenu: some View {
+    private var documentActionsMenu: some View {
         Menu {
             Button {
                 UIPasteboard.general.string = markdownText
@@ -332,21 +339,8 @@ struct DocumentDetailView: View {
             } label: {
                 Label(L10n.t("复制继续修改提示词", "Copy edit prompt"), systemImage: "text.bubble")
             }
-            Divider()
-            Button {} label: {
-                Label(L10n.t("导出文件即将支持", "PDF export coming soon"), systemImage: "doc.richtext")
-            }
-            .disabled(true)
-            Button {} label: {
-                Label(L10n.t("分享链接即将支持", "Share link coming soon"), systemImage: "link")
-            }
-            .disabled(true)
-            Button {} label: {
-                Label(L10n.t("保存到文件即将支持", "Save to Files coming soon"), systemImage: "folder")
-            }
-            .disabled(true)
         } label: {
-            Image(systemName: "square.and.arrow.up")
+            Image(systemName: "ellipsis")
         }
         .disabled(document == nil)
         .accessibilityLabel(L10n.t("文档操作", "Document actions"))
@@ -535,6 +529,7 @@ private struct DocumentEditorFields: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.rcmsHairline, lineWidth: 1)
+                .allowsHitTesting(false)
         )
     }
 
@@ -571,6 +566,7 @@ private struct DocumentEditorFields: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.rcmsHairline, lineWidth: 1)
+                .allowsHitTesting(false)
         )
     }
 }

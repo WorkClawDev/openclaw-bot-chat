@@ -250,6 +250,10 @@ func (h *GroupHandler) RemoveMember(c *gin.Context) {
 			apiresponse.NotFound(c, "group not found")
 		case errors.Is(err, service.ErrNotGroupMember):
 			apiresponse.NotFound(c, "member not found")
+		case errors.Is(err, service.ErrNotGroupOwner):
+			apiresponse.Forbidden(c, err.Error())
+		case errors.Is(err, service.ErrCannotRemoveGroupOwner):
+			apiresponse.BadRequest(c, err.Error())
 		default:
 			apiresponse.InternalError(c, err.Error())
 		}

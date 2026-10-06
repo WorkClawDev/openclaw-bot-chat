@@ -44,7 +44,10 @@ try {
         content,
       }), { qos: 1 });
       const reply = await received;
-      assert(reply.content.type === content.type, `Echo changed ${content.type} content type`);
+      assert(reply.content.type === (content.type === 'file' ? 'text' : content.type), `Unexpected echo type for ${content.type}`);
+      if (['image', 'audio'].includes(content.type)) {
+        assert(reply.content.meta?.asset?.id && reply.content.meta.asset.id !== content.meta.asset.id, 'Bot must import its own media asset');
+      }
       assert(reply.to.type === (group ? 'group' : 'user'), 'Echo reply target is incorrect');
       return { id, replyId: reply.id };
     } finally {
@@ -55,6 +58,7 @@ try {
 
   const text = await exchange(account.topic, { type: 'text', body: `test message ${Date.now()}` });
   const groupText = await exchange(account.group_topic, { type: 'text', body: `group message ${Date.now()}` });
+  const expected = new Set([text.id, text.replyId]);
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=', 'base64');
   const audio = Buffer.alloc(44 + 1600);
   audio.write('RIFF', 0); audio.writeUInt32LE(audio.length - 8, 4); audio.write('WAVEfmt ', 8);
@@ -62,7 +66,7 @@ try {
   audio.writeUInt32LE(8000, 24); audio.writeUInt32LE(16000, 28); audio.writeUInt16LE(2, 32);
   audio.writeUInt16LE(16, 34); audio.write('data', 36); audio.writeUInt32LE(1600, 40);
 
-  for (const [kind, bytes, contentType, fileName] of [['image', image, 'image/png', 'test.png'], ['audio', audio, 'audio/wav', 'test.wav']]) {
+  for (const [kind, bytes, contentType, fileName] of [['image', image, 'image/png', 'test.png'], ['audio', audio, 'audio/wav', 'test.wav'], ['file', Buffer.from('# Acceptance attachment\nA real signed file round trip.\n'), 'text/markdown', 'acceptance.md']]) {
     const prepared = await api(base, 'POST', `/api/v1/assets/${kind}/upload-prepare`, { token, body: {
       file_name: fileName, content_type: contentType, size: bytes.length, conversation_id: account.topic,
     } });
@@ -75,26 +79,27 @@ try {
     invalidUrl.searchParams.set('X-Amz-Signature', '0'.repeat(64));
     const rejected = await fetch(invalidUrl, { signal: AbortSignal.timeout(15000) });
     assert(rejected.status === 403, 'Storage accepted an invalid signature');
-    await exchange(account.topic, { type: kind, body: fileName, url: asset.download_url, name: fileName, meta: { asset } });
+    const media = await exchange(account.topic, { type: kind, body: fileName, url: asset.download_url, name: fileName, meta: { asset } });
+    expected.add(media.id);
+    expected.add(media.replyId);
   }
   const imported = await api(base, 'POST', '/api/v1/bot-runtime/assets/image/import', { botKey: account.bot_key, body: {
     file_name: 'bot-test.png', content_type: 'image/png', data_url: `data:image/png;base64,${image.toString('base64')}`,
   } });
   assert(imported.id || imported.asset?.id, 'Bot media import did not return an asset');
 
-  const expected = new Set([text.id, text.replyId]);
   let persisted = false;
   for (let attempt = 0; attempt < 40; attempt++) {
     const history = await api(base, 'GET', `/api/v1/messages/${account.topic}?limit=50`, { token });
     if ([...expected].every(id => history.some(message => message.id === id))) { persisted = true; break; }
     await sleep(100);
   }
-  assert(persisted, 'Direct message and reply were not persisted');
+  assert(persisted, 'A direct text/media message or its reply was not persisted');
   const groupHistory = await api(base, 'GET', `/api/v1/messages/${account.group_topic}?limit=50`, { token });
   assert([groupText.id, groupText.replyId].every(id => groupHistory.some(message => message.id === id)), 'Group messages were not persisted');
   assert((await api(base, 'GET', '/api/v1/documents', { token })).some(item => item.id === account.document_id), 'Document fixture is missing');
   assert((await api(base, 'GET', '/api/v1/tasks', { token })).some(item => item.id === account.task_id), 'Task fixture is missing');
-  console.log('PASS web, login, MQTT WebSocket, direct/group echo, persistence, signed image/audio upload/download, invalid-signature rejection, bot image import, document/task fixtures');
+  console.log('PASS web, login, MQTT WebSocket, direct/group echo, persistence, signed image/audio/file upload/download, invalid-signature rejection, bot image import, document/task fixtures');
 } catch (error) {
   reportFailure(error);
 } finally {

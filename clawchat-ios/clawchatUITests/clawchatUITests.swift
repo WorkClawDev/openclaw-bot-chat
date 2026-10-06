@@ -44,7 +44,7 @@ final class clawchatUITests: XCTestCase {
     }
 
     @MainActor
-    func testAuthenticatedShellNavigatesEveryPrimaryTabAndKeySheets() throws {
+    func testAuthenticatedShellNavigatesAccountMenuAndKeySheets() throws {
         let app = launchApp(authenticated: true)
 
         assertHomeTab(in: app)
@@ -66,7 +66,7 @@ final class clawchatUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "-uiTestResetState",
-            "-openclawApiBaseURL", "http://127.0.0.1:8080"
+            "-openclawApiBaseURL", "http://127.0.0.1:18082"
         ]
         if authenticated {
             app.launchArguments.append("-uiTestAuthenticated")
@@ -78,17 +78,18 @@ final class clawchatUITests: XCTestCase {
 
     @MainActor
     private func assertHomeTab(in app: XCUIApplication) {
-        XCTAssertTrue(app.staticTexts["Messages"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Welcome back"].exists)
-        XCTAssertTrue(app.staticTexts["Chats"].exists)
-        XCTAssertTrue(app.buttons["Add"].exists)
+        XCTAssertTrue(app.buttons["home.search"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["home.account"].exists)
+        XCTAssertTrue(app.buttons["home.add"].exists)
+        XCTAssertEqual(app.tabBars.count, 0)
     }
 
     @MainActor
     private func assertContactsTab(in app: XCUIApplication) {
-        tapTab("Contacts", in: app)
+        openSection("Contacts", in: app)
         XCTAssertTrue(app.navigationBars["Contacts"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textFields["Search bots"].exists)
+        app.buttons["contacts.search"].tap()
+        XCTAssertTrue(app.textFields["Search bots"].waitForExistence(timeout: 3))
 
         let groupsSegment = app.buttons["Groups"]
         XCTAssertTrue(groupsSegment.waitForExistence(timeout: 3))
@@ -98,7 +99,7 @@ final class clawchatUITests: XCTestCase {
 
     @MainActor
     private func assertTasksTabAndCreateSheet(in app: XCUIApplication) {
-        tapTab("Tasks", in: app)
+        openSection("Tasks", in: app)
         XCTAssertTrue(app.staticTexts["tasks-title"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["tasks-view-mode-picker"].exists)
 
@@ -112,9 +113,10 @@ final class clawchatUITests: XCTestCase {
 
     @MainActor
     private func assertDocumentsTabAndEditor(in app: XCUIApplication) {
-        tapTab("Docs", in: app)
+        openSection("Docs", in: app)
         XCTAssertTrue(app.staticTexts["Documents"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textFields["Search documents"].exists)
+        app.buttons["Search documents"].tap()
+        XCTAssertTrue(app.textFields["Search documents"].waitForExistence(timeout: 3))
 
         app.buttons["New document"].tap()
         XCTAssertTrue(app.navigationBars["New document"].waitForExistence(timeout: 4))
@@ -125,7 +127,7 @@ final class clawchatUITests: XCTestCase {
 
     @MainActor
     private func assertSettingsTabAndLogout(in app: XCUIApplication) {
-        tapTab("Settings", in: app)
+        openSection("Settings", in: app)
         XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Test Runner"].exists)
         XCTAssertTrue(app.staticTexts["@ui-test"].exists)
@@ -151,10 +153,16 @@ final class clawchatUITests: XCTestCase {
     }
 
     @MainActor
-    private func tapTab(_ name: String, in app: XCUIApplication) {
-        let tab = app.tabBars.buttons[name]
-        XCTAssertTrue(tab.waitForExistence(timeout: 5), "Missing \(name) tab")
-        tab.tap()
+    private func openSection(_ name: String, in app: XCUIApplication) {
+        let close = app.buttons["home.utility.close"]
+        if close.exists { close.tap() }
+        let account = app.buttons["home.account"]
+        XCTAssertTrue(account.waitForExistence(timeout: 5))
+        account.tap()
+        let destination = ["Contacts": "contacts", "Tasks": "tasks", "Docs": "documents", "Settings": "settings"][name]!
+        let item = app.buttons["home.menu.\(destination)"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "Missing \(name) menu item")
+        item.tap()
     }
 
     @MainActor

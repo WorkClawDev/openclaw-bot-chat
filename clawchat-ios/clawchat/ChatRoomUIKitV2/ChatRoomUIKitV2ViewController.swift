@@ -37,6 +37,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     var onInitialPositioned: (() -> Void)?
     var onPreviewImage: ((Message) -> Void)?
     var onSaveImage: ((Message) -> Void)?
+    var onOpenFile: ((FileBlockContentV2) -> Void)?
     var onOpenDocument: ((UUID) -> Void)?
     var onContinueDocument: ((DocumentLinkPreview) -> Void)?
     var onTapList: (() -> Void)?
@@ -116,6 +117,28 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
     }
 
+    func applyCompactMessageMode(_ enabled: Bool) {
+        mutationCoordinator.enqueue { [weak self] finish in
+            guard let self, self.renderCoordinator.compactMessageMode != enabled else {
+                finish()
+                return
+            }
+            self.renderCoordinator.compactMessageMode = enabled
+            guard self.isViewLoaded, self.store.count > 0 else {
+                finish()
+                return
+            }
+            let messages = self.store.messages.map {
+                ChatMessageV2(id: $0.id, sequence: $0.sequence, isOutgoing: $0.isOutgoing,
+                              blocks: $0.blocks, sender: $0.sender, status: $0.status)
+            }
+            let rendered = self.renderCoordinator.renderPage(
+                messages, containerWidth: self.collectionWidth, traitCollection: self.traitCollection
+            )
+            self.updateRenderedMessagesInCurrentMutation(rendered, finish: finish)
+        }
+    }
+
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         mutationCoordinator.enqueue { [weak self] finish in
@@ -167,7 +190,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
 
     private func configureCollectionView() {
         view.backgroundColor = .systemBackground
-        chatLayout.keepContentAtBottomOfVisibleArea = true
+        chatLayout.keepContentAtBottomOfVisibleArea = false
         chatLayout.keepContentOffsetAtBottomOnBatchUpdates = true
         chatLayout.processOnlyVisibleItemsOnAnimatedBatchUpdates = false
         if #available(iOS 16.0, *) {
@@ -205,6 +228,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         diagnosticsLabel.accessibilityIdentifier = "chatRoomV2.diagnostics"
         diagnosticsLabel.isAccessibilityElement = true
         diagnosticsLabel.text = diagnostics.summary(messageCount: store.count)
+            + "; density=\(renderCoordinator.compactMessageMode ? "compact" : "comfort")"
         view.addSubview(diagnosticsLabel)
         NSLayoutConstraint.activate([
             diagnosticsLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
@@ -229,6 +253,8 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
             rawMessages = ChatRoomV2FixtureFactory.initialTextMessages()
         case .textBenchmark:
             rawMessages = ChatRoomV2FixtureFactory.benchmarkMessages()
+        case .audioPlayback:
+            rawMessages = ChatRoomV2FixtureFactory.audioPlaybackMessages()
         case .richMedia:
             rawMessages = ChatRoomV2FixtureFactory.richMediaMessages()
         case .mixedRichPrepend:
@@ -342,7 +368,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                 }
                 self.isApplyingHistoryPrepend = false
                 if let restoredSnapshot {
-                    self.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self.restoreContentOffset(with: restoredSnapshot)
                     self.diagnostics.recordRestore()
                 }
                 self.collectionView.layoutIfNeeded()
@@ -566,7 +592,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
         }
 
         self.collectionView.layoutIfNeeded()
-        let snapshot = self.chatLayout.getContentOffsetSnapshot(from: restoreSnapshotEdgeForLiveState())
+        let snapshot = self.contentOffsetSnapshot(from: restoreSnapshotEdgeForLiveState())
         self.store.replaceAll(rendered)
         UIView.performWithoutAnimation {
             self.collectionView.performBatchUpdates {
@@ -577,7 +603,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                     return
                 }
                 if let snapshot {
-                    self.chatLayout.restoreContentOffset(with: snapshot)
+                    self.restoreContentOffset(with: snapshot)
                     self.diagnostics.recordRestore()
                 }
                 self.finishLiveHistoryRequestIfIdle()
@@ -636,7 +662,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                 if self?.isNearBottom == true {
                     self?.scrollToBottom(animated: false)
                 } else if let restoredSnapshot {
-                    self?.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self?.restoreContentOffset(with: restoredSnapshot)
                     self?.diagnostics.recordRestore()
                 }
                 self?.finishLiveHistoryRequestIfIdle()
@@ -716,7 +742,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                     return
                 }
                 if let restoredSnapshot, change.prependCount > 0 {
-                    self.chatLayout.restoreContentOffset(with: restoredSnapshot)
+                    self.restoreContentOffset(with: restoredSnapshot)
                     self.diagnostics.recordRestore()
                     self.finishLiveHistoryRequestIfIdle()
                 } else if self.isNearBottom {
@@ -823,7 +849,10 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
     }
 
     private func visibleAnchor() -> VisibleMessageAnchorV2? {
-        guard let indexPath = collectionView.indexPathsForVisibleItems.sorted().first else {
+        let viewport = chatLayout.visibleBounds
+        guard let indexPath = collectionView.indexPathsForVisibleItems.sorted().first(where: {
+            collectionView.layoutAttributesForItem(at: $0)?.frame.intersects(viewport) == true
+        }) else {
             return nil
         }
         return visibleAnchor(at: indexPath)
@@ -854,8 +883,40 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
 
     private func updateDiagnosticsLabel() {
         diagnosticsLabel.text = diagnostics.summary(messageCount: store.count)
+            + "; density=\(renderCoordinator.compactMessageMode ? "compact" : "comfort")"
         diagnosticsLabel.accessibilityValue = diagnosticsLabel.text
         diagnosticsLabel.isHidden = !usesFixtureData && !ChatRoomV2FeatureFlag.showsDiagnostics
+    }
+
+    private func contentOffsetSnapshot(from edge: ChatLayoutPositionSnapshot.Edge) -> ChatLayoutPositionSnapshot? {
+        // Keep even the partially visible first message stable when its height changes.
+        if edge == .top, let anchor = visibleAnchor(),
+           let index = store.firstIndex(messageID: anchor.messageID) {
+            return ChatLayoutPositionSnapshot(indexPath: IndexPath(item: index, section: 0),
+                                              edge: .top, offset: anchor.offsetFromVisibleTop)
+        }
+        return chatLayout.getContentOffsetSnapshot(from: edge)
+    }
+
+    private func restoreContentOffset(with snapshot: ChatLayoutPositionSnapshot) {
+        // ChatLayout's restore temporarily suppresses attributes. UIKit can still ask
+        // for a fading visible cell after consecutive updates and assert on nil.
+        // Our item sizes are exact, so restore against the completed layout directly.
+        collectionView.layoutIfNeeded()
+        guard let frame = collectionView.layoutAttributesForItem(at: snapshot.indexPath)?.frame else { return }
+        let insets = collectionView.adjustedContentInset
+        let additional = chatLayout.settings.additionalInsets
+        let desired: CGFloat
+        switch snapshot.edge {
+        case .top:
+            desired = frame.minY - snapshot.offset - insets.top - additional.top
+        case .bottom:
+            desired = frame.maxY + snapshot.offset - collectionView.bounds.height + insets.bottom + additional.bottom
+        }
+        let maximum = max(-insets.top, collectionView.contentSize.height - collectionView.bounds.height + insets.bottom)
+        let offset = min(maximum, max(-insets.top, desired))
+        collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: offset), animated: false)
+        collectionView.layoutIfNeeded()
     }
 
     private func restoreSnapshotEdgeForLiveState() -> ChatLayoutPositionSnapshot.Edge {
@@ -904,7 +965,7 @@ final class ChatRoomUIKitV2ViewController: UIViewController {
                     return
                 }
                 if let snapshot {
-                    self.chatLayout.restoreContentOffset(with: snapshot)
+                    self.restoreContentOffset(with: snapshot)
                     self.diagnostics.recordKeyboardRestore()
                 }
                 self.updateNearBottom(self.collectionView)
@@ -973,6 +1034,7 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDataSource {
         textCell.onImageTap = { [weak self] blockID in
             self?.previewImage(messageID: message.id, blockID: blockID)
         }
+        textCell.onFileTap = { [weak self] file in self?.onOpenFile?(file) }
         textCell.onDocumentTap = { [weak self] documentID in
             self?.onOpenDocument?(documentID)
         }
@@ -991,6 +1053,8 @@ extension ChatRoomUIKitV2ViewController: UICollectionViewDelegate {
     }
 
     private func requestPreviousPageIfReady(from scrollView: UIScrollView) {
+        // Programmatic inset/layout changes must not request history, including in fixtures.
+        guard hasUserInitiatedHistoryScroll else { return }
         guard shouldRequestPreviousPage(from: scrollView) else { return }
         guard !isLoadingHistory else { return }
         loadPreviousPageIfNeeded()

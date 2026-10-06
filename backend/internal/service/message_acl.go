@@ -81,6 +81,16 @@ func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid
 	}
 	topics = append(topics, conversations...)
 
+	// First messages must be authorized before a conversation exists in history.
+	// Issue exact topics for the owner's enabled bots, never a user-wide wildcard.
+	botIDs, err := s.botRepo.ListEnabledIDsByOwner(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, botID := range botIDs {
+		topics = append(topics, fmt.Sprintf("%s/dm/user/%s/bot/%s", messageTopicPrefix, userID, botID))
+	}
+
 	groups, _, err := s.groupRepo.ListByUser(ctx, userID, 1, 500)
 	if err != nil {
 		return nil, err

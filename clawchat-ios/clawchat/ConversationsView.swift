@@ -6,6 +6,7 @@ class ConversationsViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
+    private let messageStore = LocalMessageStore.shared
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -18,6 +19,7 @@ class ConversationsViewModel: ObservableObject {
     }
 
     func fetchConversations() {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         errorMessage = nil
         reloadCachedConversations()
         isLoading = false
@@ -30,14 +32,14 @@ class ConversationsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (conversations: [Conversation]) in
-                LocalMessageStore.shared.upsert(conversations: conversations)
+                self.messageStore.upsert(conversations: conversations)
                 self.conversations = self.sortConversations(conversations)
             }
             .store(in: &cancellables)
     }
 
     private func reloadCachedConversations() {
-        conversations = sortConversations(LocalMessageStore.shared.cachedConversations())
+        conversations = sortConversations(messageStore.cachedConversations())
     }
 
     private func sortConversations(_ items: [Conversation]) -> [Conversation] {

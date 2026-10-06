@@ -1,5 +1,7 @@
 # ClawChat iOS UI Prototype
 
+> Historical prototype. The phone navigation, palette and message layout below are superseded by [iOS V5](../ios-v5/IMPLEMENTATION.md). Use V5 for current implementation and acceptance; keep this document only as reference for older screens.
+
 This document is the visual implementation brief for the ClawChat iOS app. It uses one generated prototype image per page so an implementation agent can translate the design into SwiftUI without guessing the main layout.
 
 Important: the generated images may approximate the logo visually, but the implementation must use the existing app asset at `clawchat-ios/clawchat/Assets.xcassets/AppLogo.imageset/lobster_icon.png`. Do not redesign, redraw, recolor, or replace the logo.

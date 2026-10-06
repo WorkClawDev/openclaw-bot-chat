@@ -5,6 +5,8 @@ private enum IpadWorkspaceSection: String, CaseIterable, Identifiable {
     case bots
     case groups
     case tasks
+    case documents
+    case assistant
     case settings
 
     var id: String { rawValue }
@@ -15,6 +17,10 @@ private enum IpadWorkspaceSection: String, CaseIterable, Identifiable {
             return L10n.t("首页", "Home")
         case .tasks:
             return L10n.t("任务", "Tasks")
+        case .documents:
+            return L10n.t("文档", "Docs")
+        case .assistant:
+            return L10n.t("执行", "Activity")
         case .bots:
             return L10n.t("机器人", "Bots")
         case .groups:
@@ -30,6 +36,10 @@ private enum IpadWorkspaceSection: String, CaseIterable, Identifiable {
             return "house.fill"
         case .tasks:
             return "checklist.checked"
+        case .documents:
+            return "doc.text"
+        case .assistant:
+            return "checkmark.shield"
         case .bots:
             return "cpu.fill"
         case .groups:
@@ -45,6 +55,17 @@ private enum IpadWorkspaceLayout {
     static let contentColumnWidth: CGFloat = 340
     static let detailMaxWidth: CGFloat = 980
     static let profileDetailMaxWidth: CGFloat = 820
+}
+
+private struct IpadColumnWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = IpadWorkspaceLayout.contentColumnWidth
+}
+
+private extension EnvironmentValues {
+    var ipadColumnWidth: CGFloat {
+        get { self[IpadColumnWidthKey.self] }
+        set { self[IpadColumnWidthKey.self] = newValue }
+    }
 }
 
 struct IpadWorkspaceView: View {
@@ -103,7 +124,8 @@ struct IpadWorkspaceView: View {
     var body: some View {
         let _ = languageModeRawValue
 
-        ZStack {
+        GeometryReader { geometry in
+          ZStack {
             FrostedBackground()
 
             HStack(spacing: 0) {
@@ -123,8 +145,11 @@ struct IpadWorkspaceView: View {
                     .overlay(Color.rcmsDivider)
 
                 content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .environment(\.ipadColumnWidth, min(340, max(200, (geometry.size.width - 93) * 0.4 - 40)))
+                    .frame(width: max(0, geometry.size.width - 93), height: geometry.size.height)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+          }
         }
         .task {
             refreshAllIfNeeded()
@@ -172,6 +197,14 @@ struct IpadWorkspaceView: View {
             IpadDetailStage(maxWidth: IpadWorkspaceLayout.detailMaxWidth, alignment: .top) {
                 SettingsView()
                     .id("ipad-settings")
+            }
+        case .documents:
+            IpadDetailStage(maxWidth: IpadWorkspaceLayout.detailMaxWidth, alignment: .top) {
+                DocumentsView()
+            }
+        case .assistant:
+            IpadDetailStage(maxWidth: IpadWorkspaceLayout.detailMaxWidth, alignment: .top) {
+                NavigationStack { AssistantView() }
             }
         }
     }
@@ -221,9 +254,7 @@ struct IpadWorkspaceView: View {
         ChatContext(
             id: conversationTopic(for: bot) ?? bot.id.uuidString.lowercased(),
             title: bot.name,
-            subtitle: bot.status == "online"
-                ? "\(L10n.online) · \(L10n.bot)"
-                : "\(L10n.offline) · \(L10n.bot)",
+            subtitle: bot.activation.label,
             isGroup: false,
             groupId: nil,
             bot: bot,
@@ -235,9 +266,7 @@ struct IpadWorkspaceView: View {
         ChatContext(
             id: conversationTopic(for: group),
             title: group.name,
-            subtitle: group.isActive == true
-                ? L10n.t("\(group.memberCount ?? 0) 名成员 · 机器人在线", "\(group.memberCount ?? 0) members · bots online")
-                : L10n.t("\(group.memberCount ?? 0) 名成员 · 机器人离线", "\(group.memberCount ?? 0) members · bots offline"),
+            subtitle: group.memberSummary,
             isGroup: true,
             groupId: group.id.uuidString.lowercased(),
             memberCount: group.memberCount,
@@ -381,8 +410,9 @@ private struct IpadSidebarView: View {
             }
             .padding(.top, 20)
 
-            VStack(spacing: 10) {
-                ForEach(IpadWorkspaceSection.allCases) { section in
+            ScrollView {
+              VStack(spacing: 10) {
+                ForEach(IpadWorkspaceSection.allCases.filter { $0 != .documents || DocumentsFeatureFlag.isEnabled }) { section in
                     Button {
                         onSelect(section)
                     } label: {
@@ -403,8 +433,12 @@ private struct IpadSidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(section.title)
+                    .accessibilityIdentifier("ipad.section.\(section.rawValue)")
+                    .accessibilityAddTraits(selectedSection == section ? .isSelected : [])
                 }
+              }
             }
+            .scrollIndicators(.hidden)
 
             Spacer(minLength: 16)
 
@@ -462,6 +496,9 @@ private struct IpadSidebarView: View {
 }
 
 private struct IpadMessagesWorkspace: View {
+    @Environment(\.ipadColumnWidth) private var columnWidth
+    @State private var isSearching = false
+    @State private var searchText = ""
     @ObservedObject var viewModel: HomeDashboardViewModel
     let connectionState: RealtimeConnectionState
     @Binding var selectedChatContext: ChatContext?
@@ -475,13 +512,13 @@ private struct IpadMessagesWorkspace: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                metricStrip
+                if isSearching { IpadSearchField(text: $searchText, placeholder: L10n.t("搜索消息", "Search messages")) }
                 conversationList
             }
-            .frame(width: IpadWorkspaceLayout.contentColumnWidth)
+            .frame(width: columnWidth)
             .frame(maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 20)
-            .padding(.vertical, 24)
+            .padding(.vertical, 8)
             .background(Color.rcmsBackground.opacity(0.35))
 
             Divider()
@@ -498,11 +535,8 @@ private struct IpadMessagesWorkspace: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(L10n.t("消息", "Messages"))
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(Color.rcmsTextStrong)
-                    Text(L10n.t("机器人和群组实时会话", "Realtime bot and group conversations"))
-                        .font(.subheadline)
-                        .foregroundStyle(Color.rcmsTextSecondary)
                 }
 
                 Spacer()
@@ -511,18 +545,22 @@ private struct IpadMessagesWorkspace: View {
                     ProgressView()
                         .controlSize(.small)
                 }
+                Button {
+                    isSearching.toggle()
+                    if !isSearching { searchText = "" }
+                } label: {
+                    Image(systemName: isSearching ? "xmark" : "magnifyingglass")
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(L10n.t("搜索消息", "Search messages"))
             }
-
-            IpadSearchField(text: .constant(""), placeholder: L10n.t("搜索消息", "Search messages"))
-                .disabled(true)
-                .opacity(0.72)
         }
     }
 
     private var metricStrip: some View {
         let metrics = viewModel.metrics
         return HStack(spacing: 10) {
-            IpadMiniMetric(title: L10n.t("在线机器人", "Online bots"), value: "\(metrics.onlineBots)", systemImage: "cpu.fill", tint: Color.rcmsOnline)
+            IpadMiniMetric(title: L10n.t("已启用机器人", "Enabled bots"), value: "\(metrics.enabledBots)", systemImage: "cpu.fill", tint: Color.rcmsOnline)
             IpadMiniMetric(title: L10n.t("活跃群组", "Active groups"), value: "\(metrics.activeGroups)", systemImage: "person.3.fill", tint: Color.rcmsAccent)
             IpadMiniMetric(title: L10n.t("消息通道", "Broker"), value: brokerMetricValue, systemImage: "antenna.radiowaves.left.and.right", tint: brokerMetricTint)
         }
@@ -560,12 +598,12 @@ private struct IpadMessagesWorkspace: View {
 
             if let errorMessage = viewModel.errorMessage, viewModel.recentConversations.isEmpty {
                 IpadEmptyPanel(systemImage: "exclamationmark.triangle.fill", title: L10n.t("消息面板不可用", "Dashboard unavailable"), message: errorMessage)
-            } else if viewModel.recentConversations.isEmpty {
-                IpadEmptyPanel(systemImage: "bubble.left.and.bubble.right", title: L10n.t("暂无会话", "No conversations yet"), message: L10n.t("从机器人或群组开始聊天。", "Start a chat from Bots or Groups."))
+            } else if filteredConversations.isEmpty {
+                IpadEmptyPanel(systemImage: "bubble.left.and.bubble.right", title: searchText.isEmpty ? L10n.t("暂无会话", "No conversations yet") : L10n.t("没有匹配会话", "No matching conversations"), message: searchText.isEmpty ? L10n.t("从机器人或群组开始聊天。", "Start a chat from Bots or Groups.") : L10n.t("试试其他关键词。", "Try a different search."))
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(viewModel.recentConversations) { conversation in
+                        ForEach(filteredConversations) { conversation in
                             let context = contextForConversation(conversation)
                             Button {
                                 selectedChatContext = context
@@ -597,26 +635,46 @@ private struct IpadMessagesWorkspace: View {
         }
     }
 
+    private var filteredConversations: [Conversation] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return viewModel.recentConversations }
+        return viewModel.recentConversations.filter {
+            titleForConversation($0).localizedCaseInsensitiveContains(query)
+                || ($0.lastMessage?.content?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
     @ViewBuilder
     private var detail: some View {
         if let selectedChatContext {
-            ChatRoomView(context: selectedChatContext)
+            IpadChatDetail(context: selectedChatContext) { self.selectedChatContext = nil }
         } else {
             IpadWorkspaceEmptyDetail(
                 title: L10n.t("选择一个会话", "Pick up a conversation"),
                 message: L10n.t("从列表中选择机器人或群组，聊天会在这里打开。", "Select a bot or group from the list. The chat opens here while navigation and context stay visible."),
-                systemImage: "bubble.left.and.bubble.right.fill",
-                highlights: [
-                    (L10n.t("通道状态", "Broker status"), brokerMetricValue, brokerMetricTint),
-                    (L10n.t("在线机器人", "Online bots"), "\(viewModel.metrics.onlineBots)", Color.rcmsOnline),
-                    (L10n.t("活跃群组", "Active groups"), "\(viewModel.metrics.activeGroups)", Color.rcmsAccent)
-                ]
+                systemImage: "bubble.left.and.bubble.right.fill"
             )
         }
     }
 }
 
+// Keep settings and other pushed chat destinations inside the detail column.
+// Each conversation owns its navigation stack so switching chats drops old paths.
+private struct IpadChatDetail: View {
+    let context: ChatContext
+    let onClose: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ChatRoomView(context: context)
+                .environment(\.closeNotificationChat, onClose)
+        }
+        .id(context.id)
+    }
+}
+
 private struct IpadBotsWorkspace: View {
+    @Environment(\.ipadColumnWidth) private var columnWidth
     @ObservedObject var viewModel: BotsViewModel
     let bots: [Bot]
     @Binding var searchText: String
@@ -634,7 +692,7 @@ private struct IpadBotsWorkspace: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
-                IpadDirectoryHeader(title: L10n.t("机器人", "Bots"), subtitle: L10n.t("机器人私聊和运行状态", "Bot direct chats and runtime presence"), isLoading: viewModel.isLoading)
+                IpadDirectoryHeader(title: L10n.t("机器人", "Bots"), subtitle: L10n.t("机器人私聊和运行状态", "Bot conversations and availability"), isLoading: viewModel.isLoading)
                 IpadSearchField(text: $searchText, placeholder: L10n.t("搜索机器人", "Search bots"))
 
                 ScrollView {
@@ -649,13 +707,14 @@ private struct IpadBotsWorkspace: View {
                                     .background((selectedBotID ?? selectedBot?.id) == bot.id ? Color.rcmsAccentSoft.opacity(0.86) : Color.clear)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("ipad.bot.\(bot.id.uuidString.lowercased())")
                         }
                     }
                     .glassCardStyle()
                 }
                 .scrollIndicators(.hidden)
             }
-            .frame(width: IpadWorkspaceLayout.contentColumnWidth)
+            .frame(width: columnWidth)
             .frame(maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 20)
             .padding(.vertical, 24)
@@ -665,7 +724,7 @@ private struct IpadBotsWorkspace: View {
 
             IpadDetailStage {
                 if let selectedChatContext {
-                    ChatRoomView(context: selectedChatContext)
+                    IpadChatDetail(context: selectedChatContext) { self.selectedChatContext = nil }
                 } else if let selectedBot {
                     IpadBotDetail(bot: selectedBot) {
                         selectedChatContext = contextForBot(selectedBot)
@@ -681,6 +740,7 @@ private struct IpadBotsWorkspace: View {
 }
 
 private struct IpadGroupsWorkspace: View {
+    @Environment(\.ipadColumnWidth) private var columnWidth
     @ObservedObject var viewModel: GroupsViewModel
     let groups: [ChatGroup]
     @Binding var searchText: String
@@ -713,13 +773,14 @@ private struct IpadGroupsWorkspace: View {
                                     .background((selectedGroupID ?? selectedGroup?.id) == group.id ? Color.rcmsAccentSoft.opacity(0.86) : Color.clear)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("ipad.group.\(group.id.uuidString.lowercased())")
                         }
                     }
                     .glassCardStyle()
                 }
                 .scrollIndicators(.hidden)
             }
-            .frame(width: IpadWorkspaceLayout.contentColumnWidth)
+            .frame(width: columnWidth)
             .frame(maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 20)
             .padding(.vertical, 24)
@@ -729,7 +790,7 @@ private struct IpadGroupsWorkspace: View {
 
             IpadDetailStage {
                 if let selectedChatContext {
-                    ChatRoomView(context: selectedChatContext)
+                    IpadChatDetail(context: selectedChatContext) { self.selectedChatContext = nil }
                 } else if let selectedGroup {
                     IpadGroupDetail(group: selectedGroup) {
                         selectedChatContext = contextForGroup(selectedGroup)
@@ -771,7 +832,7 @@ private struct IpadWorkspaceEmptyDetail: View {
             }
 
             if !highlights.isEmpty {
-                HStack(spacing: 10) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 10)], spacing: 10) {
                     ForEach(Array(highlights.enumerated()), id: \.offset) { _, item in
                         VStack(spacing: 5) {
                             Text(item.1)
@@ -785,7 +846,8 @@ private struct IpadWorkspaceEmptyDetail: View {
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.72)
                         }
-                        .frame(width: 118, height: 66)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 66)
                         .background(Color.rcmsSurfaceElevated.opacity(0.9))
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .overlay(
@@ -851,10 +913,11 @@ private struct IpadEntityHero: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text(title)
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(Color.rcmsTextStrong)
                         .lineLimit(2)
                         .minimumScaleFactor(0.78)
+                        .accessibilityIdentifier("ipad.entity.title")
 
                     Text(subtitle)
                         .font(.subheadline)
@@ -864,7 +927,10 @@ private struct IpadEntityHero: View {
                     IpadStatusPill(text: statusText, tint: statusTint)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
+            // The action must not compete with the entity name in a narrow
+            // detail pane (for example iPad mini portrait beside the bot list).
                 Button(action: action) {
                     Label(actionTitle, systemImage: actionImage)
                         .font(.headline.weight(.semibold))
@@ -877,7 +943,7 @@ private struct IpadEntityHero: View {
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
-            }
+                .accessibilityIdentifier("ipad.entity.start-chat")
         }
         .padding(24)
         .background(Color.rcmsSurfaceElevated.opacity(0.82))
@@ -891,11 +957,7 @@ private struct IpadEntityHero: View {
 
 private struct IpadDetailGrid<Content: View>: View {
     private let content: Content
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    private let columns = [GridItem(.adaptive(minimum: 140), spacing: 12)]
 
     init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -1026,10 +1088,6 @@ private struct IpadBotDetail: View {
     let bot: Bot
     let onStartChat: () -> Void
 
-    private var isOnline: Bool {
-        bot.status == "online"
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -1039,24 +1097,22 @@ private struct IpadBotDetail: View {
                     avatarName: bot.name,
                     avatarURL: bot.avatarUrl ?? bot.avatar,
                     systemImage: "cpu.fill",
-                    statusText: isOnline ? L10n.t("机器人在线", "Online bot") : L10n.t("机器人离线", "Offline bot"),
-                    statusTint: isOnline ? Color.rcmsOnline : Color.rcmsOffline,
+                    statusText: bot.activation.label,
+                    statusTint: Color.rcmsTextSecondary,
                     actionTitle: L10n.t("开始聊天", "Start chat"),
                     actionImage: "paperplane.fill",
                     action: onStartChat
                 )
 
                 IpadDetailGrid {
-                    IpadDetailTile(title: L10n.t("运行状态", "Runtime"), value: isOnline ? L10n.online : L10n.offline, systemImage: "bolt.horizontal.fill", tint: isOnline ? Color.rcmsOnline : Color.rcmsOffline)
+                    IpadDetailTile(title: L10n.t("启用状态", "Availability"), value: bot.activation.label, systemImage: "checkmark.shield", tint: Color.rcmsAccent)
                     IpadDetailTile(title: L10n.t("机器人类型", "Bot type"), value: bot.botType ?? L10n.bot, systemImage: "cpu.fill", tint: Color.rcmsAccent)
-                    IpadDetailTile(title: L10n.t("主题", "Topic"), value: bot.mqttTopic ?? L10n.t("自动生成", "Generated"), systemImage: "point.3.connected.trianglepath.dotted", tint: Color.rcmsWarning)
                 }
 
                 IpadInfoPanel(
                     title: L10n.t("会话设置", "Conversation setup"),
                     rows: [
-                        (L10n.t("描述", "Description"), bot.description ?? L10n.t("暂无描述", "No description")),
-                        (L10n.t("MQTT 主题", "MQTT topic"), bot.mqttTopic ?? L10n.t("由用户和机器人 ID 自动生成", "Generated from user and bot IDs"))
+                        (L10n.t("描述", "Description"), bot.description ?? L10n.t("暂无描述", "No description"))
                     ]
                 )
 
@@ -1077,10 +1133,6 @@ private struct IpadGroupDetail: View {
     let group: ChatGroup
     let onOpenChat: () -> Void
 
-    private var isActive: Bool {
-        group.isActive == true
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -1090,24 +1142,18 @@ private struct IpadGroupDetail: View {
                     avatarName: group.name,
                     avatarURL: group.avatarUrl ?? group.avatar,
                     systemImage: "person.3.fill",
-                    statusText: isActive ? L10n.botsOnline : L10n.botsOffline,
-                    statusTint: isActive ? Color.rcmsOnline : Color.rcmsOffline,
+                    statusText: group.memberSummary,
+                    statusTint: Color.rcmsTextSecondary,
                     actionTitle: L10n.t("打开聊天", "Open chat"),
                     actionImage: "bubble.left.and.bubble.right.fill",
                     action: onOpenChat
                 )
 
-                IpadDetailGrid {
-                    IpadDetailTile(title: L10n.t("成员", "Members"), value: "\(group.memberCount ?? 0)", systemImage: "person.2.fill", tint: Color.rcmsAccent)
-                    IpadDetailTile(title: L10n.t("机器人状态", "Bot presence"), value: isActive ? L10n.online : L10n.offline, systemImage: "cpu.fill", tint: isActive ? Color.rcmsOnline : Color.rcmsOffline)
-                    IpadDetailTile(title: L10n.t("主题", "Topic"), value: group.mqttTopic == nil ? L10n.t("默认", "Default") : L10n.t("自定义", "Custom"), systemImage: "point.3.connected.trianglepath.dotted", tint: Color.rcmsWarning)
-                }
-
                 IpadInfoPanel(
                     title: L10n.t("群组资料", "Group profile"),
                     rows: [
                         (L10n.t("描述", "Description"), group.description ?? L10n.t("暂无描述", "No description")),
-                        (L10n.t("MQTT 主题", "MQTT topic"), group.mqttTopic ?? "chat/group/\(group.id.uuidString.lowercased())")
+                        (L10n.t("成员", "Members"), group.memberSummary)
                     ]
                 )
 

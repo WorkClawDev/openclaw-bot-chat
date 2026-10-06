@@ -9,6 +9,7 @@ import SwiftUI
 
 @main
 struct clawchatApp: App {
+    @UIApplicationDelegateAdaptor(ChatPushAppDelegate.self) private var appDelegate
     var body: some Scene {
         WindowGroup {
             ContentView()

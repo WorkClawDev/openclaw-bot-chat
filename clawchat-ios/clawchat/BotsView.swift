@@ -9,13 +9,24 @@ class BotsViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let refreshInterval: TimeInterval = 45
+    private let messageStore = LocalMessageStore.shared
     private var cancellables = Set<AnyCancellable>()
     private var hasHydratedCache = false
     private var hasLoaded = false
     private var lastRefreshAt: Date?
+    private var refreshPending = false
+
+    init() {
+        NotificationCenter.default.publisher(for: .chatDirectoryDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshIfNeeded(force: true) }
+            .store(in: &cancellables)
+    }
 
     func refreshIfNeeded(force: Bool = false) {
+        guard AccountSession.shared.isCurrent(messageStore.scope) else { return }
         if isLoading {
+            refreshPending = refreshPending || force
             return
         }
 
@@ -40,8 +51,12 @@ class BotsViewModel: ObservableObject {
                 if case .failure(let error) = completion {
                     self.errorMessage = error.localizedDescription
                 }
+                if self.refreshPending == true {
+                    self.refreshPending = false
+                    self.refreshIfNeeded(force: true)
+                }
             } receiveValue: { (bots: [Bot]) in
-                LocalMessageStore.shared.upsert(bots: bots)
+                self.messageStore.upsert(bots: bots)
                 self.bots = bots
                 self.hasHydratedCache = true
                 self.hasLoaded = true
@@ -53,7 +68,7 @@ class BotsViewModel: ObservableObject {
     private func hydrateCachedBotsIfNeeded() {
         guard !hasHydratedCache else { return }
 
-        let cachedBots = LocalMessageStore.shared.cachedBots()
+        let cachedBots = messageStore.cachedBots()
         if !cachedBots.isEmpty {
             bots = cachedBots
         }
@@ -133,7 +148,7 @@ struct BotsView: View {
                                     ChatRoomView(context: .init(
                                         id: topic,
                                         title: bot.name,
-                                        subtitle: bot.status == "online" ? "online" : "offline",
+                                        subtitle: bot.activation.label,
                                         isGroup: false,
                                         groupId: nil,
                                         bot: bot,
@@ -155,7 +170,7 @@ struct BotsView: View {
                 .scrollIndicators(.hidden)
             }
             .navigationTitle(L10n.t("机器人", "Bots"))
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
@@ -342,20 +357,7 @@ struct BotRowCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ZStack(alignment: .bottomTrailing) {
-                AvatarBadge(
-                    name: bot.name,
-                    imageURL: bot.avatarUrl ?? bot.avatar,
-                    systemImage: "cpu.fill",
-                    diameter: 52,
-                    statusColor: nil
-                )
-
-                Circle()
-                    .fill((bot.status == "online") ? Color.rcmsOnline : Color.rcmsOffline)
-                    .frame(width: 11, height: 11)
-                    .overlay(Circle().stroke(Color.rcmsSurfaceSolid, lineWidth: 2.5))
-            }
+            BotIdentityMark(name: bot.name, imageURL: bot.avatarUrl ?? bot.avatar, size: 44)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(bot.name)
@@ -363,7 +365,7 @@ struct BotRowCard: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(Color.rcmsTextStrong)
 
-                Text(bot.description ?? "暂无消息")
+                Text(bot.description ?? L10n.noMessagesYet)
                     .font(.subheadline)
                     .foregroundStyle(Color.rcmsTextSecondary)
                     .lineLimit(1)
@@ -371,15 +373,9 @@ struct BotRowCard: View {
 
             Spacer()
         }
-        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
         .contentShape(Rectangle())
-        .padding(.horizontal, 4)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .background(Color.rcmsSurface)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.rcmsDivider)
-                .frame(height: 1)
-        }
     }
 }

@@ -7,6 +7,7 @@ struct User: Codable, Identifiable {
     var username: String
     var email: String
     var phone: String?
+    var hasPassword: Bool? = nil
     var nickname: String?
     var avatar: String?
     var avatarUrl: String?
@@ -15,9 +16,16 @@ struct User: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, username, email, phone, nickname, avatar
+        case hasPassword = "has_password"
         case avatarUrl = "avatar_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    var canChangePassword: Bool {
+        if let hasPassword { return hasPassword }
+        // Older services omit the capability. Their phone-only users have no email.
+        return !(email.isEmpty && !(phone ?? "").isEmpty)
     }
 }
 
@@ -34,6 +42,16 @@ struct Bot: Codable, Identifiable {
     var createdAt: Date?
     var updatedAt: Date?
 
+    // The API's legacy online/offline values represent administrative
+    // enablement, not a broker connection or runtime heartbeat.
+    var activation: BotActivation {
+        switch status?.lowercased() {
+        case "online", "enabled": return .enabled
+        case "offline", "disabled": return .disabled
+        default: return .unknown
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, name, description, avatar, status
         case ownerId = "owner_id"
@@ -42,6 +60,18 @@ struct Bot: Codable, Identifiable {
         case mqttTopic = "mqtt_topic"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+}
+
+enum BotActivation: Equatable {
+    case enabled, disabled, unknown
+
+    var label: String {
+        switch self {
+        case .enabled: return L10n.t("已启用", "Enabled")
+        case .disabled: return L10n.t("已停用", "Disabled")
+        case .unknown: return L10n.t("状态未知", "Unknown")
+        }
     }
 }
 
@@ -56,6 +86,14 @@ struct UpdateBotRequest: Codable {
         case name, description
         case avatarUrl = "avatar_url"
     }
+}
+
+// Creation returns the one-time secret; list responses return lifecycle state.
+// Keep these contracts separate so a created key is never lost to a missing
+// list-only field such as is_active.
+struct CreatedBotKeyResponse: Codable {
+    let id: UUID
+    let key: String
 }
 
 struct BotKeyResponse: Codable, Identifiable {
@@ -114,6 +152,13 @@ struct ChatGroup: Codable, Identifiable {
     var createdAt: Date?
     var updatedAt: Date?
 
+    /// Group activation is not bot presence. Only display the count supplied
+    /// by the group directory; unknown counts remain unknown.
+    var memberSummary: String {
+        guard let memberCount else { return L10n.t("群聊", "Group chat") }
+        return L10n.t("\(memberCount) 名成员", "\(memberCount) \(memberCount == 1 ? "member" : "members")")
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, name, description, avatar
         case avatarUrl = "avatar_url"
@@ -145,6 +190,21 @@ struct GroupUserMember: Codable, Identifiable {
         case id, role, nickname, user
         case groupId = "group_id"
         case userId = "user_id"
+    }
+}
+
+/// Presentation policy only; the server remains authoritative on every mutation.
+struct GroupMemberPermissions {
+    let currentUserID: UUID?
+    let members: [GroupUserMember]
+
+    private var role: String? { members.first { $0.userId == currentUserID }?.role }
+    var canRename: Bool { role == "owner" }
+    var canManageMembers: Bool { role == "owner" || role == "admin" }
+    var canLeave: Bool { role == "member" || role == "admin" }
+
+    func canRemove(_ member: GroupUserMember) -> Bool {
+        canManageMembers && member.role != "owner" && member.userId != currentUserID
     }
 }
 
@@ -543,10 +603,12 @@ struct BrokerInfo: Codable {
     let username: String?
     let password: String?
     let qos: Int?
+    var expiresAt: Int64? = nil
 
     enum CodingKeys: String, CodingKey {
         case wsPublicURL = "ws_url"
         case username, password, qos
+        case expiresAt = "expires_at"
     }
 }
 

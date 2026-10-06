@@ -9,6 +9,7 @@ final class MessageLayoutCacheV2 {
         let isOutgoing: Bool
         let width: Int
         let contentSizeCategory: UIContentSizeCategory
+        let compactMessageMode: Bool
     }
 
     private var layouts: [Key: MessageLayoutV2] = [:]
@@ -29,6 +30,7 @@ final class MessageLayoutCacheV2 {
 @MainActor
 final class MessageRenderCoordinatorV2 {
     private let layoutCache: MessageLayoutCacheV2
+    var compactMessageMode = false
 
     init() {
         self.layoutCache = MessageLayoutCacheV2()
@@ -49,7 +51,8 @@ final class MessageRenderCoordinatorV2 {
             contentHash: message.layoutHashValue,
             isOutgoing: message.isOutgoing,
             width: Int((containerWidth * displayScale).rounded()),
-            contentSizeCategory: traitCollection.preferredContentSizeCategory
+            contentSizeCategory: traitCollection.preferredContentSizeCategory,
+            compactMessageMode: compactMessageMode
         )
 
         if let cached = layoutCache.layout(for: key) {
@@ -79,12 +82,11 @@ final class MessageRenderCoordinatorV2 {
 
     private func makeLayout(for message: ChatMessageV2, containerWidth: CGFloat) -> MessageLayoutV2 {
         let safeWidth = max(containerWidth, 320)
-        let horizontalInset: CGFloat = 12
-        let verticalInset: CGFloat = 5
-        let avatarSize: CGFloat = 44
-        let avatarGap: CGFloat = 8
-        let maxBubbleWidth = min(300, floor(safeWidth * 0.72))
-        let contentX = message.isOutgoing ? horizontalInset : horizontalInset + avatarSize + avatarGap
+        let horizontalInset = ChatLayoutMetrics.horizontalInset
+        let verticalInset: CGFloat = compactMessageMode ? 3 : ChatLayoutMetrics.verticalInset
+        let blockSpacing: CGFloat = compactMessageMode ? 6 : ChatLayoutMetrics.blockSpacing
+        let maxBubbleWidth = ChatLayoutMetrics.bubbleWidth(in: safeWidth)
+        let contentX = horizontalInset
 
         var y = verticalInset
         var blockLayouts: [BlockLayoutV2] = []
@@ -101,14 +103,14 @@ final class MessageRenderCoordinatorV2 {
             let blockSize = size(for: block, maxBubbleWidth: maxBubbleWidth)
             let blockX = message.isOutgoing
                 ? safeWidth - horizontalInset - blockSize.width
-                : horizontalInset + avatarSize + avatarGap
+                : horizontalInset
             let blockFrame = CGRect(x: blockX, y: y, width: blockSize.width, height: blockSize.height)
             blockLayouts.append(BlockLayoutV2(id: block.id, frame: blockFrame))
-            y = blockFrame.maxY + 8
+            y = blockFrame.maxY + blockSpacing
         }
 
         if !blockLayouts.isEmpty {
-            y -= 8
+            y -= blockSpacing
         }
 
         if let status = message.status, !status.displayText.isEmpty {
@@ -123,14 +125,7 @@ final class MessageRenderCoordinatorV2 {
             y += statusSize.height + 4
         }
 
-        let itemHeight = ceil(max(avatarSize + verticalInset * 2, y + verticalInset))
-        if message.sender != nil {
-            let avatarY = max(verticalInset, itemHeight - verticalInset - avatarSize)
-            blockLayouts.append(BlockLayoutV2(
-                id: Self.avatarLayoutID(for: message.id),
-                frame: CGRect(x: horizontalInset, y: avatarY, width: avatarSize, height: avatarSize)
-            ))
-        }
+        let itemHeight = ceil(y + verticalInset)
 
         return MessageLayoutV2(
             itemSize: CGSize(width: safeWidth, height: itemHeight),
@@ -152,6 +147,8 @@ final class MessageRenderCoordinatorV2 {
             return audioSize(for: audio, maxBubbleWidth: maxBubbleWidth)
         case .document(let document):
             return documentSize(for: document, maxBubbleWidth: maxBubbleWidth)
+        case .file:
+            return CGSize(width: min(300, maxBubbleWidth), height: 76)
         }
     }
 

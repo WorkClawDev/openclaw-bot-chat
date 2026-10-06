@@ -32,6 +32,17 @@ enum ServiceEndpointPreset: String, CaseIterable, Identifiable {
 }
 
 enum ServiceEndpointConfiguration {
+    static func hasSameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+        func origin(_ url: URL) -> String? {
+            guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+                  let host = url.host?.lowercased(), !host.isEmpty,
+                  url.user == nil, url.password == nil else { return nil }
+            return "\(scheme)://\(host):\(url.port ?? (scheme == "https" ? 443 : 80))"
+        }
+        guard let left = origin(lhs), let right = origin(rhs) else { return false }
+        return left == right
+    }
+
     static let chinaBaseURL = URL(string: "https://test.iotdevices.site")!
     static let unitedStatesBaseURL = URL(string: "https://clawchat.changer.site")!
 
@@ -183,6 +194,8 @@ final class ServiceEndpointManager: ObservableObject {
             || self.customEndpointText != normalizedCustomText
             || baseURL != newBaseURL
 
+        // Revoke push using the old endpoint/account before replacing either.
+        AuthManager.shared.logout()
         UserDefaults.standard.set(preset.rawValue, forKey: ServiceEndpointConfiguration.selectedPresetKey)
         UserDefaults.standard.set(normalizedCustomText, forKey: ServiceEndpointConfiguration.customEndpointKey)
 
@@ -190,10 +203,8 @@ final class ServiceEndpointManager: ObservableObject {
         self.customEndpointText = normalizedCustomText
         baseURL = newBaseURL
 
+        AccountSession.shared.activate(endpoint: newBaseURL, userID: nil)
         APIClient.rebuildShared()
-        LocalMessageStore.shared.resetForCurrentServiceEndpoint()
-        AuthManager.shared.logout()
-
         return didChange
     }
 

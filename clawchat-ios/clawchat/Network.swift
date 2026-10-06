@@ -16,6 +16,8 @@ class APIClient {
 
     static func rebuildShared() {
         sharedLock.lock()
+        currentShared.session.invalidateAndCancel()
+        currentShared.remoteDataSession.invalidateAndCancel()
         currentShared = APIClient()
         sharedLock.unlock()
     }
@@ -24,13 +26,18 @@ class APIClient {
 
     private let session: URLSession
     private let remoteDataSession: URLSession
+    private let accountSession: AccountSession
+    private let accountScope: AccountSession.Snapshot
 
     init(session: URLSession = APIClient.makeAPISession(),
          baseURL: URL = APIClient.defaultBaseURL,
-         remoteDataSession: URLSession = APIClient.makeRemoteDataSession()) {
+         remoteDataSession: URLSession = APIClient.makeRemoteDataSession(),
+         accountSession: AccountSession = .shared) {
         self.session = session
         self.baseURL = baseURL
         self.remoteDataSession = remoteDataSession
+        self.accountSession = accountSession
+        self.accountScope = accountSession.snapshot
     }
 
     private static var defaultBaseURL: URL {
@@ -49,7 +56,7 @@ class APIClient {
 
     private static func makeRemoteDataSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
-        let endpointIdentifier = ServiceEndpointConfiguration.storageIdentifier(for: defaultBaseURL)
+        let endpointIdentifier = AccountSession.shared.snapshot.cacheIdentifier.replacingOccurrences(of: "/", with: ".")
         configuration.requestCachePolicy = .useProtocolCachePolicy
         configuration.urlCache = URLCache(
             memoryCapacity: 16 * 1024 * 1024,
@@ -73,6 +80,10 @@ class APIClient {
     }
 
     // MARK: - Auth
+
+    func fetchPhoneConfiguration() -> AnyPublisher<PhoneAuthConfiguration, Error> {
+        request("/api/v1/auth/phone/config", requiresAuth: false)
+    }
 
     func login(identifier: String, password: String) -> AnyPublisher<AuthPayload, Error> {
         let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -172,7 +183,7 @@ class APIClient {
         request("/api/v1/bots/\(normalized(botID))/keys")
     }
 
-    func createBotKey(botID: UUID, name: String?) -> AnyPublisher<BotKeyResponse, Error> {
+    func createBotKey(botID: UUID, name: String?) -> AnyPublisher<CreatedBotKeyResponse, Error> {
         let payload = CreateKeyRequest(name: name?.isEmpty == true ? nil : name, expiresAt: 0)
         return encodedRequest("/api/v1/bots/\(normalized(botID))/keys", method: "POST", body: payload)
     }
@@ -191,9 +202,14 @@ class APIClient {
     }
 
     func confirmBotBinding(token: String, backendURL: URL? = nil) -> AnyPublisher<BotBindingResponse, Error> {
-        if let backendURL {
-            return APIClient(baseURL: backendURL).confirmBotBinding(token: token)
+        if let backendURL, !ServiceEndpointConfiguration.hasSameOrigin(backendURL, baseURL) {
+            return Fail(error: APIError.serverError(L10n.t(
+                "此二维码属于其他服务器，请先在登录页切换服务地址。",
+                "This QR code belongs to another server. Switch the server on the login screen first."
+            ))).eraseToAnyPublisher()
         }
+        // A QR code may identify a server, but cannot choose where the current
+        // account's bearer token is sent. Always use this authenticated client.
         return encodedRequest("/api/v1/bot-bindings/confirm", method: "POST", body: ConfirmBotBindingRequest(token: token))
     }
 
@@ -382,6 +398,7 @@ class APIClient {
     func fetchRemoteData(from url: URL,
                          acceptHeader: String? = nil,
                          timeout: TimeInterval = 20) async throws -> Data {
+        guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
         var request = URLRequest(url: url)
         request.cachePolicy = .useProtocolCachePolicy
         request.timeoutInterval = timeout
@@ -390,6 +407,7 @@ class APIClient {
         }
 
         let (data, response) = try await remoteDataSession.data(for: request)
+        guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode)
         else {
@@ -511,8 +529,10 @@ class APIClient {
                                      allowRefresh: Bool) -> AnyPublisher<T, Error> {
         requestOnce(endpoint, method: method, body: body, requiresAuth: requiresAuth)
             .catch { [weak self] error -> AnyPublisher<T, Error> in
-                guard let self,
-                      requiresAuth,
+                guard let self, self.accountSession.isCurrent(self.accountScope) else {
+                    return Fail(error: CancellationError()).eraseToAnyPublisher()
+                }
+                guard requiresAuth,
                       allowRefresh,
                       Self.isUnauthorized(error) else {
                     return Fail(error: error).eraseToAnyPublisher()
@@ -530,7 +550,7 @@ class APIClient {
                     }
                     .handleEvents(receiveCompletion: { completion in
                         if case .failure(let retryError) = completion,
-                           Self.isUnauthorized(retryError) {
+                           Self.isUnauthorized(retryError), self.accountSession.isCurrent(self.accountScope) {
                             AuthManager.shared.logout()
                         }
                     })
@@ -543,6 +563,9 @@ class APIClient {
                                          method: String = "GET",
                                          body: Data? = nil,
                                          requiresAuth: Bool = true) -> AnyPublisher<T, Error> {
+        guard accountSession.isCurrent(accountScope) else {
+            return Fail(error: CancellationError()).eraseToAnyPublisher()
+        }
         guard let url = URL(string: endpoint, relativeTo: baseURL) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
@@ -563,12 +586,14 @@ class APIClient {
 
         return session.dataTaskPublisher(for: request)
             .mapError { APIError.networkError($0) }
+            .receive(on: DispatchQueue.main)
             .tryMap { data, response -> Data in
+                guard self.accountSession.isCurrent(self.accountScope) else { throw CancellationError() }
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw APIError.serverError("Invalid response from server")
                 }
 
-                if httpResponse.statusCode == 401 {
+                if httpResponse.statusCode == 401 && requiresAuth {
                     throw APIError.unauthorized
                 }
 
@@ -609,6 +634,7 @@ class APIClient {
         do {
             return try await requestValueOnce(endpoint, method: method, body: body, requiresAuth: requiresAuth)
         } catch {
+            guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
             guard requiresAuth, Self.isUnauthorized(error) else {
                 throw error
             }
@@ -619,7 +645,7 @@ class APIClient {
             } catch {
                 if Self.isUnauthorized(error) {
                     await MainActor.run {
-                        AuthManager.shared.logout()
+                        if self.accountSession.isCurrent(self.accountScope) { AuthManager.shared.logout() }
                     }
                 }
                 throw error
@@ -643,6 +669,7 @@ class APIClient {
                                              method: String = "GET",
                                              body: Data? = nil,
                                              requiresAuth: Bool = true) async throws -> T {
+        guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
         guard let url = URL(string: endpoint, relativeTo: baseURL) else {
             throw APIError.invalidURL
         }
@@ -663,11 +690,12 @@ class APIClient {
 
         do {
             let (data, response) = try await session.data(for: request)
+            guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw APIError.serverError("Invalid response from server")
             }
 
-            if httpResponse.statusCode == 401 {
+            if httpResponse.statusCode == 401 && requiresAuth {
                 throw APIError.unauthorized
             }
 
@@ -773,6 +801,7 @@ class APIClient {
     }
 
     func uploadImageData(_ data: Data, with upload: PresignedUpload) async throws {
+        guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
         guard let url = URL(string: upload.url) else {
             throw APIError.invalidURL
         }
@@ -787,6 +816,7 @@ class APIClient {
         }
 
         let (_, response) = try await session.data(for: request)
+        guard accountSession.isCurrent(accountScope) else { throw CancellationError() }
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.serverError("Invalid upload response")
         }
@@ -844,7 +874,9 @@ struct AvatarUploadService {
     private static let mimeType = "image/png"
 
     static func uploadAvatar(from item: PhotosPickerItem, fileNamePrefix: String) async throws -> String {
+        let scope = AccountSession.shared.snapshot
         let image = try await loadImage(from: item)
+        guard AccountSession.shared.isCurrent(scope) else { throw CancellationError() }
         return try await uploadAvatarImage(image, fileNamePrefix: fileNamePrefix)
     }
 
@@ -865,14 +897,15 @@ struct AvatarUploadService {
             throw AvatarUploadError.unsupportedImage
         }
 
-        let preparedUpload = try await APIClient.shared.prepareImageUpload(
+        let api = APIClient.shared
+        let preparedUpload = try await api.prepareImageUpload(
             fileName: avatarFileName(prefix: fileNamePrefix),
             contentType: mimeType,
             size: pngData.count,
             conversationID: nil
         )
 
-        try await APIClient.shared.uploadImageData(pngData, with: preparedUpload.upload)
+        try await api.uploadImageData(pngData, with: preparedUpload.upload)
 
         let assetID = preparedUpload.asset.id ?? ""
         let objectKey = preparedUpload.asset.objectKey ?? ""
@@ -880,12 +913,12 @@ struct AvatarUploadService {
             throw AvatarUploadError.invalidUploadResponse
         }
 
-        let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
+        let asset = try await api.completeImageUpload(assetID: assetID, objectKey: objectKey)
         guard let completedAssetID = asset.id, !completedAssetID.isEmpty else {
             throw AvatarUploadError.invalidUploadResponse
         }
 
-        return APIClient.shared.publicImageURL(assetID: completedAssetID).absoluteString
+        return api.publicImageURL(assetID: completedAssetID).absoluteString
     }
 
     private static func squarePNGData(from image: UIImage) -> Data? {
@@ -936,6 +969,13 @@ class AuthManager: ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var currentUser: User? {
         didSet {
+            if oldValue?.id != currentUser?.id {
+                cancellables.removeAll()
+                isRefreshingCurrentUser = false
+                RealtimeService.shared.stop()
+                AccountSession.shared.activate(endpoint: ServiceEndpointConfiguration.currentBaseURL, userID: currentUser?.id, force: true)
+                APIClient.rebuildShared()
+            }
             persistCurrentUser()
             prefetchCurrentUserAvatar()
         }
@@ -966,6 +1006,14 @@ class AuthManager: ObservableObject {
         }
 
         if ProcessInfo.processInfo.arguments.contains("-uiTestAuthenticated") {
+            // Persist only the explicitly supplied local test endpoint so a
+            // native notification launch can run without XCTest launch arguments.
+            if ProcessInfo.processInfo.arguments.contains("-uiTestPersistEndpoint"),
+               let endpoint = ServiceEndpointConfiguration.launchOverrideURL,
+               endpoint.host == "127.0.0.1" {
+                userDefaults.set(ServiceEndpointPreset.custom.rawValue, forKey: ServiceEndpointConfiguration.selectedPresetKey)
+                userDefaults.set(endpoint.absoluteString, forKey: ServiceEndpointConfiguration.customEndpointKey)
+            }
             let seededUser = Self.uiTestUser
             userDefaults.set("ui-test-access-token", forKey: accessTokenKey)
             userDefaults.set("ui-test-refresh-token", forKey: refreshTokenKey)
@@ -975,6 +1023,7 @@ class AuthManager: ObservableObject {
             userDefaults.set(AppLanguageMode.english.rawValue, forKey: AppLanguageMode.storageKey)
             self.isAuthenticated = true
             self.currentUser = seededUser
+            synchronizeInitialAccountScope()
             return
         }
 #endif
@@ -984,6 +1033,14 @@ class AuthManager: ObservableObject {
             self.currentUser = Self.decodeCachedUser(from: userDefaults.data(forKey: currentUserKey))
             prefetchCurrentUserAvatar()
         }
+        synchronizeInitialAccountScope()
+    }
+
+    private func synchronizeInitialAccountScope() {
+        if AccountSession.shared.activate(endpoint: ServiceEndpointConfiguration.currentBaseURL, userID: currentUser?.id) {
+            RealtimeService.shared.stop()
+            APIClient.rebuildShared()
+        }
     }
 
     func refreshCurrentUserIfNeeded(force: Bool = false) {
@@ -992,15 +1049,18 @@ class AuthManager: ObservableObject {
         guard !isRefreshingCurrentUser else { return }
 
         isRefreshingCurrentUser = true
+        let scope = AccountSession.shared.snapshot
 
         APIClient.shared.fetchCurrentUser()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] completion in
+                guard AccountSession.shared.isCurrent(scope) else { return }
                 self?.isRefreshingCurrentUser = false
                 if case .failure(let error) = completion {
                     print("Failed to refresh current user: \(error.localizedDescription)")
                 }
             } receiveValue: { [weak self] (user: User) in
+                guard AccountSession.shared.isCurrent(scope) else { return }
                 self?.currentUser = user
                 self?.isAuthenticated = true
             }
@@ -1008,11 +1068,13 @@ class AuthManager: ObservableObject {
     }
 
     func login(payload: AuthPayload) {
-        store(tokens: payload.tokens)
+        store(tokens: payload.tokens, authenticate: false)
         self.currentUser = payload.user
+        self.isAuthenticated = true
     }
 
     func refreshSessionPublisher() -> AnyPublisher<Void, Error> {
+        let scope = AccountSession.shared.snapshot
         guard let refreshToken else {
             logout()
             return Fail(error: APIClient.APIError.unauthorized).eraseToAnyPublisher()
@@ -1022,9 +1084,11 @@ class AuthManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .handleEvents(
                 receiveOutput: { [weak self] tokens in
+                    guard AccountSession.shared.isCurrent(scope) else { return }
                     self?.store(tokens: tokens)
                 },
                 receiveCompletion: { [weak self] completion in
+                    guard AccountSession.shared.isCurrent(scope) else { return }
                     if case .failure = completion {
                         self?.logout()
                     }
@@ -1035,6 +1099,7 @@ class AuthManager: ObservableObject {
     }
 
     func refreshSession() async throws {
+        let scope = AccountSession.shared.snapshot
         guard let refreshToken else {
             await MainActor.run {
                 logout()
@@ -1045,30 +1110,37 @@ class AuthManager: ObservableObject {
         do {
             let tokens = try await APIClient.shared.refreshTokensValue(refreshToken: refreshToken)
 
-            await MainActor.run {
+            try await MainActor.run {
+                guard AccountSession.shared.isCurrent(scope) else { throw CancellationError() }
                 store(tokens: tokens)
             }
         } catch {
             await MainActor.run {
-                logout()
+                if AccountSession.shared.isCurrent(scope) { logout() }
             }
             throw error
         }
     }
 
     func logout() {
+        ChatPushNotifications.shared.logout()
+        let hadUser = currentUser != nil
         userDefaults.removeObject(forKey: accessTokenKey)
         userDefaults.removeObject(forKey: refreshTokenKey)
         userDefaults.removeObject(forKey: currentUserKey)
-        self.currentUser = nil
         self.isAuthenticated = false
+        self.currentUser = nil
+        if !hadUser {
+            AccountSession.shared.activate(endpoint: ServiceEndpointConfiguration.currentBaseURL, userID: nil, force: true)
+            APIClient.rebuildShared()
+        }
         RealtimeService.shared.stop()
     }
 
-    private func store(tokens: AuthTokens) {
+    private func store(tokens: AuthTokens, authenticate: Bool = true) {
         userDefaults.set(tokens.accessToken, forKey: accessTokenKey)
         userDefaults.set(tokens.refreshToken, forKey: refreshTokenKey)
-        self.isAuthenticated = true
+        if authenticate { self.isAuthenticated = true }
     }
 
     private func persistCurrentUser() {
