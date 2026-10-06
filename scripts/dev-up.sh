@@ -11,7 +11,7 @@ load_dev_env
 echo "Starting OpenClaw Bot Chat in development mode..."
 print_dev_runtime_summary
 
-compose up --build -d "$@" postgres redis emqx backend
+compose --profile broker up --build -d "$@" postgres redis mqtts-authz mqtts minio-init backend message-ingest
 ensure_dev_test_account
 compose ps
 print_frontend_dev_status || true

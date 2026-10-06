@@ -16,7 +16,7 @@ func TestSelfResponsesReportPasswordCapabilityWithoutHash(t *testing.T) {
 		want bool
 	}{{"phone-only", nil, false}, {"empty hash", &empty, false}, {"password configured", &hash, true}} {
 		t.Run(test.name, func(t *testing.T) {
-			user := &model.User{PasswordHash: test.hash}
+			user := &model.User{PasswordHash: test.hash, Role: model.UserRoleAdmin}
 			for _, value := range []any{NewAuthUserResponse(user), NewMeResponse(user)} {
 				encoded, err := json.Marshal(value)
 				if err != nil {
@@ -25,6 +25,9 @@ func TestSelfResponsesReportPasswordCapabilityWithoutHash(t *testing.T) {
 				var fields map[string]any
 				if err := json.Unmarshal(encoded, &fields); err != nil {
 					t.Fatal(err)
+				}
+				if fields["role"] != string(model.UserRoleAdmin) {
+					t.Fatal("master account role lost in self response")
 				}
 				if got, present := fields["has_password"]; !present || got != test.want {
 					t.Fatalf("password capability=%v present=%v", got, present)

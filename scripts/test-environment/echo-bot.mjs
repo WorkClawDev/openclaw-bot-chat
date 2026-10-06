@@ -81,7 +81,7 @@ function handleMessage(topic, bytes) {
   })().catch(() => console.error('Echo Bot could not publish a reply'));
 }
 async function connect(data) {
-  const connection = await mqtt.connectAsync('mqtt://emqx:1883', {
+  const connection = await mqtt.connectAsync(process.env.TEST_BROKER_TCP_URL || 'mqtt://mqtts:1883', {
     username: data.broker.username, password: data.broker.password,
     clientId: data.client_id, reconnectPeriod: 2000, connectTimeout: 10000,
   });

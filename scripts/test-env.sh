@@ -49,14 +49,18 @@ prepare() {
     GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" \
     GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" \
     "$go_bin" build -p 4 -o bin/test-server ./cmd/server)
+  (cd "$REPO_ROOT/backend" && CGO_ENABLED=0 GOMAXPROCS=4 \
+    GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" \
+    GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" \
+    "$go_bin" build -p 4 -o bin/test-message-ingest ./cmd/message-ingest)
 }
 
 up() {
   prepare
   compose up -d --wait --wait-timeout 120 postgres redis
-  compose up -d --force-recreate --wait --wait-timeout 120 emqx
+  compose up -d --force-recreate --wait --wait-timeout 120 mqtts-authz mqtts
   compose up -d --force-recreate --wait --wait-timeout 120 storage
-  compose up -d --force-recreate --wait --wait-timeout 240 backend frontend proxy
+  compose up -d --force-recreate --wait --wait-timeout 240 backend message-ingest frontend proxy
   node "$TOOLS_DIR/seed.mjs"
   compose up -d --force-recreate --wait --wait-timeout 90 echo-bot
   node "$TOOLS_DIR/smoke.mjs"
@@ -64,18 +68,19 @@ up() {
 }
 
 status() {
-  compose --profile fixtures ps
+  compose --profile broker --profile fixtures ps
   node -e 'const fs=require("fs"),{parseEnv}=require("util");const c=parseEnv(fs.readFileSync(process.argv[1],"utf8"));console.log("Web: "+c.TEST_PUBLIC_URL);console.log("Credentials: "+process.argv[2])' "$ENV_FILE" "$STATE_DIR/account.json"
 }
 
 case "${1:-up}" in
   up) up ;;
   install) prepare ;;
-  down) compose --profile fixtures down ;;
-  restart) compose --profile fixtures down; up ;;
+  down) compose --profile broker --profile fixtures down ;;
+  restart) compose --profile broker --profile fixtures down; up ;;
   status) status ;;
-  logs) compose --profile fixtures logs --tail 80 "${@:2}" ;;
+  logs) compose --profile broker --profile fixtures logs --tail 80 "${@:2}" ;;
   smoke) node "$TOOLS_DIR/smoke.mjs" ;;
+  browser) node "$TOOLS_DIR/browser-smoke.mjs" ;;
   check)
     go_bin="$(find_go)"
     (cd "$REPO_ROOT/backend" && GOMAXPROCS=4 GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" "$go_bin" test -p 4 ./...)
@@ -84,5 +89,5 @@ case "${1:-up}" in
     (cd "$REPO_ROOT/test/openclaw-bot-chat" && npm run ci)
     PATH="$(dirname -- "$go_bin"):$PATH" GOCACHE="${GOCACHE:-$REPO_ROOT/backend/.cache/go-build}" GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/backend/.cache/go-mod}" node "$REPO_ROOT/test/personal-agent-evals/run.cjs"
     ;;
-  *) echo 'Usage: scripts/test-env.sh [up|install|down|restart|status|logs [service]|smoke|check]' >&2; exit 2 ;;
+  *) echo 'Usage: scripts/test-env.sh [up|install|down|restart|status|logs [service]|smoke|browser|check]' >&2; exit 2 ;;
 esac

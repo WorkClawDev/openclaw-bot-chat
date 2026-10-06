@@ -240,17 +240,31 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     subscriptionsRef.current.set(topic, unsubscribe)
   }, [bots, groups, realtimeBootstrap, upsertConversation, upsertMessage, user])
 
+  const refreshScopedRealtime = useCallback(async () => {
+    const bootstrap = await realtimeApi.bootstrap()
+    await getMqttRealtimeClient().connect({
+      wsUrl: bootstrap.broker.ws_url,
+      username: bootstrap.broker.username,
+      password: bootstrap.broker.password,
+      clientId: bootstrap.client_id,
+    })
+    realtimeBootstrapRef.current = bootstrap
+    setRealtimeBootstrap(bootstrap)
+  }, [])
+
   const refreshBots = useCallback(async () => {
     if (!isAuthenticated) return
     const data = await botsApi.list()
+    if (realtimeBootstrapRef.current) await refreshScopedRealtime()
     setBots(data)
-  }, [isAuthenticated])
+  }, [isAuthenticated, refreshScopedRealtime])
 
   const refreshGroups = useCallback(async () => {
     if (!isAuthenticated) return
     const data = await groupsApi.list()
+    if (realtimeBootstrapRef.current) await refreshScopedRealtime()
     setGroups(data)
-  }, [isAuthenticated])
+  }, [isAuthenticated, refreshScopedRealtime])
 
   const refreshConversations = useCallback(async () => {
     if (!isAuthenticated) return

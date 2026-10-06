@@ -7,17 +7,17 @@ import (
 	"testing"
 )
 
-func TestBrokerCallbacksExplicitlyDenyMissingConfiguration(t *testing.T) {
+func TestBrokerCallbacksAreNoLongerExposed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	(&BrokerSecurityHandler{}).Register(r)
+	r.Use((&BrokerSecurityHandler{}).InvalidatePermissions())
 	for _, path := range []string{"/internal/broker/authentication", "/internal/broker/authorization"} {
 		req := httptest.NewRequest("POST", path, strings.NewReader(`{"username":"forged","clientid":"x"}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != 200 || !strings.Contains(w.Body.String(), `"result":"deny"`) {
-			t.Fatal("callback must explicitly deny, not ignore", w.Code, w.Body.String())
+		if w.Code != 404 {
+			t.Fatal("legacy callback must not be exposed", w.Code, w.Body.String())
 		}
 	}
 }

@@ -2,45 +2,33 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/openclaw-bot-chat/backend/internal/service"
 	"net/http"
+	"strings"
 )
 
-type BrokerSecurityHandler struct {
-	Service *service.BrokerSecurityService
-}
+// Permission mutations schedule a bounded, coalesced control-plane update.
+// This handler does not expose broker authentication callbacks.
+type BrokerPolicyPublisher interface{ NotifyPermissionsChanged() }
+type BrokerSecurityHandler struct{ Service BrokerPolicyPublisher }
 
-func (h *BrokerSecurityHandler) Register(router *gin.Engine) {
-	router.POST("/internal/broker/authentication", h.Authenticate)
-	router.POST("/internal/broker/authorization", h.Authorize)
-}
-func (h *BrokerSecurityHandler) call(c *gin.Context, auth bool) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 8192)
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		ClientID string `json:"clientid"`
-		Action   string `json:"action"`
-		Topic    string `json:"topic"`
-	}
-	allowed := false
-	var expiry int64
-	if h.Service.ValidCallback(c.GetHeader("X-Broker-Token")) && c.ShouldBindJSON(&req) == nil {
-		if auth {
-			allowed, expiry = h.Service.Authenticate(c.Request.Context(), req.Username, req.Password, req.ClientID)
-		} else {
-			allowed = h.Service.Authorize(c.Request.Context(), req.Username, req.ClientID, req.Action, req.Topic)
+func (h *BrokerSecurityHandler) InvalidatePermissions() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		if h.Service == nil || c.Writer.Status() < 200 || c.Writer.Status() >= 300 {
+			return
+		}
+		switch c.Request.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			return
+		}
+		path := c.FullPath()
+		affects := path == "/api/v1/bot-bindings/confirm"
+		for _, prefix := range []string{"/api/v1/bots", "/api/v1/groups", "/api/v1/admin/users"} {
+			affects = affects || path == prefix || strings.HasPrefix(path, prefix+"/")
+		}
+		if affects {
+			h.Service.NotifyPermissionsChanged()
 		}
 	}
-	result := "deny"
-	if allowed {
-		result = "allow"
-	}
-	body := gin.H{"result": result, "is_superuser": false}
-	if auth && allowed && expiry > 0 {
-		body["expire_at"] = expiry
-	}
-	c.JSON(200, body)
 }
-func (h *BrokerSecurityHandler) Authenticate(c *gin.Context) { h.call(c, true) }
-func (h *BrokerSecurityHandler) Authorize(c *gin.Context)    { h.call(c, false) }

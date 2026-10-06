@@ -148,6 +148,8 @@ func (h *AssetHandler) redirectPublicAsset(c *gin.Context, kind string) {
 	}
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrAssetAccessDenied):
+			apiresponse.Forbidden(c, err.Error())
 		case errors.Is(err, service.ErrAssetNotFound):
 			apiresponse.NotFound(c, err.Error())
 		case errors.Is(err, service.ErrAssetInvalid),

@@ -8,6 +8,7 @@ import (
 )
 
 type UserResponse struct {
+	Role           model.UserRole   `json:"role"`
 	ID             uuid.UUID        `json:"id"`
 	Username       string           `json:"username"`
 	Email          string           `json:"email"`
@@ -25,16 +26,17 @@ type UserResponse struct {
 }
 
 type AuthUserResponse struct {
-	ID             uuid.UUID `json:"id"`
-	Username       string    `json:"username"`
-	Email          string    `json:"email"`
-	Phone          string    `json:"phone,omitempty"`
-	HasPassword    bool      `json:"has_password"`
-	Nickname       string    `json:"nickname"`
-	Avatar         *string   `json:"avatar,omitempty"`
-	AvatarURL      *string   `json:"avatar_url,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	CreatedAtAlias time.Time `json:"createdAt"`
+	Role           model.UserRole `json:"role"`
+	ID             uuid.UUID      `json:"id"`
+	Username       string         `json:"username"`
+	Email          string         `json:"email"`
+	Phone          string         `json:"phone,omitempty"`
+	Nickname       string         `json:"nickname"`
+	Avatar         *string        `json:"avatar,omitempty"`
+	AvatarURL      *string        `json:"avatar_url,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	CreatedAtAlias time.Time      `json:"createdAt"`
+	HasPassword    bool           `json:"has_password"`
 }
 
 type TokenResponse struct {
@@ -50,16 +52,17 @@ type AuthPayloadResponse struct {
 }
 
 type MeResponse struct {
-	ID             uuid.UUID `json:"id"`
-	Username       string    `json:"username"`
-	Email          string    `json:"email"`
-	Phone          string    `json:"phone,omitempty"`
-	HasPassword    bool      `json:"has_password"`
-	Nickname       string    `json:"nickname"`
-	Avatar         *string   `json:"avatar,omitempty"`
-	AvatarURL      *string   `json:"avatar_url,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	CreatedAtAlias time.Time `json:"createdAt"`
+	Role           model.UserRole `json:"role"`
+	ID             uuid.UUID      `json:"id"`
+	Username       string         `json:"username"`
+	Email          string         `json:"email"`
+	Phone          string         `json:"phone,omitempty"`
+	Nickname       string         `json:"nickname"`
+	Avatar         *string        `json:"avatar,omitempty"`
+	AvatarURL      *string        `json:"avatar_url,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	CreatedAtAlias time.Time      `json:"createdAt"`
+	HasPassword    bool           `json:"has_password"`
 }
 
 func NewUserResponse(user *model.User) *UserResponse {
@@ -68,6 +71,7 @@ func NewUserResponse(user *model.User) *UserResponse {
 	}
 
 	return &UserResponse{
+		Role:           user.Role,
 		ID:             user.ID,
 		Username:       user.Username,
 		Email:          userEmail(user),
@@ -103,6 +107,7 @@ func NewAuthUserResponse(user *model.User) *AuthUserResponse {
 	}
 
 	return &AuthUserResponse{
+		Role:           user.Role,
 		ID:             user.ID,
 		Username:       user.Username,
 		Email:          userEmail(user),
@@ -122,6 +127,7 @@ func NewMeResponse(user *model.User) *MeResponse {
 	}
 
 	return &MeResponse{
+		Role:           user.Role,
 		ID:             user.ID,
 		Username:       user.Username,
 		Email:          userEmail(user),

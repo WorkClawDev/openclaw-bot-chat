@@ -56,3 +56,11 @@ iOS 本机 UI：运行 `node scripts/test-environment/ios-push-fixture.cjs`，De
 
 
 新增原生矩阵用例（验收结果以对应 xcresult 为准）：`media` 连续注入图片、音频、文件三条系统通知，打开后分别检查图片预览、实际 AVPlayer 播放和文件正文，并回到原设置页；`account` 经真实登录界面退出 A、登录 fixture 账号 B，确认延迟的 A 通知不会发起聊天请求，随后 B 通知使用 B 身份读取历史。这些用例复用正式 App 导航、认证和消息视图，但服务端是本机受控 fixture，不代表真实 APNs 或模型执行。通知内容不增加媒体 URL 或正文，只按现有用户/对话/消息标识路由。
+
+## Current MQTTS/message-ingest integration - 2026-10-06
+
+The independent message-ingest process now owns message persistence and the transactional push hook. Message, conversation sequence and delivery rows commit together; an outbox error causes retry and replay creates no duplicate notification. The API retains the APNs sender. Push routes validate the current account status and JWT token version, using current master group/bot policies.
+
+All three Compose entry points share PUSH_ENABLED between API and consumer, default false. The consumer needs the flag and provisioned push tables, without APNs provider credentials. Its readiness checks these tables when enabled; it does not migrate the schema. Mount the APNs key only into the API. Pausing the API leaves the consumer able to enqueue deliveries for the API worker to send after recovery.
+
+The real PostgreSQL regression uses the production consumer repository constructor and HandleQueuedMessage. It covers disabled/enabled queueing, replay through a reconstructed consumer, transient outbox failure rollback and recovery, and no sequence consumption by the failed transaction. Live broker fixtures use a fake device token with the APNs sender disabled: queue acceptance does not establish Apple delivery.

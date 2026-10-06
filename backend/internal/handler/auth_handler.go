@@ -22,6 +22,10 @@ func NewAuthHandler(authService *service.AuthService, phoneAuthService *service.
 	return &AuthHandler{authService: authService, phoneAuthService: phoneAuthService}
 }
 
+func (h *AuthHandler) ActiveAccount() gin.HandlerFunc {
+	return middleware.ActiveAccount(h.authService)
+}
+
 // Register handles user registration
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req service.RegisterRequest

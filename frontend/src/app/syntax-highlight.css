@@ -1,0 +1,40 @@
+/* VSC Dark Plus token colors, scoped to the Markdown syntax highlighter.
+   CSS avoids rebuilding and matching the entire theme for every code token. */
+.markdown-body .prismjs .namespace { opacity: .7; }
+.markdown-body .prismjs .token.comment, .markdown-body .prismjs .token.prolog { color: #6a9955; }
+.markdown-body .prismjs .token.punctuation, .markdown-body .prismjs .token.operator { color: #d4d4d4; }
+.markdown-body .prismjs .token.property, .markdown-body .prismjs .token.constant,
+.markdown-body .prismjs .token.attr-name, .markdown-body .prismjs .token.console,
+.markdown-body .prismjs .token.parameter, .markdown-body .prismjs .token.interpolation,
+.markdown-body .prismjs .token.variable, .markdown-body .prismjs .token.doctype.name { color: #9cdcfe; }
+.markdown-body .prismjs .token.tag, .markdown-body .prismjs .token.boolean,
+.markdown-body .prismjs .token.entity, .markdown-body .prismjs .token.keyword,
+.markdown-body .prismjs .token.important, .markdown-body .prismjs .token.operator.arrow,
+.markdown-body .prismjs .token.punctuation.interpolation-punctuation,
+.markdown-body .prismjs .token.doctype.doctype-tag { color: #569cd6; }
+.markdown-body .prismjs .token.number, .markdown-body .prismjs .token.symbol,
+.markdown-body .prismjs .token.inserted, .markdown-body .prismjs .token.unit { color: #b5cea8; }
+.markdown-body .prismjs .token.selector, .markdown-body .prismjs .token.escape { color: #d7ba7d; }
+.markdown-body .prismjs .token.string, .markdown-body .prismjs .token.char,
+.markdown-body .prismjs .token.builtin, .markdown-body .prismjs .token.deleted,
+.markdown-body .prismjs .token.atrule, .markdown-body .prismjs .token.attr-value { color: #ce9178; }
+.markdown-body .prismjs .token.atrule.rule, .markdown-body .prismjs .token.keyword.module,
+.markdown-body .prismjs .token.keyword.control-flow { color: #c586c0; }
+.markdown-body .prismjs .token.function, .markdown-body .prismjs .token.function.maybe-class-name,
+.markdown-body .prismjs .token.atrule.url.function { color: #dcdcaa; }
+.markdown-body .prismjs .token.regex { color: #d16969; }
+.markdown-body .prismjs .token.italic { font-style: italic; }
+.markdown-body .prismjs .token.class-name, .markdown-body .prismjs .token.maybe-class-name,
+.markdown-body .prismjs .token.namespace { color: #4ec9b0; }
+.markdown-body .prismjs .token.imports.maybe-class-name,
+.markdown-body .prismjs .token.exports.maybe-class-name, .markdown-body .prismjs .token.atrule.url { color: #9cdcfe; }
+.markdown-body .prismjs .token.tag.punctuation, .markdown-body .prismjs .token.cdata { color: #808080; }
+.markdown-body .prismjs .token.attr-value.punctuation { color: #ce9178; }
+.markdown-body .prismjs .token.attr-value.punctuation.attr-equals,
+.markdown-body .prismjs .token.atrule.url.punctuation { color: #d4d4d4; }
+.markdown-body .prismjs .language-css .token.string.url { text-decoration: underline; }
+.markdown-body .prismjs .language-regex .token.anchor { color: #dcdcaa; }
+.markdown-body .prismjs .language-html .token.punctuation { color: #808080; }
+.markdown-body .prismjs .language-html .language-css .token.punctuation,
+.markdown-body .prismjs .language-html .language-javascript .token.punctuation { color: #d4d4d4; }
+.markdown-body .prismjs ::selection { background: #264f78; text-shadow: none; }

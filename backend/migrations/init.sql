@@ -8,6 +8,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Table: users
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
+    token_version   BIGINT      NOT NULL DEFAULT 0,
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     username        VARCHAR(64) NOT NULL UNIQUE,
     email           VARCHAR(255) UNIQUE,
@@ -119,6 +120,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX idx_messages_conversation_id ON messages(conversation_id);
+CREATE INDEX idx_messages_conversation_message ON messages(conversation_id, message_id);
 CREATE INDEX idx_messages_bot_id ON messages(bot_id);
 CREATE INDEX idx_messages_group_id ON messages(group_id);
 CREATE INDEX idx_messages_sender ON messages(sender_type, sender_id);

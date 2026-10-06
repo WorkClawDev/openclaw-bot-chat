@@ -12,6 +12,12 @@ import (
 // --- User ---
 
 type UserStatus int
+type UserRole string
+
+const (
+	UserRoleUser  UserRole = "user"
+	UserRoleAdmin UserRole = "admin"
+)
 
 const (
 	UserStatusInactive UserStatus = 0
@@ -31,6 +37,8 @@ type User struct {
 	Nickname         *string    `gorm:"type:varchar(128)"`
 	AvatarURL        *string    `gorm:"type:varchar(512)"`
 	Status           UserStatus `gorm:"type:smallint;not null;default:1"`
+	TokenVersion     int64      `gorm:"not null;default:0" json:"-"`
+	Role             UserRole   `gorm:"type:varchar(16);not null;default:'user'"`
 	IsDeleted        bool       `gorm:"not null;default:false"`
 	LastLoginAt      *time.Time
 	LastLoginIP      *string        `gorm:"type:varchar(45)"`
@@ -40,6 +48,10 @@ type User struct {
 }
 
 func (User) TableName() string { return "users" }
+
+func (u *User) IsActive() bool {
+	return u != nil && u.Status == UserStatusActive && !u.IsDeleted && !u.DeletedAt.Valid
+}
 
 // --- Bot ---
 
@@ -134,8 +146,8 @@ const (
 
 type Message struct {
 	ID             int64      `gorm:"primaryKey;autoIncrement"`
-	ConversationID string     `gorm:"type:varchar(256);not null;index:idx_messages_conversation_id;uniqueIndex:udx_messages_conversation_seq"`
-	MessageID      uuid.UUID  `gorm:"type:uuid;not null;default:uuid_generate_v4()"`
+	ConversationID string     `gorm:"type:varchar(256);not null;index:idx_messages_conversation_id;index:idx_messages_conversation_message,priority:1;uniqueIndex:udx_messages_conversation_seq"`
+	MessageID      uuid.UUID  `gorm:"type:uuid;not null;default:uuid_generate_v4();index:idx_messages_conversation_message,priority:2"`
 	SenderType     SenderType `gorm:"type:varchar(16);not null"`
 	SenderID       *uuid.UUID `gorm:"type:uuid"`
 	SenderName     *string    `gorm:"type:varchar(128)"`

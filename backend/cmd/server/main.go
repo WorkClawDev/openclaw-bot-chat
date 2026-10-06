@@ -90,9 +90,6 @@ func main() {
 	keyRepo := repository.NewBotKeyRepository(db)
 	bindingTokenRepo := repository.NewBotBindingTokenRepository(db)
 	msgRepo := repository.NewMessageRepository(db)
-	if pushService != nil {
-		msgRepo.SetMessageCreatedHook(repository.EnqueueChatPush)
-	}
 	groupRepo := repository.NewGroupRepository(db)
 	assetRepo := repository.NewAssetRepository(db)
 	auditRepo := repository.NewAuditLogRepository(db)
@@ -148,13 +145,16 @@ func main() {
 		QOS:            cfg.MQTT.QOS,
 		AutoReconnect:  cfg.MQTT.AutoReconnect,
 		ReconnectDelay: cfg.MQTT.ReconnectDelay,
-	}, log, msgService)
+		TLSCAFile:      cfg.MQTT.TLSCAFile,
+		TLSCertFile:    cfg.MQTT.TLSCertFile,
+		TLSKeyFile:     cfg.MQTT.TLSKeyFile,
+		TLSServerName:  cfg.MQTT.TLSServerName,
+	}, log, nil)
 
-	if err := mqttClient.Connect(); err != nil {
-		log.Warn().Err(err).Msg("MQTT connection failed, continuing without MQTT")
-	} else {
-		defer mqttClient.Disconnect()
-	}
+	// The API publishes Agent events; message ingestion runs in its own process.
+	mqttContext, mqttCancel := context.WithCancel(context.Background())
+	defer func() { mqttCancel(); mqttClient.Disconnect() }()
+	go mqttClient.Run(mqttContext)
 
 	// --- Handlers ---
 	authHandler := handler.NewAuthHandler(authService, phoneAuthService)
@@ -172,34 +172,41 @@ func main() {
 	documentHandler := handler.NewDocumentHandler(documentService)
 
 	// --- Routes ---
+	security, err := service.NewBrokerSecurityService(cfg.BrokerSecurity, cfg.MQTT, db, msgService)
+	if err != nil {
+		log.Fatal().Err(err).Msg("authorization RPC configuration failed")
+	}
+	defer security.Close()
+	go security.Run(mqttContext, func(err error) { log.Warn().Err(err).Msg("authorization policy synchronization failed; retrying") })
+	brokerSecurityHandler := &handler.BrokerSecurityHandler{Service: security}
+	router.Use(brokerSecurityHandler.InvalidatePermissions())
 	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, taskHandler, taskRuntimeHandler, documentHandler, botService, jwtManager, approvalHandler)
-	pushRoutes := router.Group("/api/v1")
-	pushRoutes.Use(middleware.JWTAuth(jwtManager))
+	pushRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	(&handler.PushHandler{Repo: pushRepo, Enabled: pushService != nil}).Register(pushRoutes)
+	adminRoutes := router.Group("/api/v1", middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
+	(&handler.UserAdminHandler{Users: userRepo}).Register(adminRoutes)
 
 	journalRoutes := router.Group("/api/v1/bot-runtime/agent")
 	journalRoutes.Use(middleware.BotKeyAuth(botService))
 	journalHandler.Register(journalRoutes, runHandler)
 	runHandler.RegisterRuntime(journalRoutes)
 	runUserRoutes := router.Group("/api/v1/agent")
-	runUserRoutes.Use(middleware.JWTAuth(jwtManager))
+	runUserRoutes.Use(middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	runHandler.RegisterUser(runUserRoutes)
 	journalHandler.RegisterUser(runUserRoutes)
-	security := service.NewBrokerSecurityService(service.RedisBrokerSessionStore{Client: rdb}, cfg.BrokerSecurity, cfg.MQTT, db, msgService)
 	if !security.Configured() {
 		if cfg.App.Mode == "release" {
-			log.Fatal().Msg("broker security requires callback token and server password of at least 32 characters")
+			log.Fatal().Msg("broker security requires authorization RPC address, admin token and server password of at least 32 characters")
 		}
 		log.Warn().Msg("broker security unconfigured; realtime bootstrap will refuse credentials")
 	}
 	realtimeHandler.SetBrokerSecurity(security)
 	botRuntimeHandler.SetBrokerSecurity(security)
-	(&handler.BrokerSecurityHandler{Service: security}).Register(router)
 	router.GET("/health/ready", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()
 		raw, err := db.DB()
-		if err != nil || raw.PingContext(ctx) != nil || rdb.Ping(ctx).Err() != nil || !mqttClient.IsConnected() {
+		if err != nil || raw.PingContext(ctx) != nil || rdb.Ping(ctx).Err() != nil {
 			c.JSON(503, gin.H{"status": "unavailable"})
 			return
 		}
@@ -400,7 +407,7 @@ func setupRoutes(
 
 	// Protected routes
 	protected := api.Group("")
-	protected.Use(middleware.JWTAuth(jwtManager))
+	protected.Use(middleware.JWTAuth(jwtManager), authHandler.ActiveAccount())
 	{
 		if len(approvalHandlers) > 0 {
 			protected.GET("/agent/approvals", approvalHandlers[0].List)

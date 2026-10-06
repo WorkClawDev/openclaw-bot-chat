@@ -28,32 +28,41 @@ The backend is responsible for:
 
 ## Broker Requirements
 
-The default Docker Compose setup uses EMQX, but the application is not tied to EMQX. Any MQTT broker can be used if it supports:
+The optional Docker Compose broker profile and isolated test stacks use a prebuilt
+[ChangerR/mqtts](https://github.com/ChangerR/mqtts) image. MQTTS is maintained and
+released independently; this repository contains its application-side adapter and
+configuration only. Its independent `modules/authz` service receives generic
+policies from this backend and serves batched authorization through Protobuf/gRPC.
+The broker checks publish, subscribe and outbound delivery using bounded local
+caches, without calling the chat API.
+Browsers and Agents receive individual short-lived credentials from bootstrap.
 
-- MQTT TCP and MQTT over WebSocket.
-- Connection authentication, such as username/password or an equivalent mechanism.
-- Topic publish/subscribe ACLs.
-
-Business message payloads do not include an `auth` field. In production, authentication and ACL enforcement should be handled by the broker.
-
-Current broker integration TODO:
-
-- `TODO(broker-acl)`: integrate dynamic authentication and dynamic ACL provisioning for your own broker. The current Compose setup is intended to make the broker-first flow runnable locally.
+See [MQTTS setup, roles, migration, and verification](docs/MQTTS_ACCESS.md).
+Other brokers must implement the same scoped authentication/authorization
+contract; the strict sender-identity setting also requires payload-aware checks.
 
 ## Quick Start With Docker Compose
 
-Start the core stack:
+Select prebuilt runtimes using `MQTTS_IMAGE` and `MQTTS_AUTHZ_IMAGE` (release image, registry digest, or a
+locally loaded image; see the setup guide). Configure `MQTTS_AUTHZ_QUERY_TOKEN`, `BROKER_SECURITY_ADMIN_TOKEN`, `MQTT_PASSWORD`,
+and `JWT_SECRET` in an ignored `.env` with independent random secrets of at least
+32 characters, then start the core stack:
 
 ```bash
-docker compose up --build -d
-docker compose ps
+docker compose --profile broker up --build -d
+docker compose --profile broker ps
 ```
 
-This starts:
+To use an independently deployed broker, set `MQTT_BROKER`,
+`MQTT_TCP_PUBLIC_URL`, `MQTT_WS_PUBLIC_URL`, and `BROKER_SECURITY_ADDRESS` and omit `--profile broker`.
+No broker source checkout is needed in either mode.
+
+The bundled profile starts:
 
 - PostgreSQL
 - Redis
-- EMQX
+- MQTTS (TCP and WebSocket on the same native listener)
+- MQTTS authorization module (private gRPC service with its own policy volume)
 - Backend
 - Frontend
 
@@ -69,7 +78,6 @@ Common local ports:
 - Backend: `8080`
 - MQTT TCP: `1883`
 - MQTT WebSocket: `8083` with path `/mqtt`
-- EMQX Dashboard: `18083`
 
 ## Local Test Environment
 
@@ -88,7 +96,10 @@ See [test environment commands and configuration](scripts/test-environment/READM
 Important environment variables:
 
 - `NEXT_PUBLIC_API_URL`: backend URL used by the frontend.
-- `MQTT_USERNAME` / `MQTT_PASSWORD`: broker credentials returned by backend bootstrap endpoints.
+- `MQTT_USERNAME` / `MQTT_PASSWORD`: private backend persistence identity; never returned to clients.
+- `BROKER_SECURITY_ADDRESS` / `BROKER_SECURITY_ADMIN_TOKEN`: private authorization management RPC.
+- `MQTTS_AUTHZ_QUERY_TOKEN`: broker query credential; different from the management token.
+- `BROKER_SECURITY_REQUIRE_MESSAGE_IDENTITY=true`: enforce the MQTT payload author.
 - `MQTT_TCP_PUBLIC_URL`: broker TCP URL returned to the plugin / test agent.
 - `MQTT_WS_PUBLIC_URL`: broker WebSocket URL returned to the frontend.
 - `JWT_SECRET`: JWT signing secret. Replace it in production.
@@ -141,3 +152,7 @@ Useful test-agent commands:
 The standalone agent source is `test/openclaw-bot-chat`. Web `/assistant` and iOS Settings → Personal assistant manage execution, scoped tool approvals, verified-result reconciliation, files, confirmed memory and schedules. Use the dedicated isolated Compose project for the new scoped MQTT identity protocol.
 
 See [operations and acceptance](docs/PERSONAL_AGENT_OPERATIONS.md), [batch evidence](docs/PERSONAL_AGENT_PROGRESS.md), and [40-scenario evaluations](test/personal-agent-evals/scenarios.json). Real model/broker/PostgreSQL/storage/device/72-hour acceptance remains distinct from the passing deterministic and client UI tests.
+
+Message persistence runs in the independent `message-ingest` service, with its own
+MQTT credentials and durable spool volume. Set `INGEST_MQTT_PASSWORD` separately
+from the API's `MQTT_PASSWORD`. See [architecture and recovery](docs/MESSAGE_INGEST.md).

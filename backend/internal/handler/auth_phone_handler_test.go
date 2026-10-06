@@ -108,6 +108,7 @@ func newPhoneAuthHandlerTestEnv(t *testing.T) phoneAuthHandlerTestEnv {
 	}
 	if err := db.Exec(`
 		CREATE TABLE users (
+            token_version BIGINT NOT NULL DEFAULT 0,
 			id text PRIMARY KEY,
 			username text NOT NULL UNIQUE,
 			email text UNIQUE,
@@ -119,6 +120,7 @@ func newPhoneAuthHandlerTestEnv(t *testing.T) phoneAuthHandlerTestEnv {
 			nickname text,
 			avatar_url text,
 			status integer NOT NULL DEFAULT 1,
+			role text NOT NULL DEFAULT 'user',
 			is_deleted boolean NOT NULL DEFAULT false,
 			last_login_at datetime,
 			last_login_ip text,

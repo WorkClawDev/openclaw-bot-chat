@@ -3,7 +3,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { Theme } from 'emoji-picker-react'
-import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
 import { groupsApi, tasksApi } from '@/lib/api'
 import { uploadAudioAsset, uploadFileAsset, uploadImageAsset } from '@/lib/imageUpload'
@@ -16,13 +15,13 @@ interface ChatInputProps {
   onSendMessage: (input: ComposerMessageInput) => Promise<void>
   disabled?: boolean
   placeholder?: string
+  agent?: boolean
+  suggestedPrompt?: { text: string; id: number }
 }
 
 interface MentionBot {
   id: string
   name: string
-  avatar?: string | null
-  avatar_url?: string | null
   aliases: string[]
 }
 
@@ -40,7 +39,7 @@ const TASK_SLASH_COMMANDS: SlashCommand[] = [
   { name: 'task-fail', description: 'Fail task: /task-fail task-id optional note', acceptsArgs: true },
 ]
 
-export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a message...' }: ChatInputProps) {
+export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a message...', agent = false, suggestedPrompt }: ChatInputProps) {
   const [content, setContent] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -65,6 +64,14 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0)
   const slashListRef = useRef<HTMLDivElement>(null)
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([])
+
+  useEffect(() => {
+    if (!suggestedPrompt) return
+    setContent(suggestedPrompt.text)
+    setMentionActive(false)
+    setSlashActive(false)
+    textareaRef.current?.focus()
+  }, [suggestedPrompt])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -385,6 +392,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (slashActive && filteredSlashCommands.length > 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault()
@@ -466,8 +474,8 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   }
 
   return (
-    <div className="relative border-t border-slate-200/70 bg-white/80 px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-sm md:px-6 md:py-4 md:pb-[calc(1rem+env(safe-area-inset-bottom))]" ref={pickerRef}>
-      {sendError ? <div className="mb-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-600">{sendError}</div> : null}
+    <div className={`chat-composer ${agent ? 'is-agent' : ''}`} ref={pickerRef}>
+      {sendError ? <div role="alert" className="mb-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-600">{sendError}</div> : null}
       {/* Pickers */}
       {(showEmojiPicker || showStickerPicker) && (
         <div className="absolute bottom-full left-3 md:left-6 mb-2 z-50 animate-in slide-in-from-bottom-2">
@@ -566,7 +574,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
           onPointerDown={(e) => e.preventDefault()} // Prevent blur when clicking container or scrollbar
         >
           <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            Mention Bot
+            Mention agent
           </div>
           <div className="max-h-48 overflow-y-auto scrollbar-thin">
             {filteredBots.length > 0 ? (
@@ -582,24 +590,24 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
                     index === selectedIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
                   }`}
                 >
-                  <Avatar name={bot.name} src={bot.avatar || bot.avatar_url || undefined} size="sm" />
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-bold truncate ${index === selectedIndex ? 'text-sky-600' : 'text-slate-700'}`}>
                       {bot.name}
                     </p>
                   </div>
+                  <span className="agent-message-badge">Agent</span>
                 </button>
               ))
             ) : (
               <div className="px-3 py-4 text-center text-sm text-slate-400 font-medium italic">
-                No bots found
+                No agents found
               </div>
             )}
           </div>
         </div>
       )}
 
-      <div className="flex items-end gap-2 md:gap-3 bg-white p-2 pr-2.5 rounded-2xl shadow-sm border border-slate-200/50 focus-within:ring-2 focus-within:ring-[#0EA5E9]/20 transition-all">
+      <div className="chat-composer-box">
         <input
           ref={fileInputRef}
           type="file"
@@ -618,7 +626,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
             void handleAudioSelect(e)
           }}
         />
-        <div className="flex items-center gap-1">
+        <div className="chat-composer-tools flex items-center gap-1">
           <button
             type="button"
             onClick={() => {
@@ -698,7 +706,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
             )}
           </button>
         </div>
-        <div className="relative flex-1">
+        <div className="chat-composer-field relative min-w-0">
           {/* Highlights Overlay */}
           <div 
             ref={overlayRef}
@@ -737,9 +745,9 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
           type="button"
           onClick={() => void handleSend()}
           disabled={!content.trim() || isSending || isUploading || disabled}
-          className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all flex-shrink-0 ${
+          className={`chat-send-button w-9 h-9 flex items-center justify-center rounded-xl transition-colors flex-shrink-0 ${
             content.trim() && !isSending && !isUploading && !disabled
-              ? 'bg-[#0EA5E9] text-white shadow-lg shadow-sky-200 hover:scale-105 active:scale-95'
+              ? 'bg-[#0EA5E9] text-white'
               : 'bg-slate-100 text-slate-400'
           }`}
           title="Send message"
@@ -754,6 +762,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
           )}
         </button>
       </div>
+      <div className="chat-composer-hint"><span>{agent ? 'Describe a task, or attach a file' : '@ mention · / commands'}</span><span className="hidden sm:inline">Enter to send · Shift + Enter for a new line</span><span className="sm:hidden">/ commands</span></div>
     </div>
   )
 }
@@ -769,7 +778,6 @@ function toMentionBot(member: GroupMember): MentionBot | null {
   return {
     id,
     name,
-    avatar: member.bot?.avatar || member.bot?.avatar_url || null,
     aliases,
   }
 }

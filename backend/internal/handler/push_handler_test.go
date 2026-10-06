@@ -30,13 +30,21 @@ func TestPushRegistrationRequiresJWTAndDoesNotExposeDeviceToken(t *testing.T) {
 	if err := db.AutoMigrate(&model.PushDevice{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Exec(`CREATE TABLE users (id text PRIMARY KEY, username text, status integer, is_deleted boolean, deleted_at datetime, token_version integer, role text, updated_at datetime)`).Error; err != nil {
+		t.Fatal(err)
+	}
 	manager := jwt.NewManager(jwt.Config{Secret: "test-only-not-a-production-secret", AccessTokenTTL: 300, Issuer: "tests"})
 	owner, other, device := uuid.New(), uuid.New(), uuid.New()
-	ownerToken, _ := manager.GenerateAccessToken(owner, "owner")
-	otherToken, _ := manager.GenerateAccessToken(other, "other")
+	for _, user := range []model.User{{ID: owner, Username: "owner", Status: model.UserStatusActive}, {ID: other, Username: "other", Status: model.UserStatusActive}} {
+		if err := db.Exec("INSERT INTO users (id,username,status,is_deleted,token_version,role) VALUES (?,?,?,false,0,?)", user.ID, user.Username, user.Status, model.UserRoleUser).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ownerToken, _ := manager.GenerateAccessToken(owner, "owner", 0)
+	otherToken, _ := manager.GenerateAccessToken(other, "other", 0)
 	router := gin.New()
 	group := router.Group("/api/v1")
-	group.Use(middleware.JWTAuth(manager))
+	group.Use(middleware.JWTAuth(manager), middleware.ActiveAccount(repository.NewUserRepository(db)))
 	handler := &PushHandler{Repo: repository.NewPushRepository(db), Enabled: true}
 	handler.Register(group)
 	request := func(method, path, token string, body any) *httptest.ResponseRecorder {
@@ -79,6 +87,24 @@ func TestPushRegistrationRequiresJWTAndDoesNotExposeDeviceToken(t *testing.T) {
 	body["token"] = "not-hex"
 	if w := request(http.MethodPut, path, ownerToken, body); w.Code != 400 {
 		t.Fatal("invalid device accepted")
+	}
+	// Apply the master's live-account/token-version policy to every push route.
+	for _, changes := range []map[string]any{{"status": model.UserStatusBanned}, {"status": model.UserStatusActive, "token_version": 1}} {
+		if err := db.Model(&model.User{}).Where("id = ?", owner).Updates(changes).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodGet} {
+			target := path
+			if method == http.MethodGet {
+				target = "/api/v1/push/status"
+			}
+			if w := request(method, target, ownerToken, body); w.Code != 401 {
+				t.Fatalf("revoked push route %s returned %d", method, w.Code)
+			}
+		}
+	}
+	if err := db.Model(&model.User{}).Where("id = ?", owner).Update("token_version", 0).Error; err != nil {
+		t.Fatal(err)
 	}
 	handler.Enabled = false
 	if w := request(http.MethodPut, path, ownerToken, body); w.Code != 503 {

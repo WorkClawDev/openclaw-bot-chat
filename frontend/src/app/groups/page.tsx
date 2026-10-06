@@ -1,20 +1,19 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useChat } from '@/contexts/ChatContext'
 import { groupsApi } from '@/lib/api'
 import { AppLayout } from '@/components/AppLayout'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
-import { Avatar } from '@/components/Avatar'
 import { IconButton } from '@/components/IconButton'
 import { PaneHeader } from '@/components/PaneHeader'
 import { StatusPill } from '@/components/StatusPill'
 import { WorkspaceCollectionPane } from '@/components/WorkspaceCollectionPane'
 import { LoadingPage } from '@/components/Loading'
 import { ConversationItem } from '@/components/Chat/ConversationItem'
-import { MessageBubble } from '@/components/Chat/MessageBubble'
+import { MessageTimeline, type MessageTimelineHandle } from '@/components/Chat/MessageTimeline'
 import { ChatInput } from '@/components/Chat/ChatInput'
 import type { Group, GroupMember } from '@/lib/types'
 
@@ -39,7 +38,8 @@ export default function GroupsPage() {
   const [showDrawer, setShowDrawer] = useState(false)
   const [showMobileList, setShowMobileList] = useState(true)
   
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const timeline = useRef<MessageTimelineHandle>(null)
+  const mentionNames = useMemo(() => bots.map(bot => bot.name), [bots])
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -62,9 +62,6 @@ export default function GroupsPage() {
     }
   }, [currentConversation?.id, currentConversation?.target.id, currentConversation?.type, refreshMessages, groups])
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, currentConversation])
 
   const filteredGroups = groups.filter(group => 
     group.name.toLowerCase().includes(searchTerm.toLowerCase())
@@ -101,7 +98,6 @@ export default function GroupsPage() {
           <ConversationItem
             key={group.id}
             name={group.name}
-            avatar={group.avatar}
             isActive={selectedGroup?.id === group.id && view === 'chat'}
             onClick={() => handleGroupClick(group)}
             lastMessage={group.description || ''}
@@ -110,7 +106,7 @@ export default function GroupsPage() {
       />
 
       {/* Column 3: Main Area */}
-      <section className={`flex-1 h-full flex flex-col bg-white relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
+      <section className={`flex-1 min-w-0 h-full flex flex-col bg-white relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
         {view === 'chat' && currentConversation ? (
           <>
             <PaneHeader
@@ -124,7 +120,6 @@ export default function GroupsPage() {
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
                 </IconButton>
-                <Avatar name={currentConversation.name} src={currentConversation.avatar} size="md" />
                 </>
               }
               title={currentConversation.name}
@@ -149,35 +144,8 @@ export default function GroupsPage() {
               }
             />
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
-              {currentMessages.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full text-slate-300 gap-4 opacity-60">
-                   <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center">
-                    <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                    </svg>
-                  </div>
-                  <p className="text-sm font-medium italic">Start the conversation in {selectedGroup?.name}</p>
-                </div>
-              ) : (
-                <>
-                  {currentMessages.map((msg, index) => (
-                    <MessageBubble
-                      key={msg.id}
-                      message={msg}
-                      isOwn={msg.sender_id === user?.id}
-                      showSenderName={true}
-                      mentions={bots.map(b => b.name)}
-                    />
-                  ))}
-                  <div ref={messagesEndRef} />
-                </>
-              )}
-            </div>
-
-            {/* Input */}
-            <ChatInput onSendMessage={sendMessage} placeholder={`Message ${selectedGroup?.name}...`} />
+            {currentMessages.length ? <MessageTimeline key={currentConversation.id} ref={timeline} messages={currentMessages} userId={user?.id} mentions={mentionNames} testId="group-message-scroll" /> : <div className="flex flex-1 items-center justify-center p-8 text-sm text-slate-500">Start the conversation in {selectedGroup?.name}</div>}
+            <ChatInput onSendMessage={async input => { await sendMessage(input); timeline.current?.scrollToLatest() }} placeholder={`Message ${selectedGroup?.name}...`} />
           </>
         ) : view === 'create' ? (
           <div className="flex-1 overflow-y-auto p-5 md:p-10 lg:p-12 max-w-2xl mx-auto w-full">
@@ -193,10 +161,10 @@ export default function GroupsPage() {
             
             <CreateGroupForm
               onCancel={() => { setView('chat'); setShowMobileList(true); }}
-              onSuccess={(group) => {
+              onSuccess={async (group) => {
+                await refreshGroups()
                 openGroupConversation(group)
                 setSelectedGroup(group)
-                void refreshGroups()
                 setView('chat')
                 setShowMobileList(false)
               }}
@@ -241,7 +209,7 @@ function CreateGroupForm({
   onSuccess
 }: {
   onCancel: () => void
-  onSuccess: (group: Group) => void
+  onSuccess: (group: Group) => void | Promise<void>
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -256,7 +224,7 @@ function CreateGroupForm({
     setError('')
     try {
       const created = await groupsApi.create({ name, description })
-      onSuccess(created)
+      await onSuccess(created)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create group')
     } finally {
@@ -373,7 +341,7 @@ function GroupDrawer({
       <div className="flex-1 overflow-y-auto p-6 space-y-8">
         <div className="space-y-4">
           <div className="flex flex-col items-center gap-3">
-             <Avatar name={group.name} src={group.avatar} size="lg" className="w-20 h-20 shadow-xl shadow-slate-200" />
+             <span className="agent-eyebrow">GROUP WORKSPACE</span>
              <div className="text-center">
                 <h4 className="text-lg font-bold text-slate-800">{group.name}</h4>
                 <p className="text-xs text-slate-400 font-medium">{group.description || 'No description'}</p>
@@ -437,10 +405,9 @@ function GroupDrawer({
             ) : members.map(m => (
               <div key={m.id} className="flex items-center justify-between group">
                 <div className="flex items-center gap-3">
-                  <Avatar name={m.user?.username || m.bot?.name || 'User'} size="sm" />
                   <div>
                     <p className="text-sm font-bold text-slate-700">{m.user?.username || m.bot?.name || 'Unknown'}</p>
-                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-tighter">{m.role}{m.type === 'bot' && ' • BOT'}</p>
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-tighter">{m.role}{m.type === 'bot' && ' • AGENT'}</p>
                   </div>
                 </div>
               </div>

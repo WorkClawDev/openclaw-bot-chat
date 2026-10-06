@@ -34,13 +34,13 @@ func (r *GroupRepository) ListByUser(ctx context.Context, userID uuid.UUID, page
 	var groups []model.Group
 	var total int64
 
-	subQuery := r.db.WithContext(ctx).Model(&model.GroupMember{}).Select("group_id").Where("user_id = ?", userID)
+	subQuery := r.db.WithContext(ctx).Model(&model.GroupMember{}).Select("group_id").Where("user_id = ? AND is_active = true", userID)
 	query := r.db.WithContext(ctx).Model(&model.Group{}).Where("id IN (?) OR owner_id = ?", subQuery, userID)
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	offset := (page - 1) * pageSize
-	if err := query.Preload("Owner").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&groups).Error; err != nil {
+	if err := query.Preload("Owner").Order("created_at DESC, id ASC").Offset(offset).Limit(pageSize).Find(&groups).Error; err != nil {
 		return nil, 0, err
 	}
 	return groups, total, nil
@@ -87,7 +87,7 @@ func (r *GroupRepository) RemoveMember(ctx context.Context, groupID, userID uuid
 
 func (r *GroupRepository) GetMember(ctx context.Context, groupID, userID uuid.UUID) (*model.GroupMember, error) {
 	var member model.GroupMember
-	err := r.db.WithContext(ctx).Preload("User").Where("group_id = ? AND user_id = ?", groupID, userID).First(&member).Error
+	err := r.db.WithContext(ctx).Preload("User").Where("group_id = ? AND user_id = ? AND is_active = true", groupID, userID).First(&member).Error
 	if err != nil {
 		return nil, err
 	}

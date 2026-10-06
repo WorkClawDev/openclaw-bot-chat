@@ -17,17 +17,26 @@ func TestRealtimeTopicsAllowFirstMessageOnlyToOwnedEnabledBots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw, _ := db.DB()
+	raw.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = raw.Close() })
 	for _, statement := range []string{
-		`CREATE TABLE bots (id text PRIMARY KEY, owner_id text, status integer, deleted_at datetime)`,
+		`CREATE TABLE users (id text PRIMARY KEY,status integer,is_deleted boolean,deleted_at datetime)`,
+		`CREATE TABLE bots (id text PRIMARY KEY, owner_id text, status integer, deleted_at datetime, created_at datetime)`,
 		`CREATE TABLE messages (conversation_id text, sender_id text, bot_id text, is_deleted boolean, created_at datetime)`,
-		`CREATE TABLE groups (id text PRIMARY KEY, owner_id text, deleted_at datetime, created_at datetime)`,
-		`CREATE TABLE group_members (group_id text, user_id text)`,
+		`CREATE TABLE groups (id text PRIMARY KEY, owner_id text, deleted_at datetime, created_at datetime, is_active boolean)`,
+		`CREATE TABLE group_members (group_id text, user_id text, is_active boolean)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 	owner, other := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{owner, other} {
+		if err := db.Exec("INSERT INTO users VALUES (?,1,false,NULL)", id).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	enabled, disabled, foreign, deleted := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	for _, row := range []struct {
 		id, owner uuid.UUID
